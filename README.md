@@ -10,6 +10,8 @@ Version `0.0.1-beta` is the first beta release, focused on turning ad-hoc prompt
 AI coding is fast, but raw chat logs are difficult to review, repeat, and trust.
 Spec Code keeps requirements, design decisions, tasks, implementation, verification, and archive state in one place so changes stay easier to inspect, compare, and recover.
 
+![](https://eacape-1259159524.cos.ap-shanghai.myqcloud.com/Snipaste_2026-03-24_21-29-14.png)
+
 ## Highlights
 
 - Structured spec workflows for requirements, design, tasks, implementation, verification, and archive

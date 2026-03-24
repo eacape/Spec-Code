@@ -10,6 +10,8 @@ Spec Code 是一款面向 JetBrains IDE 的规格驱动 AI 编码工作流插件
 AI 编码很快，但单纯依赖聊天记录往往难以复用、难以审计，也难以在后续迭代里保持一致。
 Spec Code 把需求、设计决策、任务拆解、实现过程、验证结果和归档状态放到同一条工作流里，让每次改动都更可追踪、可比较、可恢复。
 
+![](https://eacape-1259159524.cos.ap-shanghai.myqcloud.com/Snipaste_2026-03-24_21-29-14.png)
+
 ## 核心亮点
 
 - 用结构化 Spec workflow 串起 requirements、design、tasks、implement、verify、archive
