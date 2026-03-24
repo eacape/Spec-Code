@@ -1,0 +1,196 @@
+<idea-plugin>
+    <id>com.eacape.speccodingplugin</id>
+    <name>Spec Code</name>
+    <category>Code tools</category>
+    <vendor email="team@eacape.com" url="https://eacape.com">苑勇</vendor>
+
+    <description><![CDATA[
+        First beta release of Spec Code for JetBrains IDEs. Use structured workflows, grounded context, and reviewable history for AI-assisted changes.
+    ]]></description>
+    <depends>com.intellij.modules.platform</depends>
+    <depends>org.jetbrains.plugins.terminal</depends>
+
+    <resource-bundle>messages.SpecCodingBundle</resource-bundle>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow
+                id="Spec Code"
+                factoryClass="com.eacape.speccodingplugin.ui.ChatToolWindowFactory"
+                icon="/META-INF/pluginIcon.svg"
+                anchor="right"
+                canCloseContents="false"/>
+
+        <notificationGroup
+                id="SpecCoding.Notifications"
+                displayType="BALLOON"
+                isLogByDefault="true"/>
+
+        <!-- Application-level Services -->
+        <applicationService serviceImplementation="com.eacape.speccodingplugin.engine.CliDiscoveryService"/>
+        <applicationService serviceImplementation="com.eacape.speccodingplugin.ui.settings.SpecCodingSettingsState"/>
+        <applicationService serviceImplementation="com.eacape.speccodingplugin.prompt.GlobalPromptManager"/>
+        <applicationService serviceImplementation="com.eacape.speccodingplugin.llm.ModelRegistry"/>
+        <applicationService serviceImplementation="com.eacape.speccodingplugin.llm.LlmRouter"/>
+        <applicationService serviceImplementation="com.eacape.speccodingplugin.window.WindowRegistry"/>
+        <applicationService serviceImplementation="com.eacape.speccodingplugin.window.GlobalConfigSyncService"/>
+
+        <!-- Project-level Services -->
+        <projectService serviceImplementation="com.eacape.speccodingplugin.core.SpecCodingProjectService"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.core.OperationModeManager"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.prompt.PromptManager"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.prompt.TeamPromptSyncService"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.skill.SkillRegistry"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.skill.TeamSkillSyncService"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.skill.SkillExecutor"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.spec.SpecEngine"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.spec.SpecDeltaService"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.spec.SpecRelatedFilesService"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.session.SessionManager"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.mcp.McpHub"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.mcp.McpConfigStore"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.window.WindowStateStore"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.window.WindowSessionIsolationService"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.rollback.ChangesetStore"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.rollback.RollbackManager"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.engine.EngineManager"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.hook.HookConfigStore"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.hook.HookExecutor"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.hook.HookManager"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.hook.HookGitCommitWatcher"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.ui.spec.SpecWorkflowSelectionService"/>
+
+        <!-- Context Engine Services -->
+        <projectService serviceImplementation="com.eacape.speccodingplugin.context.ContextCollector"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.context.CodeGraphService"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.context.ProjectStructureScanner"/>
+        <projectService serviceImplementation="com.eacape.speccodingplugin.context.RelatedFileDiscovery"/>
+
+        <!-- Completion Service -->
+        <projectService serviceImplementation="com.eacape.speccodingplugin.ui.completion.CompletionProvider"/>
+
+        <!-- Editor Insights -->
+        <codeInsight.lineMarkerProvider
+                language="JAVA"
+                implementationClass="com.eacape.speccodingplugin.ui.editor.SpecCodingLineMarkerProvider"/>
+        <codeInsight.lineMarkerProvider
+                language="kotlin"
+                implementationClass="com.eacape.speccodingplugin.ui.editor.SpecCodingLineMarkerProvider"/>
+        <codeInsight.inlayProvider
+                language="JAVA"
+                implementationClass="com.eacape.speccodingplugin.ui.editor.SpecCodingInlineHintsProvider"/>
+        <codeInsight.inlayProvider
+                language="kotlin"
+                implementationClass="com.eacape.speccodingplugin.ui.editor.SpecCodingInlineHintsProvider"/>
+
+        <!-- Status Bar Widget -->
+        <statusBarWidgetFactory implementation="com.eacape.speccodingplugin.ui.ModelSelectorWidgetFactory" order="first"/>
+
+        <!-- Settings Page (顶级配置页，不再放在 Tools 下) -->
+        <applicationConfigurable
+                parentId="root"
+                instance="com.eacape.speccodingplugin.ui.settings.SpecCodingSettingsConfigurable"
+                id="com.eacape.speccodingplugin.settings"
+                displayName="Spec Code"/>
+    </extensions>
+
+    <projectListeners>
+        <listener
+                class="com.eacape.speccodingplugin.window.WindowRegistryProjectManagerListener"
+                topic="com.intellij.openapi.project.ProjectManagerListener"/>
+        <listener
+                class="com.eacape.speccodingplugin.spec.SpecWorkspaceRecoveryProjectManagerListener"
+                topic="com.intellij.openapi.project.ProjectManagerListener"/>
+        <listener
+                class="com.eacape.speccodingplugin.hook.HookProjectManagerListener"
+                topic="com.intellij.openapi.project.ProjectManagerListener"/>
+    </projectListeners>
+
+    <applicationListeners>
+        <listener
+                class="com.eacape.speccodingplugin.hook.HookFileSaveListener"
+                topic="com.intellij.openapi.fileEditor.FileDocumentManagerListener"/>
+    </applicationListeners>
+
+    <actions>
+        <action
+                id="SpecCoding.OpenChat"
+                class="com.eacape.speccodingplugin.ui.actions.OpenSpecCodingToolWindowAction"
+                text="%action.open.toolwindow.text"
+                description="%action.open.toolwindow.description">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+        <action
+                id="SpecCoding.OpenSettings"
+                class="com.eacape.speccodingplugin.ui.actions.OpenSpecCodingSettingsAction"
+                text="%toolbar.openSettings"
+                description="%toolbar.action.description">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+        <action
+                id="SpecCoding.SpecWorkflow.Editor.GenerateMissingArtifacts"
+                class="com.eacape.speccodingplugin.ui.actions.GenerateMissingSpecArtifactsAction"
+                text="%spec.action.editor.fixArtifacts.text"
+                description="%spec.action.editor.fixArtifacts.description">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+        <action
+                id="SpecCoding.SpecWorkflow.Editor.RepairTasksSyntax"
+                class="com.eacape.speccodingplugin.ui.actions.RepairSpecTasksSyntaxAction"
+                text="%spec.action.editor.fixTasks.text"
+                description="%spec.action.editor.fixTasks.description">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+        <action
+                id="SpecCoding.SpecWorkflow.Editor.GenerateVerificationSkeleton"
+                class="com.eacape.speccodingplugin.ui.actions.GenerateVerificationSkeletonAction"
+                text="%spec.action.editor.fixVerification.text"
+                description="%spec.action.editor.fixVerification.description">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+        <group
+                id="SpecCoding.SpecWorkflowGroup"
+                popup="true"
+                text="%spec.action.group.text"
+                description="%spec.action.group.description">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <action
+                    id="SpecCoding.SpecWorkflow.New"
+                    class="com.eacape.speccodingplugin.ui.actions.NewSpecWorkflowAction"
+                    text="%spec.action.create.text"
+                    description="%spec.action.create.description"/>
+            <action
+                    id="SpecCoding.SpecWorkflow.Open"
+                    class="com.eacape.speccodingplugin.ui.actions.OpenSpecWorkflowAction"
+                    text="%spec.action.open.text"
+                    description="%spec.action.open.description"/>
+            <separator/>
+            <action
+                    id="SpecCoding.SpecWorkflow.Advance"
+                    class="com.eacape.speccodingplugin.ui.actions.AdvanceSpecWorkflowStageAction"
+                    text="%spec.action.advance.text"
+                    description="%spec.action.advance.description"/>
+            <action
+                    id="SpecCoding.SpecWorkflow.Jump"
+                    class="com.eacape.speccodingplugin.ui.actions.JumpSpecWorkflowStageAction"
+                    text="%spec.action.jump.text"
+                    description="%spec.action.jump.description"/>
+            <action
+                    id="SpecCoding.SpecWorkflow.Rollback"
+                    class="com.eacape.speccodingplugin.ui.actions.RollbackSpecWorkflowStageAction"
+                    text="%spec.action.rollback.text"
+                    description="%spec.action.rollback.description"/>
+            <separator/>
+            <action
+                    id="SpecCoding.SpecWorkflow.Verify"
+                    class="com.eacape.speccodingplugin.ui.actions.RunSpecWorkflowVerificationAction"
+                    text="%spec.action.verify.text"
+                    description="%spec.action.verify.description"/>
+            <separator/>
+            <action
+                    id="SpecCoding.SpecWorkflow.Archive"
+                    class="com.eacape.speccodingplugin.ui.actions.ArchiveSpecWorkflowAction"
+                    text="%spec.action.archive.text"
+                    description="%spec.action.archive.description"/>
+        </group>
+    </actions>
+</idea-plugin>

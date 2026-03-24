@@ -1,0 +1,71 @@
+# IDE
+/.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Gradle
+.gradle/
+build/
+!gradle-wrapper.jar
+
+# Kotlin
+*.class
+*.log
+*.ctxt
+.mtj.tmp/
+
+# Package Files
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Plugin specific
+.spec-coding/
+!.spec-coding/prompts/
+!.spec-coding/skills/
+
+# Sensitive data (never commit)
+**/apiKeys.xml
+**/passwords.xml
+**/*secret*
+**/*credential*
+
+# Test coverage
+.kover/
+kover-report/
+
+# Logs
+logs/
+*.log
+/.intellijPlatform/
+/.codex/
+/.claude/
+/docs/*
+!/docs/marketplace/
+/docs/marketplace/*
+!/docs/marketplace/README.md
+!/docs/marketplace/listing.en.md
+!/docs/marketplace/listing.zh-CN.md
+/.gradle-user-home/
+/prompt
+/.tmp/
+/.tmp-argtest/
+/.tmp/
+/.kotlin/
+/.gradle-user/
+/.github/
+/.openspec/
+/.gradle-test-home-3/
+/.gradle-test-home/
+/.gradle-local/
+/.gradle-user/
