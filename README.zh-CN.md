@@ -124,3 +124,7 @@ openspec/                                      Spec 与变更工件
 
 - 元数据与发布说明：`docs/marketplace/README.md`
 - 截图采集说明：`docs/marketplace/assets/screenshots/README.md`
+
+## 进群沟通
+
+![](https://eacape-1259159524.cos.ap-shanghai.myqcloud.com/image-20260324214626138.png)

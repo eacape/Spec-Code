@@ -83,7 +83,10 @@
                 implementationClass="com.eacape.speccodingplugin.ui.editor.SpecCodingInlineHintsProvider"/>
 
         <!-- Status Bar Widget -->
-        <statusBarWidgetFactory implementation="com.eacape.speccodingplugin.ui.ModelSelectorWidgetFactory" order="first"/>
+        <statusBarWidgetFactory
+                id="SpecCoding.ModelSelector"
+                implementation="com.eacape.speccodingplugin.ui.ModelSelectorWidgetFactory"
+                order="first"/>
 
         <!-- Settings Page (顶级配置页，不再放在 Tools 下) -->
         <applicationConfigurable

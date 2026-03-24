@@ -55,7 +55,7 @@ class ModelSelectorWidget(project: Project) : EditorBasedWidget(project), Status
         )
     }
 
-    override fun ID(): String = "SpecCoding.ModelSelector"
+    override fun ID(): String = ID
 
     override fun getPresentation(): StatusBarWidget.WidgetPresentation = this
 
