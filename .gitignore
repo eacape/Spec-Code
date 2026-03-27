@@ -63,7 +63,9 @@ logs/
 /.tmp/
 /.kotlin/
 /.gradle-user/
-/.github/
+/.github/*
+!/.github/workflows/
+!/.github/workflows/**
 /.openspec/
 /.gradle-test-home-3/
 /.gradle-test-home/

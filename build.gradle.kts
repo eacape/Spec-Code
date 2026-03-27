@@ -152,6 +152,41 @@ tasks {
         useJUnitPlatform()
     }
 
+    fun registerVerificationTest(
+        taskName: String,
+        taskDescription: String,
+        includes: List<String>,
+    ) = register<Test>(taskName) {
+        group = "verification"
+        description = taskDescription
+
+        useJUnitPlatform()
+        testClassesDirs = sourceSets["test"].output.classesDirs
+        classpath = sourceSets["test"].runtimeClasspath
+
+        filter {
+            includes.forEach(::includeTestsMatching)
+        }
+    }
+
+    val coreRegressionTest = registerVerificationTest(
+        taskName = "coreRegressionTest",
+        taskDescription = "Run minimal core regression tests used by CI",
+        includes = listOf(
+            "com.eacape.speccodingplugin.core.OperationModeManagerTest",
+            "com.eacape.speccodingplugin.core.SpecCodingProjectServiceTest",
+            "com.eacape.speccodingplugin.engine.OpenAiCodexEngineTest",
+        ),
+    )
+
+    val architectureRegressionTest = registerVerificationTest(
+        taskName = "architectureRegressionTest",
+        taskDescription = "Run architecture contract regression tests used by CI",
+        includes = listOf(
+            "com.eacape.speccodingplugin.spec.SpecArchitectureContractTest",
+        ),
+    )
+
     val phase1AcceptanceTest by registering(Test::class) {
         group = "verification"
         description = "Run Phase 1 acceptance-oriented automated test subset"
@@ -176,6 +211,12 @@ tasks {
         group = "verification"
         description = "Run Phase 1 acceptance automated checks and build plugin package"
         dependsOn(phase1AcceptanceTest, "buildPlugin")
+    }
+
+    register("ciCheck") {
+        group = "verification"
+        description = "Run minimal CI verification: compile, core regression tests, architecture contract, and plugin packaging"
+        dependsOn("compileKotlin", coreRegressionTest, architectureRegressionTest, "buildPlugin")
     }
 
     val phase3CoverageReport by registering {
