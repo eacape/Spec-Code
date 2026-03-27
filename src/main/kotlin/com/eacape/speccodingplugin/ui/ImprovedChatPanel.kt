@@ -4671,7 +4671,8 @@ class ImprovedChatPanel(
                 val messages = sessionManager
                     .listMessages(sessionId, limit = SESSION_LOAD_FETCH_LIMIT)
                     .takeLast(MAX_RESTORED_MESSAGES)
-                session to messages
+                val activeExecutionLaunchRunIds = resolveActiveExecutionLaunchRunIds(messages)
+                Triple(session, messages, activeExecutionLaunchRunIds)
             }
 
             ApplicationManager.getApplication().invokeLater {
@@ -4686,7 +4687,7 @@ class ImprovedChatPanel(
                     return@invokeLater
                 }
 
-                val (session, messages) = loaded.getOrThrow()
+                val (session, messages, activeExecutionLaunchRunIds) = loaded.getOrThrow()
                 if (session == null) {
                     currentSessionId = null
                     sessionIsolationService.clearActiveSession()
@@ -4704,7 +4705,7 @@ class ImprovedChatPanel(
                 activeSpecWorkflowId = restoredBinding?.workflowId
                     ?: session.specTaskId?.trim()?.ifBlank { null }
                 activeWorkflowChatBinding = restoredBinding
-                restoreSessionMessages(messages)
+                restoreSessionMessages(messages, activeExecutionLaunchRunIds)
                 currentSessionId = session.id
                 sessionIsolationService.activateSession(session.id)
                 activeSpecWorkflowId?.let { workflowId ->
@@ -4724,7 +4725,10 @@ class ImprovedChatPanel(
         }
     }
 
-    private fun restoreSessionMessages(messages: List<com.eacape.speccodingplugin.session.ConversationMessage>) {
+    private fun restoreSessionMessages(
+        messages: List<com.eacape.speccodingplugin.session.ConversationMessage>,
+        activeExecutionLaunchRunIds: Set<String> = emptySet(),
+    ) {
         conversationHistory.clear()
         clearCompactedConversationState()
         userMessageRawContent.clear()
@@ -4750,6 +4754,8 @@ class ImprovedChatPanel(
                 interactionMode = interactionMode,
                 continueHandler = continueHandler,
                 workflowSectionsEnabled = workflowSectionsEnabled,
+                fromSessionRestore = true,
+                activeExecutionLaunchRunIds = activeExecutionLaunchRunIds,
             )
         }
 
@@ -5056,6 +5062,8 @@ class ImprovedChatPanel(
         interactionMode: ChatInteractionMode = currentInteractionMode(),
         continueHandler: ((ChatMessagePanel) -> Unit)? = continueHandlerFor(interactionMode),
         workflowSectionsEnabled: Boolean = workflowSectionRenderingEnabledFor(interactionMode),
+        fromSessionRestore: Boolean = false,
+        activeExecutionLaunchRunIds: Set<String> = emptySet(),
         executionMetadata: TaskExecutionSessionMetadataCodec.DecodedMetadata =
             TaskExecutionSessionMetadataCodec.decode(message.metadataJson),
     ) {
@@ -5063,17 +5071,21 @@ class ImprovedChatPanel(
             ConversationRole.USER -> {
                 val executionLaunchPayload = executionMetadata.resolveExecutionLaunchRestorePayload(message.content)
                 val rawUserContent = executionMetadata.resolveExecutionLaunchRawPrompt() ?: message.content
-                if (executionLaunchPayload != null) {
+                val shouldRenderExecutionLaunchCard = executionLaunchPayload != null &&
+                    (
+                        !fromSessionRestore ||
+                            executionMetadata.runId?.trim()?.takeIf(String::isNotBlank) in activeExecutionLaunchRunIds
+                    )
+                if (shouldRenderExecutionLaunchCard) {
                     addExecutionLaunchMessage(
                         visibleContent = message.content,
-                        payload = executionLaunchPayload,
+                        payload = executionLaunchPayload!!,
                         rawContent = rawUserContent,
                     )
-                    appendToConversationHistory(LlmMessage(LlmRole.USER, rawUserContent))
                 } else {
-                    appendUserMessage(content = message.content, rawContent = message.content)
-                    appendToConversationHistory(LlmMessage(LlmRole.USER, message.content))
+                    appendUserMessage(content = message.content, rawContent = rawUserContent)
                 }
+                appendToConversationHistory(LlmMessage(LlmRole.USER, rawUserContent))
             }
 
             ConversationRole.ASSISTANT -> {
@@ -5139,6 +5151,27 @@ class ImprovedChatPanel(
         if (executionMetadata.isTaskExecutionMessage()) {
             renderedTaskExecutionSessionMessageIds += message.id
         }
+    }
+
+    private fun resolveActiveExecutionLaunchRunIds(messages: List<ConversationMessage>): Set<String> {
+        if (messages.isEmpty()) {
+            return emptySet()
+        }
+        return messages.asSequence()
+            .filter { message -> message.role == ConversationRole.USER }
+            .mapNotNull { message ->
+                val executionMetadata = TaskExecutionSessionMetadataCodec.decode(message.metadataJson)
+                if (executionMetadata.resolveExecutionLaunchRestorePayload(message.content) == null) {
+                    return@mapNotNull null
+                }
+                val workflowId = executionMetadata.workflowId?.trim()?.ifBlank { null } ?: return@mapNotNull null
+                val runId = executionMetadata.runId?.trim()?.ifBlank { null } ?: return@mapNotNull null
+                val progress = runCatching {
+                    specTaskExecutionService.getLiveProgress(workflowId, runId)
+                }.getOrNull() ?: return@mapNotNull null
+                runId.takeIf { progress.phase != ExecutionLivePhase.TERMINAL }
+            }
+            .toSet()
     }
 
     private fun syncTaskExecutionSessionMessages(

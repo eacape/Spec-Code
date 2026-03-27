@@ -360,6 +360,7 @@ class WorkflowChatExecutionContextLinkPlatformTest : BasePlatformTestCase() {
             includeTasksDocument = true,
         )
 
+        val executionService = SpecTaskExecutionService.getInstance(project)
         val sessionManager = SessionManager.getInstance(project)
         val session = sessionManager.createSession(
             title = "Legacy execution launch restore",
@@ -371,8 +372,8 @@ class WorkflowChatExecutionContextLinkPlatformTest : BasePlatformTestCase() {
                 actionIntent = WorkflowChatActionIntent.EXECUTE_TASK,
             ),
         ).getOrThrow()
-        val run = TaskExecutionRun(
-            runId = "run-legacy-151",
+        val run = executionService.createRun(
+            workflowId = workflow.id,
             taskId = task.id,
             status = TaskExecutionRunStatus.WAITING_CONFIRMATION,
             trigger = ExecutionTrigger.USER_EXECUTE,
@@ -497,6 +498,95 @@ class WorkflowChatExecutionContextLinkPlatformTest : BasePlatformTestCase() {
 
         val launchSnapshot = chatPanel.executionLaunchSnapshotForTest()
         assertEquals("false", launchSnapshot.getValue("visible"))
+        assertEquals(2, chatPanel.messageCountForTest())
+    }
+
+    fun `test history restore should keep plain bubble for terminal execution launch presentation`() {
+        val workflow = SpecEngine.getInstance(project).createWorkflow(
+            title = "Workflow Chat Terminal Launch Restore",
+            description = "history restore should not rebuild execution card for terminal runs",
+        ).getOrThrow()
+        val task = SpecTasksService(project).addTask(
+            workflowId = workflow.id,
+            title = "Collapse terminal execution launch restore",
+            priority = TaskPriority.P1,
+        )
+        stageWorkflow(
+            workflowId = workflow.id,
+            currentStage = StageId.IMPLEMENT,
+            verifyEnabled = false,
+            includeTasksDocument = true,
+        )
+
+        val executionService = SpecTaskExecutionService.getInstance(project)
+        val run = executionService.createRun(
+            workflowId = workflow.id,
+            taskId = task.id,
+            status = TaskExecutionRunStatus.SUCCEEDED,
+            trigger = ExecutionTrigger.USER_EXECUTE,
+            startedAt = "2026-03-18T10:20:00Z",
+            finishedAt = "2026-03-18T10:21:00Z",
+            summary = "Terminal run already completed.",
+        )
+
+        val sessionManager = SessionManager.getInstance(project)
+        val session = sessionManager.createSession(
+            title = "Terminal execution launch restore",
+            specTaskId = workflow.id,
+            workflowChatBinding = WorkflowChatBinding(
+                workflowId = workflow.id,
+                focusedStage = StageId.IMPLEMENT,
+                source = WorkflowChatEntrySource.SESSION_RESTORE,
+                actionIntent = WorkflowChatActionIntent.EXECUTE_TASK,
+            ),
+        ).getOrThrow()
+        sessionManager.addMessage(
+            sessionId = session.id,
+            role = ConversationRole.USER,
+            content = "Execute ${task.id} with the recorded task context.",
+            metadataJson = TaskExecutionSessionMetadataCodec.encode(
+                run = run,
+                workflowId = workflow.id,
+                requestId = "request-terminal-restore",
+                providerId = "mock",
+                modelId = "mock-model-v1",
+                previousRunId = null,
+                launchPresentation = WorkflowChatExecutionLaunchPresentation(
+                    workflowId = workflow.id,
+                    taskId = task.id,
+                    taskTitle = task.title,
+                    runId = run.runId,
+                    focusedStage = StageId.IMPLEMENT,
+                    trigger = ExecutionTrigger.USER_EXECUTE,
+                    launchSurface = WorkflowChatExecutionLaunchSurface.WORKFLOW_CHAT,
+                    taskStatusBeforeExecution = TaskStatus.PENDING,
+                    taskPriority = task.priority,
+                ),
+            ),
+        ).getOrThrow()
+        sessionManager.addMessage(
+            sessionId = session.id,
+            role = ConversationRole.ASSISTANT,
+            content = "Execution already finished; keep this as a plain history bubble.",
+        ).getOrThrow()
+
+        val toolWindow = registerSpecCodeToolWindow()
+        ApplicationManager.getApplication().invokeAndWait {
+            ChatToolWindowFactory().createToolWindowContent(project, toolWindow)
+        }
+        UIUtil.dispatchAllInvocationEvents()
+
+        val chatPanel = currentChatPanel(toolWindow)
+
+        openSessionFromHistory(session.id)
+
+        waitUntil(timeoutMs = 10_000) {
+            chatPanel.messageCountForTest() == 2 &&
+                chatPanel.executionLaunchSnapshotForTest().getValue("visible") == "false"
+        }
+
+        val snapshot = chatPanel.executionLaunchSnapshotForTest()
+        assertEquals("false", snapshot.getValue("visible"))
         assertEquals(2, chatPanel.messageCountForTest())
     }
 
