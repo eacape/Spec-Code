@@ -186,7 +186,22 @@ class SpecArchitectureContractTest {
             .map { it.fileName }
             .toSortedSet()
 
-        assertEquals(fileNames, configured)
+        val missing = fileNames - configured
+        val stale = configured - fileNames
+
+        assertTrue(
+            missing.isEmpty() && stale.isEmpty(),
+            buildString {
+                appendLine("Spec architecture contract drift detected.")
+                appendLine("Every Kotlin source under spec/ must be registered in SpecArchitectureContract.sourceRules.")
+                if (missing.isNotEmpty()) {
+                    appendLine("Missing rules: ${missing.joinToString(", ")}")
+                }
+                if (stale.isNotEmpty()) {
+                    appendLine("Stale rules: ${stale.joinToString(", ")}")
+                }
+            },
+        )
     }
 
     @Test

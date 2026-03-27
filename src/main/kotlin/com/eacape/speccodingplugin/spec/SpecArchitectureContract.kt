@@ -286,6 +286,8 @@ object SpecArchitectureContract {
         ),
     )
 
+    // Keep this list in sync with every Kotlin source under `spec/`.
+    // The architecture test treats missing or stale entries as contract drift.
     val sourceRules: List<SourceRule> = listOf(
         SourceRule(
             fileName = "ArtifactDraftStateSupport.kt",
@@ -386,6 +388,11 @@ object SpecArchitectureContract {
         ),
         SourceRule(
             fileName = "SpecHistoryModels.kt",
+            layer = Layer.DOMAIN,
+            blockedImportPrefixes = domainBlockedImportPrefixes,
+        ),
+        SourceRule(
+            fileName = "SpecImplementStageReadiness.kt",
             layer = Layer.DOMAIN,
             blockedImportPrefixes = domainBlockedImportPrefixes,
         ),
