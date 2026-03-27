@@ -1,5 +1,6 @@
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.gradle.api.GradleException
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.io.File
 import java.util.Locale
 
@@ -40,14 +41,6 @@ repositories {
 
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
-    implementation("io.ktor:ktor-client-core:2.3.12") {
-        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
-        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core-jvm")
-    }
-    implementation("io.ktor:ktor-client-cio:2.3.12") {
-        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core")
-        exclude(group = "org.jetbrains.kotlinx", module = "kotlinx-coroutines-core-jvm")
-    }
     implementation("org.yaml:snakeyaml:2.2")
     implementation("org.xerial:sqlite-jdbc:3.47.2.0")
     implementation("org.eclipse.jgit:org.eclipse.jgit:6.10.0.202406032230-r")
@@ -102,6 +95,20 @@ data class OversizedSourceFinding(
     val lineCount: Int,
 )
 
+data class FrozenSourceBudget(
+    val label: String,
+    val relativePath: String,
+    val maxLines: Int,
+)
+
+data class FrozenSourceBudgetResult(
+    val budget: FrozenSourceBudget,
+    val lineCount: Int,
+) {
+    val growth: Int
+        get() = lineCount - budget.maxLines
+}
+
 fun countFileLines(file: File): Int = file.useLines { lines -> lines.count() }
 
 val oversizedSourceScopes = listOf(
@@ -119,13 +126,34 @@ val oversizedSourceScopes = listOf(
     ),
 )
 
+val frozenUiHotspotBudgets = listOf(
+    FrozenSourceBudget(
+        label = "ImprovedChatPanel",
+        relativePath = "src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt",
+        maxLines = 8377,
+    ),
+    FrozenSourceBudget(
+        label = "SpecWorkflowPanel",
+        relativePath = "src/main/kotlin/com/eacape/speccodingplugin/ui/spec/SpecWorkflowPanel.kt",
+        maxLines = 6028,
+    ),
+    FrozenSourceBudget(
+        label = "SpecDetailPanel",
+        relativePath = "src/main/kotlin/com/eacape/speccodingplugin/ui/spec/SpecDetailPanel.kt",
+        maxLines = 4545,
+    ),
+)
+
 kotlin {
-    jvmToolchain(17)
+    jvmToolchain(21)
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_21)
+    }
 }
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_17
-    targetCompatibility = JavaVersion.VERSION_17
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
 }
 
 intellijPlatform {
@@ -293,6 +321,53 @@ tasks {
         }
     }
 
+    val uiHotspotGrowthGuard = register("uiHotspotGrowthGuard") {
+        group = "verification"
+        description = "Fail when frozen UI hotspot files grow beyond their current baseline"
+
+        doLast {
+            val isGitHubActions = System.getenv("GITHUB_ACTIONS") == "true"
+            val results = frozenUiHotspotBudgets.map { budget ->
+                val sourceFile = layout.projectDirectory.file(budget.relativePath).asFile
+                if (!sourceFile.exists()) {
+                    throw GradleException("Frozen UI hotspot file is missing: ${budget.relativePath}")
+                }
+
+                FrozenSourceBudgetResult(
+                    budget = budget,
+                    lineCount = countFileLines(sourceFile),
+                )
+            }
+
+            val violations = results.filter { result ->
+                result.lineCount > result.budget.maxLines
+            }
+
+            if (violations.isEmpty()) {
+                logger.lifecycle(
+                    "UI hotspot growth guard passed for {} frozen files.",
+                    results.size,
+                )
+                return@doLast
+            }
+
+            violations.forEach { result ->
+                val message =
+                    "${result.budget.label} grew from baseline ${result.budget.maxLines} lines to ${result.lineCount} lines (+${result.growth}). " +
+                        "Extract orchestration or state logic out of ${result.budget.relativePath} instead of growing the panel."
+                logger.error(message)
+                if (isGitHubActions) {
+                    println("::error file=${result.budget.relativePath}::$message")
+                }
+            }
+
+            throw GradleException(
+                "UI hotspot growth guard failed for ${violations.size} frozen file(s). " +
+                    "Keep the frozen panels at or below baseline size until the refactor lands."
+            )
+        }
+    }
+
     val phase1AcceptanceTest by registering(Test::class) {
         group = "verification"
         description = "Run Phase 1 acceptance-oriented automated test subset"
@@ -321,8 +396,8 @@ tasks {
 
     register("ciCheck") {
         group = "verification"
-        description = "Run minimal CI verification: compile, oversized source audit, core regression tests, architecture contract, and plugin packaging"
-        dependsOn("compileKotlin", largeFileWarningAudit, coreRegressionTest, architectureRegressionTest, "buildPlugin")
+        description = "Run minimal CI verification: plugin config, compile, oversized source audit, frozen UI hotspot guard, core regression tests, architecture contract, and plugin packaging"
+        dependsOn("verifyPluginProjectConfiguration", "compileKotlin", largeFileWarningAudit, uiHotspotGrowthGuard, coreRegressionTest, architectureRegressionTest, "buildPlugin")
     }
 
     val phase3CoverageReport by registering {

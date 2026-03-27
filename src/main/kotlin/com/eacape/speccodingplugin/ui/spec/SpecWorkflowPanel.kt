@@ -99,12 +99,8 @@ class SpecWorkflowPanel(
     private val deferInitialWorkflowRefresh: Boolean = false,
 ) : JBPanel<SpecWorkflowPanel>(BorderLayout()), Disposable {
 
-    private enum class DocumentWorkspaceView {
-        DOCUMENT,
-        STRUCTURED_TASKS,
-    }
-
     private val logger = thisLogger()
+    private val workflowPanelState = SpecWorkflowPanelState()
     private val specEngine = SpecEngine.getInstance(project)
     private val specDeltaService = SpecDeltaService.getInstance(project)
     private val specTasksService = SpecTasksService.getInstance(project)
@@ -171,6 +167,49 @@ class SpecWorkflowPanel(
         onTaskSelected = ::onStructuredTaskSelectionChanged,
         showHeader = false,
         fixedViewportHeight = DOCUMENT_WORKSPACE_VIEWPORT_HEIGHT,
+    )
+    private val workbenchCommandRouter = SpecWorkflowWorkbenchCommandRouter(
+        callbacks = object : SpecWorkflowWorkbenchCommandCallbacks {
+            override fun advance() = onAdvanceStageRequested()
+
+            override fun jump(workflowId: String, targetStage: StageId) = previewAndJumpToStage(workflowId, targetStage)
+
+            override fun jumpFallback() = onJumpStageRequested()
+
+            override fun rollback(workflowId: String, targetStage: StageId) = executeRollbackStage(workflowId, targetStage)
+
+            override fun rollbackFallback() = onRollbackStageRequested()
+
+            override fun selectTask(taskId: String) = syncStructuredTaskSelection(taskId)
+
+            override fun requestTaskExecution(taskId: String): Boolean = tasksPanel.requestExecutionForTask(taskId)
+
+            override fun requestTaskCompletion(taskId: String): Boolean = tasksPanel.requestCompletionForTask(taskId)
+
+            override fun cancelTaskExecution(taskId: String) = onTaskExecutionCancelRequested(taskId)
+
+            override fun openTaskChat(workflowId: String, taskId: String) = onTaskWorkflowChatRequested(workflowId, taskId)
+
+            override fun runVerify(workflowId: String) = onRunVerificationRequested(workflowId)
+
+            override fun previewVerifyPlan(workflowId: String) = onPreviewVerificationPlanRequested(workflowId)
+
+            override fun openVerification(workflowId: String) = onOpenVerificationRequested(workflowId)
+
+            override fun showDelta() = onShowDelta()
+
+            override fun completeWorkflow() = onComplete()
+
+            override fun archiveWorkflow() = onArchiveWorkflow()
+
+            override fun showStatus(text: String) = setStatusText(text)
+        },
+        taskExecutionFailedMessage = { taskId ->
+            SpecCodingBundle.message("spec.toolwindow.tasks.execute.failed", taskId)
+        },
+        taskCompletionFailedMessage = { taskId ->
+            SpecCodingBundle.message("spec.toolwindow.tasks.complete.failed", taskId)
+        },
     )
     private val verifyDeltaPanel = SpecWorkflowVerifyDeltaPanel(
         onRunVerifyRequested = ::onRunVerificationRequested,
@@ -259,18 +298,52 @@ class SpecWorkflowPanel(
         isRepeats = true
     }
 
-    private var selectedWorkflowId: String? = null
-    private var highlightedWorkflowId: String? = null
     private var currentWorkflow: SpecWorkflow? = null
-    private var focusedStage: StageId? = null
-    private var selectedDocumentWorkspaceView: DocumentWorkspaceView = DocumentWorkspaceView.DOCUMENT
-    private var selectedStructuredTaskId: String? = null
     private var isSynchronizingStructuredTaskSelection: Boolean = false
-    private var pendingOpenWorkflowRequest: SpecToolWindowOpenRequest? = null
     private var isWorkspaceMode: Boolean = false
     private var detailDividerLocation: Int = 210
     private var workflowSwitcherPopup: SpecWorkflowSwitcherPopup? = null
     private var initialWorkflowRefreshTriggered = false
+
+    private var selectedWorkflowId: String?
+        get() = workflowPanelState.selectedWorkflowId
+        set(value) {
+            workflowPanelState.selectedWorkflowId = value
+        }
+
+    private var highlightedWorkflowId: String?
+        get() = workflowPanelState.highlightedWorkflowId
+        set(value) {
+            workflowPanelState.highlightedWorkflowId = value
+        }
+
+    private var focusedStage: StageId?
+        get() = workflowPanelState.focusedStage
+        set(value) {
+            workflowPanelState.focusedStage = value
+        }
+
+    private var selectedDocumentWorkspaceView: DocumentWorkspaceView
+        get() = workflowPanelState.selectedDocumentWorkspaceView
+        set(value) {
+            workflowPanelState.selectedDocumentWorkspaceView = value
+        }
+
+    private var selectedStructuredTaskId: String?
+        get() = workflowPanelState.selectedStructuredTaskId
+        set(value) {
+            workflowPanelState.selectedStructuredTaskId = value
+        }
+
+    private var pendingOpenWorkflowRequest: SpecToolWindowOpenRequest?
+        get() = workflowPanelState.pendingOpenWorkflowRequest
+        set(value) {
+            if (value == null) {
+                workflowPanelState.clearPendingOpenRequest()
+            } else {
+                workflowPanelState.rememberPendingOpenRequest(value)
+            }
+        }
 
     init {
         border = JBUI.Borders.empty(8)
@@ -1876,13 +1949,10 @@ class SpecWorkflowPanel(
     }
 
     private fun clearOpenedWorkflowUi(resetHighlight: Boolean = false) {
-        selectedWorkflowId = null
+        workflowPanelState.clearOpenedWorkflow(resetHighlight = resetHighlight)
         currentWorkflow = null
         currentWorkflowSources = emptyList()
-        focusedStage = null
         currentWorkbenchState = null
-        selectedDocumentWorkspaceView = DocumentWorkspaceView.DOCUMENT
-        selectedStructuredTaskId = null
         phaseIndicator.reset()
         overviewPanel.showEmpty()
         tasksPanel.showEmpty()
@@ -1947,9 +2017,7 @@ class SpecWorkflowPanel(
                 switchWorkflowButton.isEnabled = items.isNotEmpty()
                 setStatusText(null)
                 val workflowIds = items.asSequence().map { it.workflowId }.toSet()
-                if (pendingOpenWorkflowRequest?.workflowId?.let { it !in workflowIds } == true) {
-                    pendingOpenWorkflowRequest = null
-                }
+                workflowPanelState.dropPendingOpenRequestIfInvalid(workflowIds)
                 val validHighlightedWorkflowId = highlightedWorkflowId?.takeIf(workflowIds::contains)
                 val targetOpenedWorkflowId = selectWorkflowId?.takeIf(workflowIds::contains)
                     ?: selectedWorkflowId?.takeIf(workflowIds::contains)
@@ -1979,14 +2047,14 @@ class SpecWorkflowPanel(
     }
 
     private fun onWorkflowFocusedByUser(workflowId: String) {
-        highlightedWorkflowId = workflowId
+        workflowPanelState.highlightWorkflow(workflowId)
         if (selectedWorkflowId != null && selectedWorkflowId != workflowId) {
             clearOpenedWorkflowUi(resetHighlight = false)
         }
     }
 
     private fun onWorkflowOpenedByUser(workflowId: String) {
-        highlightedWorkflowId = workflowId
+        workflowPanelState.highlightWorkflow(workflowId)
         selectWorkflow(workflowId)
         publishWorkflowSelection(workflowId)
     }
@@ -2010,12 +2078,7 @@ class SpecWorkflowPanel(
 
     private fun selectWorkflow(workflowId: String) {
         val previousSelectedWorkflowId = selectedWorkflowId
-        selectedWorkflowId = workflowId
-        if (previousSelectedWorkflowId != workflowId) {
-            focusedStage = null
-            selectedDocumentWorkspaceView = DocumentWorkspaceView.DOCUMENT
-            selectedStructuredTaskId = null
-        }
+        workflowPanelState.selectWorkflow(workflowId)
         overviewPanel.showLoading()
         verifyDeltaPanel.showLoading()
         tasksPanel.showLoading()
@@ -5564,11 +5627,11 @@ class SpecWorkflowPanel(
     }
 
     private fun openWorkflowFromRequest(request: SpecToolWindowOpenRequest) {
-        val normalizedWorkflowId = request.workflowId.trim().ifBlank { return }
-        pendingOpenWorkflowRequest = request.copy(
-            workflowId = normalizedWorkflowId,
-            taskId = request.taskId?.trim()?.ifBlank { null },
-        )
+        val normalizedRequest = workflowPanelState.rememberPendingOpenRequest(request)
+        val normalizedWorkflowId = normalizedRequest.workflowId.ifBlank {
+            workflowPanelState.clearPendingOpenRequest()
+            return
+        }
         if (selectedWorkflowId == normalizedWorkflowId && currentWorkflow?.id == normalizedWorkflowId) {
             applyPendingOpenWorkflowRequestIfNeeded(normalizedWorkflowId)
             if (pendingOpenWorkflowRequest == null) {
@@ -5591,7 +5654,7 @@ class SpecWorkflowPanel(
                 updateDocumentWorkspaceViewPresentation(currentWorkbenchState)
             }
         }
-        pendingOpenWorkflowRequest = null
+        workflowPanelState.clearPendingOpenRequest()
     }
 
     private fun publishWorkflowChatRefresh(
@@ -5620,84 +5683,7 @@ class SpecWorkflowPanel(
     }
 
     private fun onWorkbenchActionRequested(action: SpecWorkflowWorkbenchAction) {
-        when (action.kind) {
-            SpecWorkflowWorkbenchActionKind.ADVANCE -> onAdvanceStageRequested()
-            SpecWorkflowWorkbenchActionKind.JUMP -> {
-                val workflowId = currentWorkflow?.id
-                val targetStage = action.targetStage
-                if (workflowId != null && targetStage != null) {
-                    previewAndJumpToStage(workflowId, targetStage)
-                } else {
-                    onJumpStageRequested()
-                }
-            }
-
-            SpecWorkflowWorkbenchActionKind.ROLLBACK -> {
-                val workflowId = currentWorkflow?.id
-                val targetStage = action.targetStage
-                if (workflowId != null && targetStage != null) {
-                    executeRollbackStage(workflowId, targetStage)
-                } else {
-                    onRollbackStageRequested()
-                }
-            }
-
-            SpecWorkflowWorkbenchActionKind.START_TASK -> {
-                val taskId = action.taskId ?: return
-                syncStructuredTaskSelection(taskId)
-                if (!tasksPanel.requestExecutionForTask(taskId)) {
-                    setStatusText(SpecCodingBundle.message("spec.toolwindow.tasks.execute.failed", taskId))
-                }
-            }
-
-            SpecWorkflowWorkbenchActionKind.RESUME_TASK -> {
-                val taskId = action.taskId ?: return
-                syncStructuredTaskSelection(taskId)
-                if (!tasksPanel.requestExecutionForTask(taskId)) {
-                    setStatusText(SpecCodingBundle.message("spec.toolwindow.tasks.execute.failed", taskId))
-                }
-            }
-
-            SpecWorkflowWorkbenchActionKind.COMPLETE_TASK -> {
-                val taskId = action.taskId ?: return
-                syncStructuredTaskSelection(taskId)
-                if (!tasksPanel.requestCompletionForTask(taskId)) {
-                    setStatusText(SpecCodingBundle.message("spec.toolwindow.tasks.complete.failed", taskId))
-                }
-            }
-
-            SpecWorkflowWorkbenchActionKind.STOP_TASK_EXECUTION -> {
-                val taskId = action.taskId ?: return
-                onTaskExecutionCancelRequested(taskId)
-            }
-
-            SpecWorkflowWorkbenchActionKind.OPEN_TASK_CHAT -> {
-                val workflowId = currentWorkflow?.id ?: return
-                val taskId = action.taskId ?: return
-                onTaskWorkflowChatRequested(workflowId, taskId)
-            }
-
-            SpecWorkflowWorkbenchActionKind.RUN_VERIFY -> {
-                val workflowId = currentWorkflow?.id ?: return
-                onRunVerificationRequested(workflowId)
-            }
-
-            SpecWorkflowWorkbenchActionKind.PREVIEW_VERIFY_PLAN -> {
-                val workflowId = currentWorkflow?.id ?: return
-                onPreviewVerificationPlanRequested(workflowId)
-            }
-
-            SpecWorkflowWorkbenchActionKind.OPEN_VERIFICATION -> {
-                val workflowId = currentWorkflow?.id ?: return
-                onOpenVerificationRequested(workflowId)
-            }
-
-            SpecWorkflowWorkbenchActionKind.SHOW_DELTA -> onShowDelta()
-
-            SpecWorkflowWorkbenchActionKind.COMPLETE_WORKFLOW -> onComplete()
-
-            SpecWorkflowWorkbenchActionKind.ARCHIVE_WORKFLOW -> onArchiveWorkflow()
-        }
+        workbenchCommandRouter.dispatch(action, currentWorkflow?.id)
     }
 
     private fun onPreviewVerificationPlanRequested(workflowId: String) {
