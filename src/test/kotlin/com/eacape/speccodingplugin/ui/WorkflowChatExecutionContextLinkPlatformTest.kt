@@ -433,6 +433,73 @@ class WorkflowChatExecutionContextLinkPlatformTest : BasePlatformTestCase() {
         assertFalse(snapshot.getValue("content").contains("Interaction mode: workflow"))
     }
 
+    fun `test history restore should keep plain user bubble when execution metadata lacks execution summary`() {
+        val workflow = SpecEngine.getInstance(project).createWorkflow(
+            title = "Workflow Chat Plain Bubble Restore",
+            description = "history restore should not promote plain chat into execution launch card",
+        ).getOrThrow()
+        val task = SpecTasksService(project).addTask(
+            workflowId = workflow.id,
+            title = "Keep plain chat bubble on restore",
+            priority = TaskPriority.P2,
+        )
+        stageWorkflow(
+            workflowId = workflow.id,
+            currentStage = StageId.IMPLEMENT,
+            verifyEnabled = false,
+            includeTasksDocument = true,
+        )
+
+        val sessionManager = SessionManager.getInstance(project)
+        val session = sessionManager.createSession(
+            title = "Plain bubble history restore",
+            specTaskId = workflow.id,
+            workflowChatBinding = WorkflowChatBinding(
+                workflowId = workflow.id,
+                focusedStage = StageId.IMPLEMENT,
+                source = WorkflowChatEntrySource.SESSION_RESTORE,
+                actionIntent = WorkflowChatActionIntent.DISCUSS,
+            ),
+        ).getOrThrow()
+        sessionManager.addMessage(
+            sessionId = session.id,
+            role = ConversationRole.USER,
+            content = "hello",
+            metadataJson = """
+                {
+                  "runId": "run-plain-bubble",
+                  "taskId": "${task.id}",
+                  "workflowId": "${workflow.id}",
+                  "requestId": "request-plain-bubble"
+                }
+            """.trimIndent(),
+        ).getOrThrow()
+        sessionManager.addMessage(
+            sessionId = session.id,
+            role = ConversationRole.ASSISTANT,
+            content = "Plain chat response should stay plain after restore.",
+        ).getOrThrow()
+
+        val toolWindow = registerSpecCodeToolWindow()
+        ApplicationManager.getApplication().invokeAndWait {
+            ChatToolWindowFactory().createToolWindowContent(project, toolWindow)
+        }
+        UIUtil.dispatchAllInvocationEvents()
+
+        val chatPanel = currentChatPanel(toolWindow)
+
+        openSessionFromHistory(session.id)
+
+        waitUntil(timeoutMs = 10_000) {
+            chatPanel.messageCountForTest() == 2 &&
+                chatPanel.executionLaunchSnapshotForTest().getValue("visible") == "false"
+        }
+
+        val launchSnapshot = chatPanel.executionLaunchSnapshotForTest()
+        assertEquals("false", launchSnapshot.getValue("visible"))
+        assertEquals(2, chatPanel.messageCountForTest())
+    }
+
     fun `test cancelling task execution should keep one finished trace panel in workflow chat`() {
         val workflow = SpecEngine.getInstance(project).createWorkflow(
             title = "Workflow Chat Cancel Dedupe",

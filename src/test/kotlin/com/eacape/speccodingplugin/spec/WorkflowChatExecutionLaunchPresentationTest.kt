@@ -2,6 +2,7 @@ package com.eacape.speccodingplugin.spec
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -163,6 +164,63 @@ class WorkflowChatExecutionLaunchPresentationTest {
             notice.fallbackReason,
         )
         assertTrue(notice.rawPromptDebugAvailable)
+    }
+
+    @Test
+    fun `decoded task execution metadata should restore compact card from execution summary`() {
+        val run = TaskExecutionRun(
+            runId = "run-019",
+            taskId = "T-019",
+            status = TaskExecutionRunStatus.QUEUED,
+            trigger = ExecutionTrigger.USER_EXECUTE,
+            startedAt = "2026-03-18T09:20:00Z",
+        )
+        val encodedMetadata = TaskExecutionSessionMetadataCodec.encode(
+            run = run,
+            workflowId = "wf-chat-launch",
+            requestId = "request-019",
+            providerId = "mock",
+            modelId = "mock-model-v1",
+            previousRunId = null,
+        )
+
+        val decoded = TaskExecutionSessionMetadataCodec.decode(encodedMetadata)
+        val payload = decoded.resolveExecutionLaunchRestorePayload(
+            """
+                ## Execution Request
+                - Task: T-019
+                - Workflow: wf-chat-launch
+                - Run: run-019
+            """.trimIndent(),
+        )
+
+        assertTrue(payload is WorkflowChatExecutionLaunchRestorePayload.LegacyCompact)
+        val notice = (payload as WorkflowChatExecutionLaunchRestorePayload.LegacyCompact).notice
+        assertEquals("wf-chat-launch", notice.workflowId)
+        assertEquals("T-019", notice.taskId)
+        assertEquals("run-019", notice.runId)
+        assertEquals(
+            WorkflowChatExecutionLaunchFallbackReason.MISSING_PRESENTATION_METADATA,
+            notice.fallbackReason,
+        )
+    }
+
+    @Test
+    fun `decoded task execution metadata should ignore plain user bubble content`() {
+        val decoded = TaskExecutionSessionMetadataCodec.decode(
+            """
+                {
+                  "runId": "run-020",
+                  "taskId": "T-020",
+                  "workflowId": "wf-chat-launch",
+                  "requestId": "request-020"
+                }
+            """.trimIndent(),
+        )
+
+        val payload = decoded.resolveExecutionLaunchRestorePayload("hello")
+
+        assertNull(payload)
     }
 
     private fun legacyExecutionPrompt(): String {

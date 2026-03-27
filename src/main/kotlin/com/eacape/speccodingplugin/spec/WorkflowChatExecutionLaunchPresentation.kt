@@ -83,6 +83,7 @@ internal sealed interface WorkflowChatExecutionLaunchRestorePayload {
 }
 
 internal object WorkflowChatExecutionLaunchRestoreResolver {
+    private const val COMPACT_EXECUTION_SUMMARY_HEADING = "## Execution Request"
     private const val WORKFLOW_PREFIX = "Workflow="
     private const val EXECUTION_ACTION_PREFIX = "Execution action:"
     private const val RUN_ID_PREFIX = "Run ID:"
@@ -118,6 +119,10 @@ internal object WorkflowChatExecutionLaunchRestoreResolver {
         }
 
         val snapshot = parseLegacyPrompt(normalizedPrompt)
+        val isCompactExecutionSummary = normalizedPrompt.contains(COMPACT_EXECUTION_SUMMARY_HEADING)
+        if (snapshot == null && !isCompactExecutionSummary) {
+            return null
+        }
         val notice = WorkflowChatExecutionLegacyCompactNotice(
             workflowId = snapshot?.workflowId ?: workflowId,
             taskId = snapshot?.taskId ?: taskId,
@@ -128,11 +133,7 @@ internal object WorkflowChatExecutionLaunchRestoreResolver {
             launchSurface = launchSurface,
             sectionKinds = snapshot?.sectionKinds.orEmpty(),
             supplementalInstructionPresent = snapshot?.supplementalInstructionPresent == true,
-            fallbackReason = if (snapshot != null) {
-                WorkflowChatExecutionLaunchFallbackReason.MISSING_PRESENTATION_METADATA
-            } else {
-                WorkflowChatExecutionLaunchFallbackReason.UNRECOGNIZED_LEGACY_PROMPT
-            },
+            fallbackReason = WorkflowChatExecutionLaunchFallbackReason.MISSING_PRESENTATION_METADATA,
             rawPromptDebugAvailable = normalizedPrompt.isNotBlank(),
         )
         return WorkflowChatExecutionLaunchRestorePayload.LegacyCompact(notice)

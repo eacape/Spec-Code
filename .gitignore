@@ -69,3 +69,4 @@ logs/
 /.gradle-test-home/
 /.gradle-local/
 /.gradle-user/
+/build-codex-temp/

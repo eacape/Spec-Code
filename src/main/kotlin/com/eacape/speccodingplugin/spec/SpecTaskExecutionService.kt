@@ -1814,6 +1814,7 @@ private fun ExecutionTrigger.toExecutionActionName(): String {
 }
 
 internal object TaskExecutionSessionMetadataCodec {
+    private const val TASK_EXECUTION_SESSION_FORMAT = "task_execution_session_v1"
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
@@ -1847,7 +1848,7 @@ internal object TaskExecutionSessionMetadataCodec {
         finishedAtMillis: Long? = null,
     ): String {
         val payload = linkedMapOf<String, JsonElement>(
-            "format" to JsonPrimitive("task_execution_session_v1"),
+            "format" to JsonPrimitive(TASK_EXECUTION_SESSION_FORMAT),
             "runId" to JsonPrimitive(run.runId),
             "taskId" to JsonPrimitive(run.taskId),
             "workflowId" to JsonPrimitive(workflowId),
@@ -1908,6 +1909,10 @@ internal object TaskExecutionSessionMetadataCodec {
         val root = runCatching { json.parseToJsonElement(metadataJson) as? JsonObject }
             .getOrNull()
             ?: return DecodedMetadata(null, null, null, null, null, null, null, null, null, null)
+        val format = root["format"]?.toString()?.trim('"')
+        if (format != null && format != TASK_EXECUTION_SESSION_FORMAT) {
+            return DecodedMetadata(null, null, null, null, null, null, null, null, null, null)
+        }
         val trigger = root["trigger"]
             ?.toString()
             ?.trim('"')
