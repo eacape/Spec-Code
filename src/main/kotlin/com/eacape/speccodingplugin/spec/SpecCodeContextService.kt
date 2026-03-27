@@ -19,6 +19,15 @@ class SpecCodeContextService(private val project: Project) {
     private var workspaceCandidateFilesProviderOverride: (() -> List<String>)? = null
     private var projectConfigLoaderOverride: (() -> SpecProjectConfig)? = null
     private var vcsCodeChangeProviderOverride: ((Path) -> CodeChangeSummary?)? = null
+    private val codeContextCacheLock = Any()
+    private val codeContextCache =
+        object : LinkedHashMap<CodeContextCacheKey, CachedCodeContextPack>(16, 0.75f, true) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<CodeContextCacheKey, CachedCodeContextPack>?,
+            ): Boolean {
+                return size > MAX_CODE_CONTEXT_CACHE_ENTRIES
+            }
+        }
 
     internal constructor(
         project: Project,
@@ -36,6 +45,25 @@ class SpecCodeContextService(private val project: Project) {
         phase: SpecPhase = workflow.currentPhase,
         explicitFileHints: List<String> = emptyList(),
     ): CodeContextPack {
+        val normalizedExplicitHints = explicitFileHints
+            .asSequence()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .distinct()
+            .sorted()
+            .toList()
+        val cacheKey = CodeContextCacheKey(
+            workflowId = workflow.id,
+            workflowUpdatedAt = workflow.updatedAt,
+            phase = phase,
+            explicitFileHints = normalizedExplicitHints,
+        )
+        val now = System.currentTimeMillis()
+        synchronized(codeContextCacheLock) {
+            codeContextCache[cacheKey]
+                ?.takeIf { cached -> now - cached.createdAtMillis <= CODE_CONTEXT_CACHE_TTL_MILLIS }
+                ?.let { cached -> return cached.pack }
+        }
         val strategy = CodeContextCollectionStrategy.forPhase(phase)
         val projectRoot = resolveProjectRoot()
             ?: return CodeContextPack(
@@ -57,7 +85,7 @@ class SpecCodeContextService(private val project: Project) {
             emptyList()
         }
         val normalizedExplicitFileHints = if (strategy.includeExplicitFileHints) {
-            explicitFileHints
+            normalizedExplicitHints
                 .mapNotNull { hint -> normalizeProjectRelativePath(hint, projectRoot) }
                 .distinct()
         } else {
@@ -93,13 +121,26 @@ class SpecCodeContextService(private val project: Project) {
             verificationEntryPoints = verificationEntryPoints,
         )
         if (pack.hasAutoContext()) {
+            synchronized(codeContextCacheLock) {
+                codeContextCache[cacheKey] = CachedCodeContextPack(
+                    createdAtMillis = now,
+                    pack = pack,
+                )
+            }
             return pack
         }
-        return pack.copy(
+        val degradedPack = pack.copy(
             degradationReasons = listOf(
                 "No local code context signals were collected; fall back to artifact/source-only context.",
             ),
         )
+        synchronized(codeContextCacheLock) {
+            codeContextCache[cacheKey] = CachedCodeContextPack(
+                createdAtMillis = now,
+                pack = degradedPack,
+            )
+        }
+        return degradedPack
     }
 
     private fun collectProjectStructure(
@@ -374,6 +415,8 @@ class SpecCodeContextService(private val project: Project) {
     }
 
     companion object {
+        private const val CODE_CONTEXT_CACHE_TTL_MILLIS = 5_000L
+        private const val MAX_CODE_CONTEXT_CACHE_ENTRIES = 12
         private const val MAX_TOP_LEVEL_ENTRIES = 12
         private const val MAX_CONFIRMED_RELATED_FILES = 24
         private val WINDOWS_ABSOLUTE_PATH_REGEX = Regex("""^[a-zA-Z]:/.*""")
@@ -441,6 +484,18 @@ class SpecCodeContextService(private val project: Project) {
         fun getInstance(project: Project): SpecCodeContextService = project.service()
     }
 }
+
+private data class CodeContextCacheKey(
+    val workflowId: String,
+    val workflowUpdatedAt: Long,
+    val phase: SpecPhase,
+    val explicitFileHints: List<String>,
+)
+
+private data class CachedCodeContextPack(
+    val createdAtMillis: Long,
+    val pack: CodeContextPack,
+)
 
 internal class GitStatusCodeChangeSummaryProvider(private val projectRoot: Path) {
     fun collect(): CodeChangeSummary? {

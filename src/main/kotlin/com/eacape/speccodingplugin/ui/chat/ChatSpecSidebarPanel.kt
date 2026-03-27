@@ -7,25 +7,38 @@ import com.eacape.speccodingplugin.spec.SpecWorkflow
 import com.eacape.speccodingplugin.spec.WorkflowStatus
 import com.eacape.speccodingplugin.ui.RefreshFeedback
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.FlowLayout
 import java.awt.GridLayout
+import java.util.concurrent.atomic.AtomicLong
 import javax.swing.JButton
 import javax.swing.JPanel
 import javax.swing.ScrollPaneConstants
 import javax.swing.JTextPane
+import javax.swing.SwingUtilities
 
 internal class ChatSpecSidebarPanel(
     private val loadWorkflow: (String) -> Result<SpecWorkflow>,
     private val listWorkflows: () -> List<String>,
     private val onOpenDocument: ((workflowId: String, phase: SpecPhase) -> Unit)? = null,
     private val onEditWorkflow: ((workflowId: String) -> Unit)? = null,
-) : JPanel(BorderLayout()) {
+) : JPanel(BorderLayout()), Disposable {
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val reloadGeneration = AtomicLong(0)
 
     private val titleLabel = JBLabel()
     private val workflowLabel = JBLabel()
@@ -45,6 +58,11 @@ internal class ChatSpecSidebarPanel(
     private var currentWorkflowId: String? = null
     private var currentWorkflow: SpecWorkflow? = null
     private var selectedPhase: SpecPhase = SpecPhase.SPECIFY
+    private var reloadJob: Job? = null
+    private var pendingOpenCurrentPhaseDocument = false
+
+    @Volatile
+    private var disposed = false
 
     init {
         isOpaque = true
@@ -204,6 +222,8 @@ internal class ChatSpecSidebarPanel(
     fun currentFocusedWorkflowId(): String? = currentWorkflowId
 
     fun clearFocusedWorkflow() {
+        reloadJob?.cancel()
+        pendingOpenCurrentPhaseDocument = false
         currentWorkflowId = null
         currentWorkflow = null
         selectedPhase = SpecPhase.SPECIFY
@@ -222,25 +242,92 @@ internal class ChatSpecSidebarPanel(
         preferredPhase: SpecPhase?,
         allowFallbackToLatest: Boolean,
         showRefreshFeedback: Boolean = false,
+        openDocumentAfterLoad: Boolean = false,
     ) {
-        val workflowId = currentWorkflowId
+        if (disposed) return
+        pendingOpenCurrentPhaseDocument = pendingOpenCurrentPhaseDocument || openDocumentAfterLoad
+        val previousWorkflowId = currentWorkflow?.id
+        val requestedWorkflowId = currentWorkflowId
             ?.trim()
             ?.takeIf { it.isNotBlank() }
-            ?: if (allowFallbackToLatest) {
-                latestWorkflowIdOrNull()
-            } else {
-                null
+        val requestGeneration = reloadGeneration.incrementAndGet()
+        reloadJob?.cancel()
+        refreshButton.isEnabled = false
+        openFileButton.isEnabled = false
+        reloadJob = scope.launch(Dispatchers.IO) {
+            val outcome = resolveReloadOutcome(
+                requestedWorkflowId = requestedWorkflowId,
+                allowFallbackToLatest = allowFallbackToLatest,
+            )
+            dispatchToUi {
+                if (disposed || reloadGeneration.get() != requestGeneration) {
+                    return@dispatchToUi
+                }
+                refreshButton.isEnabled = true
+                applyReloadOutcome(
+                    outcome = outcome,
+                    preferredPhase = preferredPhase,
+                    previousWorkflowId = previousWorkflowId,
+                    showRefreshFeedback = showRefreshFeedback,
+                )
             }
-        if (workflowId.isNullOrBlank()) {
-            currentWorkflow = null
-            currentWorkflowId = null
-            showEmptyState(SpecCodingBundle.message("toolwindow.spec.command.status.none"))
-            return
         }
+    }
 
-        val previousWorkflowId = currentWorkflow?.id
-        loadWorkflow(workflowId)
-            .onSuccess { workflow ->
+    private sealed interface WorkflowReloadOutcome {
+        object Empty : WorkflowReloadOutcome
+
+        data class Success(val workflow: SpecWorkflow) : WorkflowReloadOutcome
+
+        data class Failure(val message: String) : WorkflowReloadOutcome
+    }
+
+    private fun resolveReloadOutcome(
+        requestedWorkflowId: String?,
+        allowFallbackToLatest: Boolean,
+    ): WorkflowReloadOutcome {
+        val workflowId = requestedWorkflowId ?: if (allowFallbackToLatest) {
+            latestWorkflowIdOrNull()
+        } else {
+            null
+        }
+        if (workflowId.isNullOrBlank()) {
+            return WorkflowReloadOutcome.Empty
+        }
+        return loadWorkflow(workflowId).fold(
+            onSuccess = { workflow -> WorkflowReloadOutcome.Success(workflow) },
+            onFailure = { error ->
+                WorkflowReloadOutcome.Failure(
+                    SpecCodingBundle.message(
+                        "toolwindow.spec.sidebar.loadFailed",
+                        error.message ?: SpecCodingBundle.message("common.unknown"),
+                    )
+                )
+            },
+        )
+    }
+
+    private fun applyReloadOutcome(
+        outcome: WorkflowReloadOutcome,
+        preferredPhase: SpecPhase?,
+        previousWorkflowId: String?,
+        showRefreshFeedback: Boolean,
+    ) {
+        when (outcome) {
+            WorkflowReloadOutcome.Empty -> {
+                currentWorkflow = null
+                currentWorkflowId = null
+                pendingOpenCurrentPhaseDocument = false
+                showEmptyState(SpecCodingBundle.message("toolwindow.spec.command.status.none"))
+            }
+
+            is WorkflowReloadOutcome.Failure -> {
+                pendingOpenCurrentPhaseDocument = false
+                showEmptyState(outcome.message)
+            }
+
+            is WorkflowReloadOutcome.Success -> {
+                val workflow = outcome.workflow
                 currentWorkflowId = workflow.id
                 currentWorkflow = workflow
                 selectedPhase = when {
@@ -254,15 +341,12 @@ internal class ChatSpecSidebarPanel(
                     RefreshFeedback.flashButtonSuccess(refreshButton, successText)
                     RefreshFeedback.flashLabelSuccess(statusLabel, successText, REFRESH_SUCCESS_FG)
                 }
+                if (pendingOpenCurrentPhaseDocument) {
+                    pendingOpenCurrentPhaseDocument = false
+                    openCurrentPhaseDocument()
+                }
             }
-            .onFailure { error ->
-                showEmptyState(
-                    SpecCodingBundle.message(
-                        "toolwindow.spec.sidebar.loadFailed",
-                        error.message ?: SpecCodingBundle.message("common.unknown"),
-                    )
-                )
-            }
+        }
     }
 
     private fun renderCurrentWorkflow() {
@@ -359,13 +443,18 @@ internal class ChatSpecSidebarPanel(
         if (maxChars <= 0) return ""
         val normalized = value.replace(Regex("\\s+"), " ").trim()
         if (normalized.length <= maxChars) return normalized
-        return normalized.take(maxChars - 1).trimEnd() + "…"
+        return normalized.take((maxChars - 3).coerceAtLeast(0)).trimEnd() + "..."
     }
 
     private fun openCurrentPhaseDocument() {
         val openDocument = onOpenDocument ?: return
         if (currentWorkflow == null) {
-            reloadWorkflow(preferredPhase = null, allowFallbackToLatest = true)
+            reloadWorkflow(
+                preferredPhase = null,
+                allowFallbackToLatest = true,
+                openDocumentAfterLoad = true,
+            )
+            return
         }
         val workflow = currentWorkflow ?: return
         val phase = workflow.currentPhase
@@ -389,14 +478,16 @@ internal class ChatSpecSidebarPanel(
                 .filter { it.isNotBlank() }
                 .sorted()
                 .lastOrNull()
-        }.onFailure { error ->
-            showEmptyState(
-                SpecCodingBundle.message(
-                    "toolwindow.spec.sidebar.loadFailed",
-                    error.message ?: SpecCodingBundle.message("common.unknown"),
-                ),
-            )
         }.getOrNull()
+    }
+
+    private fun dispatchToUi(action: () -> Unit) {
+        val application = ApplicationManager.getApplication()
+        if (application != null) {
+            application.invokeLater(action)
+        } else {
+            SwingUtilities.invokeLater(action)
+        }
     }
 
     private fun updatePhaseButtons(workflow: SpecWorkflow?) {
@@ -532,5 +623,11 @@ internal class ChatSpecSidebarPanel(
         private const val CONTROL_HEIGHT = 22
         private const val PHASE_CHIP_MIN_WIDTH = 76
         private val REFRESH_SUCCESS_FG = JBColor(Color(74, 154, 80), Color(112, 191, 118))
+    }
+
+    override fun dispose() {
+        disposed = true
+        reloadJob?.cancel()
+        scope.cancel()
     }
 }

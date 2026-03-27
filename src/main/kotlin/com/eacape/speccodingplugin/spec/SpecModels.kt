@@ -266,6 +266,7 @@ data class SpecWorkflow(
             template = template,
             stageStates = stageStates,
             currentStage = currentStage,
+            currentPhase = currentPhase,
             verifyEnabled = verifyEnabled,
             configPinHash = configPinHash,
             baselineWorkflowId = baselineWorkflowId,
@@ -273,6 +274,8 @@ data class SpecWorkflow(
             status = status,
             createdAt = createdAt,
             updatedAt = updatedAt,
+            description = description.ifBlank { null },
+            changeIntent = changeIntent,
         )
     }
 }

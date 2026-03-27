@@ -1,6 +1,8 @@
 package com.eacape.speccodingplugin.session
 
+import com.eacape.speccodingplugin.spec.SpecEngine
 import com.eacape.speccodingplugin.spec.SpecStorage
+import com.eacape.speccodingplugin.spec.SpecWorkflow
 import com.eacape.speccodingplugin.spec.TaskExecutionRun
 import com.eacape.speccodingplugin.spec.TaskExecutionRunStatus
 import com.intellij.openapi.components.Service
@@ -17,12 +19,12 @@ data class WorkflowChatExecutionContext(
 
 @Service(Service.Level.PROJECT)
 class WorkflowChatExecutionContextResolver(private val project: Project) {
-    private var _storageOverride: SpecStorage? = null
+    private var workflowLoaderOverride: ((String) -> SpecWorkflow?)? = null
 
-    private val storage: SpecStorage by lazy { _storageOverride ?: SpecStorage.getInstance(project) }
+    private val specEngine: SpecEngine by lazy { SpecEngine.getInstance(project) }
 
     internal constructor(project: Project, storage: SpecStorage) : this(project) {
-        _storageOverride = storage
+        workflowLoaderOverride = { workflowId -> storage.loadWorkflow(workflowId).getOrNull() }
     }
 
     fun resolve(binding: WorkflowChatBinding?): WorkflowChatExecutionContext? {
@@ -32,7 +34,9 @@ class WorkflowChatExecutionContextResolver(private val project: Project) {
 
     fun resolve(workflowId: String): WorkflowChatExecutionContext? {
         val normalizedWorkflowId = workflowId.trim().ifBlank { return null }
-        val workflow = storage.loadWorkflow(normalizedWorkflowId).getOrNull() ?: return null
+        val workflow = (workflowLoaderOverride
+            ?: { id -> specEngine.loadWorkflow(id).getOrNull() })(normalizedWorkflowId)
+            ?: return null
         return resolve(normalizedWorkflowId, workflow.taskExecutionRuns)
     }
 

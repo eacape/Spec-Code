@@ -129,7 +129,7 @@ class ChatToolWindowFactory : ToolWindowFactory, DumbAware {
         }
 
         private fun createSpecContent(project: Project): Content {
-            val specPanel = SpecWorkflowPanel(project)
+            val specPanel = SpecWorkflowPanel(project, deferInitialWorkflowRefresh = true)
             return ContentFactory.getInstance()
                 .createContent(specPanel, SpecCodingBundle.message("spec.tab.title"), false)
                 .also { content ->
@@ -267,7 +267,7 @@ class ChatToolWindowFactory : ToolWindowFactory, DumbAware {
                 if (isSpecContent(selectedContent)) {
                     (selectedContent.component as? SpecWorkflowPanel)?.let { panel ->
                         panel.syncToolbarSelectionFromSettings()
-                        panel.refreshWorkflows()
+                        panel.ensureInitialWorkflowRefresh()
                     }
                 }
             }

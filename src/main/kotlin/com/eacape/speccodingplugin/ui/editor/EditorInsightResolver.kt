@@ -11,6 +11,7 @@ import com.eacape.speccodingplugin.spec.WorkflowStatus
 import com.eacape.speccodingplugin.worktree.WorktreeBinding
 import com.eacape.speccodingplugin.worktree.WorktreeManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Key
 import java.nio.file.Paths
 
 internal data class EditorFileInsight(
@@ -39,13 +40,35 @@ internal class EditorInsightResolver(
     private val activeBindingsProvider: () -> List<WorktreeBinding>,
     private val workflowProvider: (String) -> SpecWorkflow?,
 ) {
+    private val insightCacheLock = Any()
+    private val insightCache =
+        object : LinkedHashMap<String, CachedEditorFileInsight>(64, 0.75f, true) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<String, CachedEditorFileInsight>?,
+            ): Boolean {
+                return size > MAX_CACHED_FILE_INSIGHTS
+            }
+        }
 
     fun resolve(filePath: String): EditorFileInsight {
         val normalizedPath = normalizePath(filePath) ?: return EditorFileInsight()
-        return EditorFileInsight(
+        val now = System.currentTimeMillis()
+        synchronized(insightCacheLock) {
+            insightCache[normalizedPath]
+                ?.takeIf { cached -> now - cached.createdAtMillis <= INSIGHT_CACHE_TTL_MILLIS }
+                ?.let { cached -> return cached.insight }
+        }
+        val insight = EditorFileInsight(
             aiChange = resolveAiChange(normalizedPath),
             specAssociation = resolveSpecAssociation(normalizedPath),
         )
+        synchronized(insightCacheLock) {
+            insightCache[normalizedPath] = CachedEditorFileInsight(
+                createdAtMillis = now,
+                insight = insight,
+            )
+        }
+        return insight
     }
 
     private fun resolveAiChange(normalizedFilePath: String): EditorAiChangeInsight? {
@@ -123,8 +146,14 @@ internal class EditorInsightResolver(
     companion object {
         private const val SPEC_STORAGE_MARKER = "/.spec-coding/specs/"
         private const val RECENT_CHANGESET_LIMIT = 40
+        private const val INSIGHT_CACHE_TTL_MILLIS = 2_000L
+        private const val MAX_CACHED_FILE_INSIGHTS = 256
+        private val PROJECT_RESOLVER_KEY = Key.create<EditorInsightResolver>("SpecCoding.EditorInsightResolver")
 
         fun forProject(project: Project): EditorInsightResolver {
+            project.getUserData(PROJECT_RESOLVER_KEY)?.let { resolver ->
+                return resolver
+            }
             val changesetStore = ChangesetStore.getInstance(project)
             val worktreeManager = WorktreeManager.getInstance(project)
             val specEngine = SpecEngine.getInstance(project)
@@ -132,10 +161,17 @@ internal class EditorInsightResolver(
                 recentChangesetsProvider = { changesetStore.getRecent(RECENT_CHANGESET_LIMIT) },
                 activeBindingsProvider = { worktreeManager.listBindings(includeInactive = false) },
                 workflowProvider = { workflowId -> specEngine.loadWorkflow(workflowId).getOrNull() },
-            )
+            ).also { resolver ->
+                project.putUserData(PROJECT_RESOLVER_KEY, resolver)
+            }
         }
     }
 }
+
+private data class CachedEditorFileInsight(
+    val createdAtMillis: Long,
+    val insight: EditorFileInsight,
+)
 
 internal object EditorInsightPresentation {
 

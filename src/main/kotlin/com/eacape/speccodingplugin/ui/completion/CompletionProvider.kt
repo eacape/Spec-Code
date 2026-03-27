@@ -13,6 +13,7 @@ import com.intellij.openapi.vfs.VfsUtilCore
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileVisitor
 import com.intellij.psi.search.PsiShortNamesCache
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 补全数据提供者（Project-level Service）
@@ -152,6 +153,8 @@ class CompletionProvider internal constructor(
         private const val CLAUDE_PROVIDER_ID = "claude-cli"
         private const val CODEX_PROVIDER_ID = "codex-cli"
         private const val MAX_DEPTH = 6
+        private const val FILE_COMPLETION_CACHE_TTL_MILLIS = 2_000L
+        private val fileCompletionCache = ConcurrentHashMap<String, CachedFileCompletionResult>()
 
         private val IGNORED_DIRS = setOf(
             ".git", ".idea", ".gradle", "build", "out",
@@ -160,11 +163,17 @@ class CompletionProvider internal constructor(
 
         private fun defaultFileCompletions(project: Project, query: String): List<CompletionItem> {
             val basePath = project.basePath ?: return emptyList()
+            val normalizedQuery = query.trim().lowercase()
+            val cacheKey = "$basePath|$normalizedQuery"
+            val now = System.currentTimeMillis()
+            fileCompletionCache[cacheKey]
+                ?.takeIf { cached -> now - cached.createdAtMillis <= FILE_COMPLETION_CACHE_TTL_MILLIS }
+                ?.let { cached -> return cached.items }
             val baseDir = com.intellij.openapi.vfs.LocalFileSystem
                 .getInstance().findFileByPath(basePath) ?: return emptyList()
 
             val results = mutableListOf<CompletionItem>()
-            val lowerQuery = query.lowercase()
+            val lowerQuery = normalizedQuery
             val limit = 20
 
             VfsUtilCore.visitChildrenRecursively(
@@ -186,6 +195,10 @@ class CompletionProvider internal constructor(
                 },
             )
 
+            fileCompletionCache[cacheKey] = CachedFileCompletionResult(
+                createdAtMillis = now,
+                items = results.toList(),
+            )
             return results
         }
 
@@ -263,3 +276,8 @@ class CompletionProvider internal constructor(
         }
     }
 }
+
+private data class CachedFileCompletionResult(
+    val createdAtMillis: Long,
+    val items: List<CompletionItem>,
+)

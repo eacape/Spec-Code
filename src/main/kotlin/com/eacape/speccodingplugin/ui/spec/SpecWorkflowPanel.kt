@@ -96,6 +96,7 @@ class SpecWorkflowPanel(
     private val warningDialogPresenter: (Project, String, String) -> Unit = { dialogProject, message, title ->
         Messages.showWarningDialog(dialogProject, message, title)
     },
+    private val deferInitialWorkflowRefresh: Boolean = false,
 ) : JBPanel<SpecWorkflowPanel>(BorderLayout()), Disposable {
 
     private enum class DocumentWorkspaceView {
@@ -239,6 +240,7 @@ class SpecWorkflowPanel(
     private var activeGenerationRequest: ActiveGenerationRequest? = null
     private var pendingDocumentReloadJob: Job? = null
     private val liveProgressRefreshDispatchQueued = AtomicBoolean(false)
+    private val liveProgressRefreshLoadInFlight = AtomicBoolean(false)
     @Volatile
     private var liveProgressRefreshPending = false
     private val liveProgressListener = TaskExecutionLiveProgressListener { progress ->
@@ -268,6 +270,7 @@ class SpecWorkflowPanel(
     private var isWorkspaceMode: Boolean = false
     private var detailDividerLocation: Int = 210
     private var workflowSwitcherPopup: SpecWorkflowSwitcherPopup? = null
+    private var initialWorkflowRefreshTriggered = false
 
     init {
         border = JBUI.Borders.empty(8)
@@ -310,6 +313,19 @@ class SpecWorkflowPanel(
         subscribeToWorkflowEvents()
         subscribeToDocumentFileEvents()
         specTaskExecutionService.addLiveProgressListener(liveProgressListener)
+        if (deferInitialWorkflowRefresh) {
+            initialWorkflowRefreshTriggered = false
+        } else {
+            initialWorkflowRefreshTriggered = true
+            refreshWorkflows()
+        }
+    }
+
+    fun ensureInitialWorkflowRefresh() {
+        if (initialWorkflowRefreshTriggered) {
+            return
+        }
+        initialWorkflowRefreshTriggered = true
         refreshWorkflows()
     }
 
@@ -1360,13 +1376,12 @@ class SpecWorkflowPanel(
         )
     }
 
-    private fun refreshCurrentLiveProgressPresentation() {
+    private fun applyCurrentLiveProgressPresentation(updatedLiveProgress: Map<String, TaskExecutionLiveProgress>) {
         val workflow = currentWorkflow ?: return
         val workflowId = selectedWorkflowId ?: return
         if (workflow.id != workflowId) {
             return
         }
-        val updatedLiveProgress = buildTaskLiveProgressByTaskId(workflowId)
         currentTaskLiveProgressByTaskId = updatedLiveProgress
         tasksPanel.updateLiveProgress(
             tasks = currentStructuredTasks,
@@ -1402,7 +1417,31 @@ class SpecWorkflowPanel(
             return
         }
         liveProgressRefreshPending = false
-        refreshCurrentLiveProgressPresentation()
+        refreshCurrentLiveProgressPresentationAsync()
+    }
+
+    private fun refreshCurrentLiveProgressPresentationAsync() {
+        val workflow = currentWorkflow ?: return
+        val workflowId = selectedWorkflowId ?: return
+        if (workflow.id != workflowId) {
+            return
+        }
+        if (!liveProgressRefreshLoadInFlight.compareAndSet(false, true)) {
+            liveProgressRefreshPending = true
+            return
+        }
+        scope.launch(Dispatchers.IO) {
+            val updatedLiveProgress = buildTaskLiveProgressByTaskId(workflowId)
+            invokeLaterSafe {
+                liveProgressRefreshLoadInFlight.set(false)
+                if (selectedWorkflowId == workflowId && currentWorkflow?.id == workflowId) {
+                    applyCurrentLiveProgressPresentation(updatedLiveProgress)
+                }
+                if (liveProgressRefreshPending) {
+                    refreshCurrentLiveProgressPresentationAsync()
+                }
+            }
+        }
     }
 
     private fun decorateTasksWithExecutionState(
@@ -1889,20 +1928,18 @@ class SpecWorkflowPanel(
         preserveListMode: Boolean = false,
     ) {
         scope.launch(Dispatchers.IO) {
-            val items = specEngine.listWorkflowMetadata().mapNotNull { meta ->
-                specEngine.loadWorkflow(meta.workflowId).getOrNull()?.let { wf ->
-                    SpecWorkflowListPanel.WorkflowListItem(
-                        workflowId = wf.id,
-                        title = wf.title.ifBlank { wf.id },
-                        description = wf.description,
-                        currentPhase = wf.currentPhase,
-                        currentStageLabel = SpecWorkflowOverviewPresenter.stageLabel(wf.currentStage),
-                        status = wf.status,
-                        updatedAt = wf.updatedAt,
-                        changeIntent = wf.changeIntent,
-                        baselineWorkflowId = wf.baselineWorkflowId,
-                    )
-                }
+            val items = specEngine.listWorkflowMetadata().map { meta ->
+                SpecWorkflowListPanel.WorkflowListItem(
+                    workflowId = meta.workflowId,
+                    title = meta.title?.ifBlank { meta.workflowId } ?: meta.workflowId,
+                    description = meta.description.orEmpty(),
+                    currentPhase = meta.currentPhase,
+                    currentStageLabel = SpecWorkflowOverviewPresenter.stageLabel(meta.currentStage),
+                    status = meta.status,
+                    updatedAt = meta.updatedAt,
+                    changeIntent = meta.changeIntent,
+                    baselineWorkflowId = meta.baselineWorkflowId,
+                )
             }
             invokeLaterSafe {
                 workflowSwitcherPopup?.cancel()

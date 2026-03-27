@@ -40,6 +40,10 @@ class ChatSpecSidebarPanelTest {
             panel.focusWorkflow(workflow.id, preferredPhase = SpecPhase.DESIGN)
         }
 
+        waitUntil {
+            panel.currentFocusedWorkflowId() == workflow.id &&
+                panel.currentContentForTest().contains("component: checkout")
+        }
         val rendered = runOnEdtResult { panel.currentContentForTest() }
         assertTrue(rendered.contains("component: checkout"))
         assertEquals(workflow.id, panel.currentFocusedWorkflowId())
@@ -87,6 +91,10 @@ class ChatSpecSidebarPanelTest {
             panel.refreshCurrentWorkflow()
         }
 
+        waitUntil {
+            panel.currentFocusedWorkflowId() == workflowB.id &&
+                panel.currentContentForTest().contains("workflow-b latest")
+        }
         val rendered = runOnEdtResult { panel.currentContentForTest() }
         assertTrue(rendered.contains("workflow-b latest"))
         assertEquals(workflowB.id, panel.currentFocusedWorkflowId())
@@ -120,10 +128,9 @@ class ChatSpecSidebarPanelTest {
             )
         }
 
-        runOnEdt {
-            panel.focusWorkflow(workflow.id, preferredPhase = SpecPhase.SPECIFY)
-            panel.triggerOpenCurrentPhaseDocumentForTest()
-        }
+        runOnEdt { panel.focusWorkflow(workflow.id, preferredPhase = SpecPhase.SPECIFY) }
+        waitUntil { panel.currentFocusedWorkflowId() == workflow.id }
+        runOnEdt { panel.triggerOpenCurrentPhaseDocumentForTest() }
 
         assertEquals(workflow.id, openedWorkflowId)
         assertEquals(SpecPhase.DESIGN, openedPhase)
@@ -177,6 +184,9 @@ class ChatSpecSidebarPanelTest {
             panel.triggerOpenCurrentPhaseDocumentForTest()
         }
 
+        waitUntil {
+            openedWorkflowId == workflowB.id && openedPhase == SpecPhase.IMPLEMENT
+        }
         assertEquals(workflowB.id, openedWorkflowId)
         assertEquals(SpecPhase.IMPLEMENT, openedPhase)
         assertEquals(workflowB.id, panel.currentFocusedWorkflowId())
@@ -191,32 +201,31 @@ class ChatSpecSidebarPanelTest {
                 SpecPhase.SPECIFY to specDocument(
                     phase = SpecPhase.SPECIFY,
                     content = """
-                        先把计划写好：
+                        Intro text before generated content.
                         <tool_call>
                         <tool_name>Write</tool_name>
                         <tool_input>{"file_path":"requirements.md"}</tool_input>
                         </tool_call>
-                        
-                        ## 需求文档
-                        ### 功能需求
-                        - 节点名称悬浮显示
+
+                        ## Requirements
+                        - scope: tooltip preview
                     """.trimIndent(),
                     valid = true,
                 ),
                 SpecPhase.DESIGN to specDocument(
                     phase = SpecPhase.DESIGN,
-                    content = """{"content":"## 架构设计\n\n- 前端: React\n\n## 技术选型\n\n- Kotlin"}""",
+                    content = """{"content":"## Architecture\n\n- frontend: React\n\n## Stack\n\n- Kotlin"}""",
                     valid = true,
                 ),
                 SpecPhase.IMPLEMENT to specDocument(
                     phase = SpecPhase.IMPLEMENT,
                     content = """
                         ```markdown
-                        ## 任务列表
-                        - [ ] Task 1: 实现 hover 展示
-                        
-                        ## 实现步骤
-                        1. 更新节点渲染组件
+                        ## Tasks
+                        - [ ] Task 1: implement hover preview
+
+                        ## Steps
+                        1. Update the tree renderer
                         ```
                     """.trimIndent(),
                     valid = false,
@@ -233,19 +242,22 @@ class ChatSpecSidebarPanelTest {
         }
 
         runOnEdt { panel.focusWorkflow(workflow.id, preferredPhase = SpecPhase.SPECIFY) }
+        waitUntil { panel.currentContentForTest().contains("scope: tooltip preview") }
         val specifyRendered = runOnEdtResult { panel.currentContentForTest() }
-        assertTrue(specifyRendered.contains("需求文档"))
+        assertTrue(specifyRendered.contains("scope: tooltip preview"))
         assertFalse(specifyRendered.contains("<tool_call>", ignoreCase = true))
 
         runOnEdt { panel.focusWorkflow(workflow.id, preferredPhase = SpecPhase.DESIGN) }
+        waitUntil { panel.currentContentForTest().contains("React") }
         val designRendered = runOnEdtResult { panel.currentContentForTest() }
-        assertTrue(designRendered.contains("架构设计"))
+        assertTrue(designRendered.contains("React"))
+        assertTrue(designRendered.contains("Kotlin"))
         assertFalse(designRendered.contains("\\n"))
 
         runOnEdt { panel.focusWorkflow(workflow.id, preferredPhase = SpecPhase.IMPLEMENT) }
+        waitUntil { panel.currentContentForTest().contains("Task 1") }
         val implementRendered = runOnEdtResult { panel.currentContentForTest() }
-        assertTrue(implementRendered.contains("任务列表"))
-        assertTrue(implementRendered.contains("实现步骤"))
+        assertTrue(implementRendered.contains("Task 1"))
         assertFalse(implementRendered.contains("```"))
     }
 
@@ -296,5 +308,16 @@ class ChatSpecSidebarPanelTest {
         var result: T? = null
         SwingUtilities.invokeAndWait { result = block() }
         return result!!
+    }
+
+    private fun waitUntil(timeoutMillis: Long = 3_000, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while (System.currentTimeMillis() <= deadline) {
+            if (runOnEdtResult(condition)) {
+                return
+            }
+            Thread.sleep(20)
+        }
+        throw AssertionError("Timed out waiting for sidebar state")
     }
 }

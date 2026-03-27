@@ -84,6 +84,7 @@ data class WorkflowMeta(
     val template: WorkflowTemplate,
     val stageStates: Map<StageId, StageState>,
     val currentStage: StageId,
+    val currentPhase: SpecPhase = SpecPhase.SPECIFY,
     val verifyEnabled: Boolean,
     val configPinHash: String?,
     val baselineWorkflowId: String?,
@@ -91,6 +92,8 @@ data class WorkflowMeta(
     val status: WorkflowStatus,
     val createdAt: Long,
     val updatedAt: Long,
+    val description: String? = null,
+    val changeIntent: SpecChangeIntent = SpecChangeIntent.FULL,
 )
 
 data class WorkflowSourceAsset(

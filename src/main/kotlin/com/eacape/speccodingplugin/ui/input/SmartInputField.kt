@@ -43,7 +43,9 @@ class SmartInputField(
     private val promptReferenceHighlighter = DefaultHighlighter.DefaultHighlightPainter(PROMPT_REFERENCE_BG)
     private val promptReferenceHighlightTags = mutableListOf<Any>()
 
-    private var debounceTimer: Timer? = null
+    private val debounceTimer = Timer(TRIGGER_DEBOUNCE_MILLIS) { checkTrigger() }.apply {
+        isRepeats = false
+    }
     private var lastTrigger: TriggerParseResult? = null
 
     val completionPopup = CompletionPopup(::handleCompletionSelect)
@@ -237,10 +239,8 @@ class SmartInputField(
     }
 
     private fun scheduleCheck() {
-        debounceTimer?.stop()
-        debounceTimer = Timer(150) { checkTrigger() }
-        debounceTimer?.isRepeats = false
-        debounceTimer?.start()
+        debounceTimer.stop()
+        debounceTimer.restart()
     }
 
     private fun refreshPromptReferenceHighlights() {
@@ -366,6 +366,7 @@ class SmartInputField(
         private const val ACTION_COMPLETION_DOWN = "specCoding.completionDown"
         private const val ACTION_COMPLETION_CONFIRM = "specCoding.completionConfirm"
         private const val ACTION_PASTE_CONTENT = "specCoding.pasteContent"
+        private const val TRIGGER_DEBOUNCE_MILLIS = 220
         private const val MAX_PROMPT_REFERENCE_HIGHLIGHTS = 200
         private val PROMPT_REFERENCE_REGEX = Regex("""(?<!\S)#([\p{L}\p{N}_.-]+)""")
         private val PROMPT_REFERENCE_BG = JBColor(

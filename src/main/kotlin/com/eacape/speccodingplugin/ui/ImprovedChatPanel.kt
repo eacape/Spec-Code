@@ -141,6 +141,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Dimension
@@ -173,6 +176,7 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.imageio.ImageIO
 import javax.swing.AbstractAction
@@ -251,6 +255,7 @@ class ImprovedChatPanel(
         val workflowId: String,
         val title: String,
         val updatedAt: Long,
+        val currentStage: StageId,
     )
 
     private val specWorkflowComboBox = ComboBox<SpecWorkflowOption>()
@@ -306,12 +311,20 @@ class ImprovedChatPanel(
         isRepeats = false
     }
     private var latestObservedTaskLiveProgress: TaskExecutionLiveProgress? = null
+    @Volatile
+    private var latestWorkflowBindingUiSnapshot: WorkflowBindingUiSnapshot? = null
+    private var workflowBindingRefreshJob: Job? = null
+    private val workflowBindingRefreshGeneration = AtomicLong(0)
+    private var refreshSpecWorkflowComboJob: Job? = null
+    @Volatile
+    private var cachedSpecWorkflowOptions: List<SpecWorkflowOption> = emptyList()
     private var lastWorkflowErrorDialogSnapshot: WorkflowErrorDialogSnapshot? = null
     private var statusAutoHideTimer: Timer? = null
     private var dividerPersistTimer: Timer? = null
     private var composerDividerPersistTimer: Timer? = null
     private var pasteKeyDispatcher: KeyEventDispatcher? = null
     private val runningWorkflowCommands = ConcurrentHashMap<String, RunningWorkflowCommand>()
+    private val sessionCreationMutex = Mutex()
     private val transientClipboardImagePaths = mutableSetOf<String>()
     private val pendingPastedTextBlocks = linkedMapOf<String, String>()
     private val userMessageRawContent = mutableMapOf<ChatMessagePanel, String>()
@@ -327,6 +340,7 @@ class ImprovedChatPanel(
     private val conversationHistory = mutableListOf<LlmMessage>()
     private var compactedConversationSummary: String? = null
     private var compactedConversationCutoff: Int = 0
+    @Volatile
     private var currentSessionId: String? = null
     private var isGenerating = false
     private var isFinalizingResponse = false
@@ -373,6 +387,12 @@ class ImprovedChatPanel(
         val task: StructuredTask?,
         val workflowTasks: List<StructuredTask>,
         val liveProgress: TaskExecutionLiveProgress?,
+    )
+
+    private data class WorkflowBindingUiSnapshot(
+        val binding: WorkflowChatBinding,
+        val executionContext: WorkflowChatExecutionContext,
+        val state: BoundTaskBindingState,
     )
 
     private enum class TaskBindingActionKind {
@@ -460,6 +480,7 @@ class ImprovedChatPanel(
 
         border = JBUI.Borders.empty(12)
         setupUI()
+        Disposer.register(this, specSidebarPanel)
         CliDiscoveryService.getInstance().addDiscoveryListener(discoveryListener)
         subscribeToHistoryOpenEvents()
         subscribeToToolWindowControlEvents()
@@ -1104,7 +1125,7 @@ class ImprovedChatPanel(
         if (binding.workflowId != progress.workflowId) {
             return false
         }
-        val currentExecutionContext = resolvedCurrentWorkflowChatExecutionContext(binding)
+        val currentExecutionContext = resolvedCurrentWorkflowChatExecutionContext(binding, cachedOnly = true)
         return currentExecutionContext == null ||
             currentExecutionContext.runId == progress.runId ||
             currentExecutionContext.taskId == progress.taskId
@@ -1125,7 +1146,7 @@ class ImprovedChatPanel(
                 if (binding.workflowId != progress.workflowId) {
                     return
                 }
-                val currentExecutionContext = resolvedCurrentWorkflowChatExecutionContext(binding)
+                val currentExecutionContext = resolvedCurrentWorkflowChatExecutionContext(binding, cachedOnly = true)
                 if (currentExecutionContext != null &&
                     currentExecutionContext.runId != progress.runId &&
                     currentExecutionContext.taskId != progress.taskId
@@ -1293,6 +1314,8 @@ class ImprovedChatPanel(
 
     private fun resolvedCurrentWorkflowChatExecutionContext(
         binding: WorkflowChatBinding? = resolvedActiveWorkflowChatBinding(),
+        cachedOnly: Boolean = false,
+        preferCachedSnapshot: Boolean = true,
     ): WorkflowChatExecutionContext? {
         val normalizedBinding = binding?.normalizedOrNull() ?: return null
         latestObservedTaskLiveProgress
@@ -1321,6 +1344,14 @@ class ImprovedChatPanel(
                     )
                 }
             }
+        if (preferCachedSnapshot) {
+            latestWorkflowBindingUiSnapshot
+                ?.takeIf { snapshot -> snapshot.binding == normalizedBinding }
+                ?.let { snapshot -> return snapshot.executionContext }
+        }
+        if (cachedOnly) {
+            return null
+        }
         return workflowChatExecutionContextResolver.resolve(normalizedBinding)
     }
 
@@ -1338,31 +1369,72 @@ class ImprovedChatPanel(
     private fun updateWorkflowBindingUi() {
         val binding = resolvedActiveWorkflowChatBinding()
         val specMode = currentInteractionMode() == ChatInteractionMode.SPEC
-        val executionContext = resolvedCurrentWorkflowChatExecutionContext(binding)
-        val visible = specMode && executionContext != null
+        applyWorkflowBindingBaseState(specMode)
+        if (!specMode || binding == null) {
+            workflowBindingRefreshJob?.cancel()
+            latestWorkflowBindingUiSnapshot = null
+            refreshWorkflowBindingUiPresentation(visible = false)
+            return
+        }
+        val requestGeneration = workflowBindingRefreshGeneration.incrementAndGet()
+        workflowBindingRefreshJob?.cancel()
+        workflowBindingRefreshJob = scope.launch(Dispatchers.IO) {
+            val snapshot = buildWorkflowBindingUiSnapshot(binding)
+            ApplicationManager.getApplication().invokeLater {
+                if (project.isDisposed || _isDisposed) {
+                    return@invokeLater
+                }
+                if (workflowBindingRefreshGeneration.get() != requestGeneration) {
+                    return@invokeLater
+                }
+                latestWorkflowBindingUiSnapshot = snapshot
+                if (snapshot == null) {
+                    refreshWorkflowBindingUiPresentation(visible = false)
+                    return@invokeLater
+                }
+                applyWorkflowBindingSnapshot(snapshot)
+            }
+        }
+    }
+
+    private fun applyWorkflowBindingBaseState(specMode: Boolean) {
+        val visible = specMode
         workflowBindingStrip.isVisible = visible
         workflowBindingChip.isVisible = false
         workflowBindingChip.text = ""
+        workflowBindingChip.accessibleContext.accessibleName = ""
         workflowBindingChip.toolTipText = null
+        workflowBindingChip.accessibleContext.accessibleDescription = null
+        taskBindingChip.isVisible = false
+        taskBindingChip.text = ""
+        taskBindingChip.toolTipText = null
+        taskBindingChip.accessibleContext.accessibleName = ""
+        taskBindingChip.accessibleContext.accessibleDescription = null
         executeTaskBindingButton.isVisible = false
         retryTaskBindingButton.isVisible = false
         completeTaskBindingButton.isVisible = false
         taskBindingOverflowButton.isVisible = false
         clearTaskBindingButton.toolTipText = null
         clearTaskBindingButton.isVisible = false
-        if (!specMode || binding == null || executionContext == null) {
-            workflowBindingChip.isVisible = false
-            taskBindingChip.isVisible = false
-            taskBindingChip.text = ""
-            taskBindingChip.toolTipText = null
-            workflowBindingStrip.revalidate()
-            workflowBindingStrip.repaint()
-            refreshComposerAccessoryStripVisibility()
-            refreshActionButtonTexts()
-            return
-        }
+    }
 
+    private fun buildWorkflowBindingUiSnapshot(binding: WorkflowChatBinding): WorkflowBindingUiSnapshot? {
+        val executionContext = resolvedCurrentWorkflowChatExecutionContext(
+            binding = binding,
+            preferCachedSnapshot = false,
+        ) ?: return null
         val state = resolveBoundTaskBindingState(binding, executionContext.taskId)
+        return WorkflowBindingUiSnapshot(
+            binding = binding,
+            executionContext = executionContext,
+            state = state,
+        )
+    }
+
+    private fun applyWorkflowBindingSnapshot(snapshot: WorkflowBindingUiSnapshot) {
+        val executionContext = snapshot.executionContext
+        val state = snapshot.state
+        workflowBindingStrip.isVisible = true
         taskBindingChip.isVisible = true
         taskBindingChip.text = buildTaskBindingChipText(executionContext.taskId, state)
         taskBindingChip.toolTipText = buildTaskBindingTooltip(executionContext.taskId, state)
@@ -1374,6 +1446,11 @@ class ImprovedChatPanel(
                     progress.phase != ExecutionLivePhase.WAITING_CONFIRMATION
             }
             ?.let(::syncActiveTaskExecutionPanel)
+        refreshWorkflowBindingUiPresentation(visible = true)
+    }
+
+    private fun refreshWorkflowBindingUiPresentation(visible: Boolean) {
+        workflowBindingStrip.isVisible = visible
         workflowBindingStrip.revalidate()
         workflowBindingStrip.repaint()
         refreshComposerAccessoryStripVisibility()
@@ -1420,7 +1497,13 @@ class ImprovedChatPanel(
 
     private fun resolveBoundTaskBindingState(): BoundTaskBindingState? {
         val binding = resolvedActiveWorkflowChatBinding() ?: return null
-        val taskId = resolvedCurrentWorkflowChatExecutionContext(binding)?.taskId ?: return null
+        val taskId = resolvedCurrentWorkflowChatExecutionContext(binding, cachedOnly = true)?.taskId
+            ?: return null
+        latestWorkflowBindingUiSnapshot
+            ?.takeIf { snapshot ->
+                snapshot.binding == binding && snapshot.executionContext.taskId == taskId
+            }
+            ?.let { snapshot -> return snapshot.state }
         return resolveBoundTaskBindingState(binding, taskId)
     }
 
@@ -1707,12 +1790,7 @@ class ImprovedChatPanel(
     }
 
     private fun resolveWorkflowBindingLabel(workflowId: String): String {
-        val selectedOption = specWorkflowComboBox.selectedItem as? SpecWorkflowOption
-        if (selectedOption?.workflowId == workflowId) {
-            return selectedOption.title.trim().ifBlank { workflowId }
-        }
-        return specEngine.loadWorkflow(workflowId)
-            .getOrNull()
+        return cachedWorkflowOption(workflowId)
             ?.title
             ?.trim()
             ?.ifBlank { workflowId }
@@ -1731,7 +1809,7 @@ class ImprovedChatPanel(
 
     private fun handleTaskBindingChipClicked() {
         val binding = resolvedActiveWorkflowChatBinding() ?: return
-        val taskId = resolvedCurrentWorkflowChatExecutionContext(binding)?.taskId ?: return
+        val taskId = resolvedCurrentWorkflowChatExecutionContext(binding, cachedOnly = true)?.taskId ?: return
         openSpecWorkflowRequest(
             SpecToolWindowOpenRequest(
                 workflowId = binding.workflowId,
@@ -2070,7 +2148,7 @@ class ImprovedChatPanel(
     private fun appendWorkflowChatSystemMessage(sessionId: String, content: String) {
         addSystemMessage(content)
         appendToConversationHistory(LlmMessage(LlmRole.SYSTEM, content))
-        persistMessage(sessionId, ConversationRole.SYSTEM, content)
+        persistMessageAsync(sessionId, ConversationRole.SYSTEM, content)
     }
 
     private fun openWorkflowChatBinding(request: WorkflowChatOpenRequest) {
@@ -2086,16 +2164,19 @@ class ImprovedChatPanel(
         setExplicitWorkflowChatBinding(binding)
         refreshSpecWorkflowComboBox(selectWorkflowId = binding.workflowId)
         val providerId = providerComboBox.selectedItem as? String
-        val sessionId = ensureActiveSpecSession(
-            titleSeed = buildWorkflowChatSessionTitle(binding),
-            providerId = providerId,
-            specTaskId = binding.workflowId,
-        )
-        sessionId?.let { id ->
-            sessionManager.updateWorkflowChatBinding(id, binding)
-                .onFailure { error ->
-                    logger.warn("Failed to persist workflow chat binding for session $id", error)
-                }
+        scope.launch(Dispatchers.IO) {
+            val sessionId = ensureActiveSpecSessionAsync(
+                titleSeed = buildWorkflowChatSessionTitle(binding),
+                providerId = providerId,
+                specTaskId = binding.workflowId,
+                workflowBinding = binding,
+            )
+            sessionId?.let { id ->
+                sessionManager.updateWorkflowChatBinding(id, binding)
+                    .onFailure { error ->
+                        logger.warn("Failed to persist workflow chat binding for session $id", error)
+                    }
+            }
         }
         if (specSidebarVisible) {
             specSidebarPanel.focusWorkflow(binding.workflowId)
@@ -2123,29 +2204,16 @@ class ImprovedChatPanel(
     private fun refreshSpecWorkflowComboBox(selectWorkflowId: String?) {
         if (project.isDisposed || _isDisposed) return
         if (currentInteractionMode() != ChatInteractionMode.SPEC) {
+            refreshSpecWorkflowComboJob?.cancel()
+            cachedSpecWorkflowOptions = emptyList()
             specWorkflowComboBox.isVisible = false
             return
         }
 
         val targetWorkflowId = selectWorkflowId?.trim()?.ifBlank { null }
-        scope.launch(Dispatchers.IO) {
-            val options = runCatching { specEngine.listWorkflows() }
-                .getOrDefault(emptyList())
-                .map { it.trim() }
-                .filter { it.isNotBlank() }
-                .map { workflowId ->
-                    val workflow = specEngine.loadWorkflow(workflowId).getOrNull()
-                    SpecWorkflowOption(
-                        workflowId = workflowId,
-                        title = workflow?.title?.ifBlank { workflowId } ?: workflowId,
-                        updatedAt = workflow?.updatedAt ?: 0L,
-                    )
-                }
-                .sortedWith(
-                    compareByDescending<SpecWorkflowOption> { it.updatedAt }
-                        .thenBy { it.title }
-                        .thenBy { it.workflowId },
-                )
+        refreshSpecWorkflowComboJob?.cancel()
+        refreshSpecWorkflowComboJob = scope.launch(Dispatchers.IO) {
+            val options = loadSpecWorkflowOptions()
 
             ApplicationManager.getApplication().invokeLater {
                 if (project.isDisposed || _isDisposed) return@invokeLater
@@ -2153,6 +2221,7 @@ class ImprovedChatPanel(
                     specWorkflowComboBox.isVisible = false
                     return@invokeLater
                 }
+                cachedSpecWorkflowOptions = options
 
                 suppressSpecWorkflowSelectionEvents = true
                 try {
@@ -2183,6 +2252,24 @@ class ImprovedChatPanel(
                 updateWorkflowBindingUi()
             }
         }
+    }
+
+    private fun loadSpecWorkflowOptions(): List<SpecWorkflowOption> {
+        return runCatching { specEngine.listWorkflowMetadata() }
+            .getOrDefault(emptyList())
+            .map { meta ->
+                SpecWorkflowOption(
+                    workflowId = meta.workflowId,
+                    title = meta.title?.ifBlank { meta.workflowId } ?: meta.workflowId,
+                    updatedAt = meta.updatedAt,
+                    currentStage = meta.currentStage,
+                )
+            }
+            .sortedWith(
+                compareByDescending<SpecWorkflowOption> { it.updatedAt }
+                    .thenBy { it.title }
+                    .thenBy { it.workflowId },
+            )
     }
 
     private fun handleSendOrStop() {
@@ -2291,7 +2378,7 @@ class ImprovedChatPanel(
         )
         setSendingState(true)
         showStatus(SpecCodingBundle.message("toolwindow.compact.status.compacting"))
-        activeOperationJob = scope.launch {
+        activeOperationJob = scope.launch(Dispatchers.IO) {
             val result = runCatching {
                 buildSemanticCompactedConversationSummary(
                     sourceMessages = sourceMessages,
@@ -2493,31 +2580,28 @@ class ImprovedChatPanel(
         val providerId = providerComboBox.selectedItem as? String
         val modelId = (modelComboBox.selectedItem as? ModelInfo)?.id
         val operationMode = modeManager.getCurrentMode()
-        val sessionId = if (interactionMode == ChatInteractionMode.SPEC) {
-            val workflowId = resolveMostRecentSpecWorkflowIdOrNull()
-            if (workflowId.isNullOrBlank()) {
-                showStatus(
-                    SpecCodingBundle.message("toolwindow.spec.command.noActive"),
-                    autoHideMillis = STATUS_SHORT_HINT_AUTO_HIDE_MILLIS,
-                )
-                return
-            }
-            activeSpecWorkflowId = workflowId
-            ensureActiveSpecSession(titleSeed = visibleInput, providerId = providerId, specTaskId = workflowId)
+        val resolvedWorkflowId = if (interactionMode == ChatInteractionMode.SPEC) {
+            resolveMostRecentSpecWorkflowIdOrNull()
         } else {
-            ensureActiveSession(visibleInput, providerId)
+            null
         }
-        val explicitItems = loadExplicitItemContents(contextPreviewPanel.getItems())
-        val contextSnapshot = collectContextSnapshotSafely(explicitItems)
+        if (interactionMode == ChatInteractionMode.SPEC && resolvedWorkflowId.isNullOrBlank()) {
+            showStatus(
+                SpecCodingBundle.message("toolwindow.spec.command.noActive"),
+                autoHideMillis = STATUS_SHORT_HINT_AUTO_HIDE_MILLIS,
+            )
+            return
+        }
+        if (!resolvedWorkflowId.isNullOrBlank()) {
+            activeSpecWorkflowId = resolvedWorkflowId
+        }
+        val pendingContextItems = contextPreviewPanel.getItems()
         contextPreviewPanel.clear()
         clearImageAttachments(purgeTransientFiles = false)
 
         // Add user message to history
         val userMessage = LlmMessage(LlmRole.USER, chatInput)
         appendToConversationHistory(userMessage)
-        if (sessionId != null) {
-            persistMessage(sessionId, ConversationRole.USER, visibleInput)
-        }
 
         appendUserMessage(
             content = visibleInput,
@@ -2537,7 +2621,7 @@ class ImprovedChatPanel(
         val assistantPanel = addAssistantMessage(startedAtMillis = assistantStartedAtMillis)
         currentAssistantPanel = assistantPanel
 
-        activeOperationJob = scope.launch {
+        activeOperationJob = scope.launch(Dispatchers.IO) {
             val streamedTraceEvents = mutableListOf<ChatStreamEvent>()
             val assistantContent = StringBuilder()
             val pendingDelta = StringBuilder()
@@ -2547,6 +2631,7 @@ class ImprovedChatPanel(
             var assistantFinishedAtMillis: Long? = null
             var pendingChunks = 0
             var lastFlushAtNanos = System.nanoTime()
+            var sessionId: String? = null
 
             fun flushPending(force: Boolean = false) {
                 val now = System.nanoTime()
@@ -2589,6 +2674,20 @@ class ImprovedChatPanel(
                 }
             }
             try {
+                sessionId = if (interactionMode == ChatInteractionMode.SPEC) {
+                    ensureActiveSpecSessionAsync(
+                        titleSeed = visibleInput,
+                        providerId = providerId,
+                        specTaskId = resolvedWorkflowId,
+                    )
+                } else {
+                    ensureActiveSessionAsync(visibleInput, providerId)
+                }
+                if (sessionId != null) {
+                    persistMessage(sessionId, ConversationRole.USER, visibleInput)
+                }
+                val explicitItems = loadExplicitItemContents(pendingContextItems)
+                val contextSnapshot = collectContextSnapshotSafely(explicitItems)
                 projectService.chat(
                     providerId = resolvedProviderId,
                     userInput = chatInput,
@@ -3536,23 +3635,23 @@ class ImprovedChatPanel(
     }
 
     private fun executeLocalSkillSlashCommand(command: String, providerId: String?) {
-        val sessionId = ensureActiveSession(command, providerId)
-
         clearComposerInput()
         appendUserMessage(command)
-        if (sessionId != null) {
-            persistMessage(sessionId, ConversationRole.USER, command)
-        }
 
         stopRequested.set(false)
         activeLlmRequest = null
         isFinalizingResponse = false
         setSendingState(true)
 
-        activeOperationJob = scope.launch {
+        activeOperationJob = scope.launch(Dispatchers.IO) {
             try {
+                val sessionId = ensureActiveSessionAsync(command, providerId)
+                sessionId?.let { persistMessage(it, ConversationRole.USER, command) }
                 val context = buildSkillContextForSlashCommand()
                 val result = skillExecutor.executeFromCommand(command, context)
+                if (result is com.eacape.speccodingplugin.skill.SkillExecutionResult.Success && sessionId != null) {
+                    persistMessage(sessionId, ConversationRole.ASSISTANT, result.output)
+                }
 
                 ApplicationManager.getApplication().invokeLater {
                     if (project.isDisposed || _isDisposed) {
@@ -3564,9 +3663,6 @@ class ImprovedChatPanel(
                             val panel = addAssistantMessage()
                             panel.appendContent(result.output)
                             panel.finishMessage()
-                            if (sessionId != null) {
-                                persistMessage(sessionId, ConversationRole.ASSISTANT, result.output)
-                            }
                         }
                         is com.eacape.speccodingplugin.skill.SkillExecutionResult.Failure -> {
                             addErrorMessage(result.error)
@@ -3605,19 +3701,11 @@ class ImprovedChatPanel(
         if (createsNewWorkflow && currentInteractionMode() == ChatInteractionMode.SPEC) {
             startNewSession()
         }
-        val sessionId = ensureActiveSpecSession(
-            titleSeed = sessionTitleSeed,
-            providerId = providerId,
-            specTaskId = if (createsNewWorkflow) null else resolveMostRecentSpecWorkflowIdOrNull(),
-        )
         val progressPanel = addAssistantMessage()
         val hasProgressEvent = AtomicBoolean(false)
 
         clearComposerInput()
         appendUserMessage(command)
-        if (sessionId != null) {
-            persistMessage(sessionId, ConversationRole.USER, command)
-        }
 
         stopRequested.set(false)
         activeLlmRequest = null
@@ -3626,6 +3714,12 @@ class ImprovedChatPanel(
 
         activeOperationJob = scope.launch(Dispatchers.IO) {
             try {
+                val sessionId = ensureActiveSpecSessionAsync(
+                    titleSeed = sessionTitleSeed,
+                    providerId = providerId,
+                    specTaskId = if (createsNewWorkflow) null else resolveMostRecentSpecWorkflowIdOrNull(),
+                )
+                sessionId?.let { persistMessage(it, ConversationRole.USER, command) }
                 val result = executeSpecCommand(command) { event ->
                     val sanitizedEvent = sanitizeStreamEvent(event) ?: return@executeSpecCommand
                     hasProgressEvent.set(true)
@@ -4260,21 +4354,19 @@ class ImprovedChatPanel(
         }
 
         val providerId = providerComboBox.selectedItem as? String
-        val sessionId = ensureActiveSession(command, providerId)
 
         clearComposerInput()
         appendUserMessage(command)
-        if (sessionId != null) {
-            persistMessage(sessionId, ConversationRole.USER, command)
-        }
 
         stopRequested.set(false)
         activeLlmRequest = null
         isFinalizingResponse = false
         setSendingState(true)
 
-        activeOperationJob = scope.launch {
+        activeOperationJob = scope.launch(Dispatchers.IO) {
             try {
+                val sessionId = ensureActiveSessionAsync(command, providerId)
+                sessionId?.let { persistMessage(it, ConversationRole.USER, command) }
                 val autoContext = contextCollector.collectContext()
                 val selectedCode = autoContext.items
                     .firstOrNull { it.type == ContextType.SELECTED_CODE }
@@ -4289,6 +4381,9 @@ class ImprovedChatPanel(
                 )
 
                 val result = skillExecutor.executePipelineFromCommand(command, context)
+                if (result is com.eacape.speccodingplugin.skill.SkillExecutionResult.Success && sessionId != null) {
+                    persistMessage(sessionId, ConversationRole.ASSISTANT, result.output)
+                }
 
                 ApplicationManager.getApplication().invokeLater {
                     if (project.isDisposed || _isDisposed) {
@@ -4300,9 +4395,6 @@ class ImprovedChatPanel(
                             val panel = addAssistantMessage()
                             panel.appendContent(result.output)
                             panel.finishMessage()
-                            if (sessionId != null) {
-                                persistMessage(sessionId, ConversationRole.ASSISTANT, result.output)
-                            }
                         }
 
                         is com.eacape.speccodingplugin.skill.SkillExecutionResult.Failure -> {
@@ -4694,59 +4786,71 @@ class ImprovedChatPanel(
         }
     }
 
-    private fun ensureActiveSpecSession(titleSeed: String, providerId: String?, specTaskId: String?): String? {
+    private suspend fun ensureActiveSpecSessionAsync(
+        titleSeed: String,
+        providerId: String?,
+        specTaskId: String?,
+        workflowBinding: WorkflowChatBinding? = null,
+    ): String? {
         currentSessionId?.let { return it }
-        sessionIsolationService.activeSessionId()?.let {
-            currentSessionId = it
-            return it
-        }
-
-        val normalizedSpecTaskId = specTaskId?.trim()?.ifBlank { null }
-        val workflowTitle = normalizedSpecTaskId
-            ?.let { id -> specEngine.loadWorkflow(id).getOrNull()?.title }
-            ?.trim()
-            ?.ifBlank { null }
-        val title = (workflowTitle ?: titleSeed.lines().firstOrNull().orEmpty().trim())
-            .ifBlank { SpecCodingBundle.message("toolwindow.session.defaultTitle") }
-            .take(80)
-        val effectiveBinding = resolvedActiveWorkflowChatBinding()
-            ?.takeIf { binding ->
-                normalizedSpecTaskId == null || binding.workflowId == normalizedSpecTaskId
+        return sessionCreationMutex.withLock {
+            currentSessionId?.let { return@withLock it }
+            sessionIsolationService.activeSessionId()?.let {
+                currentSessionId = it
+                return@withLock it
             }
 
-        val created = sessionManager.createSession(
-            title = title,
-            specTaskId = normalizedSpecTaskId,
-            modelProvider = providerId,
-            workflowChatBinding = effectiveBinding ?: normalizedSpecTaskId?.let { workflowId ->
-                buildWorkflowChatBinding(
-                    workflowId = workflowId,
-                    source = WorkflowChatEntrySource.MODE_SWITCH,
-                )
-            },
-        )
-
-        return created.fold(
-            onSuccess = { session ->
-                currentSessionId = session.id
-                sessionIsolationService.activateSession(session.id)
-                session.id
-            },
-            onFailure = { error ->
-                logger.warn("Failed to create spec session", error)
-                ApplicationManager.getApplication().invokeLater {
-                    if (!project.isDisposed && !_isDisposed) {
-                        addErrorMessage(
-                            SpecCodingBundle.message(
-                                "toolwindow.error.session.createFailed.fallback",
-                                error.message ?: SpecCodingBundle.message("common.unknown"),
-                            )
-                        )
+            val normalizedSpecTaskId = specTaskId?.trim()?.ifBlank { null }
+            val workflowTitle = cachedWorkflowOption(normalizedSpecTaskId)
+                ?.title
+                ?.trim()
+                ?.ifBlank { null }
+            val title = (workflowTitle ?: titleSeed.lines().firstOrNull().orEmpty().trim())
+                .ifBlank { SpecCodingBundle.message("toolwindow.session.defaultTitle") }
+                .take(80)
+            val effectiveBinding = workflowBinding?.normalizedOrNull()
+                ?: resolvedActiveWorkflowChatBinding()
+                    ?.takeIf { binding ->
+                        normalizedSpecTaskId == null || binding.workflowId == normalizedSpecTaskId
                     }
+                ?: normalizedSpecTaskId?.let { workflowId ->
+                    buildWorkflowChatBinding(
+                        workflowId = workflowId,
+                        source = WorkflowChatEntrySource.MODE_SWITCH,
+                    )
                 }
-                null
-            },
-        )
+
+            val created = withContext(Dispatchers.IO) {
+                sessionManager.createSession(
+                    title = title,
+                    specTaskId = normalizedSpecTaskId,
+                    modelProvider = providerId,
+                    workflowChatBinding = effectiveBinding,
+                )
+            }
+
+            created.fold(
+                onSuccess = { session ->
+                    currentSessionId = session.id
+                    sessionIsolationService.activateSession(session.id)
+                    session.id
+                },
+                onFailure = { error ->
+                    logger.warn("Failed to create spec session", error)
+                    ApplicationManager.getApplication().invokeLater {
+                        if (!project.isDisposed && !_isDisposed) {
+                            addErrorMessage(
+                                SpecCodingBundle.message(
+                                    "toolwindow.error.session.createFailed.fallback",
+                                    error.message ?: SpecCodingBundle.message("common.unknown"),
+                                )
+                            )
+                        }
+                    }
+                    null
+                },
+            )
+        }
     }
 
     private fun resolveMostRecentSpecWorkflowIdOrNull(): String? {
@@ -4754,14 +4858,22 @@ class ImprovedChatPanel(
         if (!explicitId.isNullOrBlank()) {
             return explicitId
         }
-        return runCatching {
-            specEngine.listWorkflows()
-                .asSequence()
-                .map { it.trim() }
-                .filter { it.isNotBlank() }
-                .sorted()
-                .lastOrNull()
-        }.getOrNull()
+        (specWorkflowComboBox.selectedItem as? SpecWorkflowOption)?.workflowId?.let { workflowId ->
+            return workflowId
+        }
+        cachedSpecWorkflowOptions.firstOrNull()?.workflowId?.let { workflowId ->
+            return workflowId
+        }
+        return null
+    }
+
+    private fun cachedWorkflowOption(workflowId: String?): SpecWorkflowOption? {
+        val normalizedWorkflowId = workflowId?.trim()?.ifBlank { null } ?: return null
+        val selectedOption = specWorkflowComboBox.selectedItem as? SpecWorkflowOption
+        if (selectedOption?.workflowId == normalizedWorkflowId) {
+            return selectedOption
+        }
+        return cachedSpecWorkflowOptions.firstOrNull { option -> option.workflowId == normalizedWorkflowId }
     }
 
     private fun buildWorkflowChatBinding(
@@ -4770,11 +4882,14 @@ class ImprovedChatPanel(
         actionIntent: WorkflowChatActionIntent = WorkflowChatActionIntent.DISCUSS,
         focusedStage: StageId? = null,
     ): WorkflowChatBinding {
-        val resolvedFocusedStage = focusedStage ?: specEngine.loadWorkflow(workflowId)
-            .getOrNull()
-            ?.currentStage
+        val normalizedWorkflowId = workflowId.trim()
+        val resolvedFocusedStage = focusedStage
+            ?: resolvedActiveWorkflowChatBinding()
+                ?.takeIf { binding -> binding.workflowId == normalizedWorkflowId }
+                ?.focusedStage
+            ?: cachedWorkflowOption(normalizedWorkflowId)?.currentStage
         return WorkflowChatBinding(
-            workflowId = workflowId,
+            workflowId = normalizedWorkflowId,
             focusedStage = resolvedFocusedStage,
             source = source,
             actionIntent = actionIntent,
@@ -4806,46 +4921,51 @@ class ImprovedChatPanel(
             }
     }
 
-    private fun ensureActiveSession(firstUserInput: String, providerId: String?): String? {
+    private suspend fun ensureActiveSessionAsync(firstUserInput: String, providerId: String?): String? {
         currentSessionId?.let { return it }
-        sessionIsolationService.activeSessionId()?.let {
-            currentSessionId = it
-            return it
-        }
+        return sessionCreationMutex.withLock {
+            currentSessionId?.let { return@withLock it }
+            sessionIsolationService.activeSessionId()?.let {
+                currentSessionId = it
+                return@withLock it
+            }
 
-        val title = firstUserInput.lines()
-            .firstOrNull()
-            .orEmpty()
-            .trim()
-            .ifBlank { SpecCodingBundle.message("toolwindow.session.defaultTitle") }
-            .take(80)
+            val title = firstUserInput.lines()
+                .firstOrNull()
+                .orEmpty()
+                .trim()
+                .ifBlank { SpecCodingBundle.message("toolwindow.session.defaultTitle") }
+                .take(80)
 
-        val created = sessionManager.createSession(
-            title = title,
-            modelProvider = providerId,
-        )
+            val created = withContext(Dispatchers.IO) {
+                sessionManager.createSession(
+                    title = title,
+                    modelProvider = providerId,
+                )
+            }
 
-        return created.fold(
-            onSuccess = { session ->
-                currentSessionId = session.id
-                sessionIsolationService.activateSession(session.id)
-                session.id
-            },
-            onFailure = { error ->
-                logger.warn("Failed to create session", error)
-                ApplicationManager.getApplication().invokeLater {
-                    if (!project.isDisposed && !_isDisposed) {
-                        addErrorMessage(
-                            SpecCodingBundle.message(
-                                "toolwindow.error.session.createFailed.fallback",
-                                error.message ?: SpecCodingBundle.message("common.unknown"),
+            created.fold(
+                onSuccess = { session ->
+                    currentSessionId = session.id
+                    sessionIsolationService.activateSession(session.id)
+                    session.id
+                },
+                onFailure = { error ->
+                    logger.warn("Failed to create session", error)
+                    ApplicationManager.getApplication().invokeLater {
+                        if (!project.isDisposed && !_isDisposed) {
+                            addErrorMessage(
+                                SpecCodingBundle.message(
+                                    "toolwindow.error.session.createFailed.fallback",
+                                    error.message ?: SpecCodingBundle.message("common.unknown"),
+                                )
                             )
-                        )
+                        }
                     }
-                }
-                null
-            },
-        )
+                    null
+                },
+            )
+        }
     }
 
     private fun persistMessage(
@@ -4862,6 +4982,22 @@ class ImprovedChatPanel(
         )
         if (result.isFailure) {
             logger.warn("Failed to persist message for session: $sessionId", result.exceptionOrNull())
+        }
+    }
+
+    private fun persistMessageAsync(
+        sessionId: String,
+        role: ConversationRole,
+        content: String,
+        metadataJson: String? = null,
+    ) {
+        scope.launch(Dispatchers.IO) {
+            persistMessage(
+                sessionId = sessionId,
+                role = role,
+                content = content,
+                metadataJson = metadataJson,
+            )
         }
     }
 
@@ -5361,16 +5497,21 @@ class ImprovedChatPanel(
             )
             return
         }
-        val sessionId = ensureActiveSession(slashCommand, providerId)
         clearComposerInput()
         appendUserMessage(slashCommand)
-        if (sessionId != null) {
-            persistMessage(sessionId, ConversationRole.USER, slashCommand)
+        scope.launch(Dispatchers.IO) {
+            val sessionId = ensureActiveSessionAsync(slashCommand, providerId)
+            sessionId?.let { persistMessage(it, ConversationRole.USER, slashCommand) }
+            ApplicationManager.getApplication().invokeLater {
+                if (project.isDisposed || _isDisposed) {
+                    return@invokeLater
+                }
+                executeShellCommand(
+                    command = shellCommand,
+                    requestDescription = "Provider slash command: $slashCommand",
+                )
+            }
         }
-        executeShellCommand(
-            command = shellCommand,
-            requestDescription = "Provider slash command: $slashCommand",
-        )
     }
 
     private fun isInteractiveOnlyProviderSlashCommand(providerId: String?, commandInfo: CliSlashCommandInfo): Boolean {
@@ -5510,7 +5651,7 @@ class ImprovedChatPanel(
             panel.finishMessage()
         }
         if (persistSessionId != null) {
-            persistMessage(
+            persistMessageAsync(
                 sessionId = persistSessionId,
                 role = ConversationRole.ASSISTANT,
                 content = result.output,
@@ -6098,7 +6239,7 @@ class ImprovedChatPanel(
         if (!specSidebarVisible) {
             val targetWorkflowId = activeSpecWorkflowId
                 ?: specSidebarPanel.currentFocusedWorkflowId()
-                ?: specEngine.listWorkflows().lastOrNull()
+                ?: resolveMostRecentSpecWorkflowIdOrNull()
             if (!targetWorkflowId.isNullOrBlank()) {
                 specSidebarPanel.focusWorkflow(targetWorkflowId)
             } else {
@@ -6133,7 +6274,7 @@ class ImprovedChatPanel(
         conversationHostPanel.removeAll()
         if (visible) {
             if (specSidebarPanel.currentFocusedWorkflowId().isNullOrBlank()) {
-                val defaultWorkflowId = activeSpecWorkflowId ?: specEngine.listWorkflows().lastOrNull()
+                val defaultWorkflowId = activeSpecWorkflowId ?: resolveMostRecentSpecWorkflowIdOrNull()
                 if (!defaultWorkflowId.isNullOrBlank()) {
                     activeSpecWorkflowId = defaultWorkflowId
                     specSidebarPanel.focusWorkflow(defaultWorkflowId)
@@ -6498,7 +6639,7 @@ class ImprovedChatPanel(
             val message = SpecCodingBundle.message("chat.workflow.action.runCommand.alreadyRunning", normalizedCommand)
             addSystemMessage(message)
             currentSessionId?.let { sessionId ->
-                persistMessage(
+                persistMessageAsync(
                     sessionId = sessionId,
                     role = ConversationRole.TOOL,
                     content = message,
@@ -6536,7 +6677,7 @@ class ImprovedChatPanel(
                 val message = SpecCodingBundle.message("chat.workflow.action.runCommand.terminalUnavailable", normalizedCommand)
                 addErrorMessage(message)
                 currentSessionId?.let { sessionId ->
-                    persistMessage(
+                    persistMessageAsync(
                         sessionId = sessionId,
                         role = ConversationRole.TOOL,
                         content = message,
@@ -6572,7 +6713,7 @@ class ImprovedChatPanel(
                 val message = SpecCodingBundle.message("chat.workflow.action.runCommand.terminalUnavailable", normalizedCommand)
                 addErrorMessage(message)
                 currentSessionId?.let { sessionId ->
-                    persistMessage(
+                    persistMessageAsync(
                         sessionId = sessionId,
                         role = ConversationRole.TOOL,
                         content = message,
@@ -6637,7 +6778,7 @@ class ImprovedChatPanel(
             val message = SpecCodingBundle.message("chat.workflow.action.stopCommand.notRunning", normalizedCommand)
             addSystemMessage(message)
             currentSessionId?.let { sessionId ->
-                persistMessage(
+                persistMessageAsync(
                     sessionId = sessionId,
                     role = ConversationRole.TOOL,
                     content = message,
@@ -6653,7 +6794,7 @@ class ImprovedChatPanel(
         val stoppingMessage = SpecCodingBundle.message("chat.workflow.action.stopCommand.stopping", normalizedCommand)
         addSystemMessage(stoppingMessage)
         currentSessionId?.let { sessionId ->
-            persistMessage(
+            persistMessageAsync(
                 sessionId = sessionId,
                 role = ConversationRole.TOOL,
                 content = stoppingMessage,
@@ -7126,7 +7267,7 @@ class ImprovedChatPanel(
         val assistantPanel = addAssistantMessage(startedAtMillis = assistantStartedAtMillis)
         currentAssistantPanel = assistantPanel
 
-        activeOperationJob = scope.launch {
+        activeOperationJob = scope.launch(Dispatchers.IO) {
             val streamedTraceEvents = mutableListOf<ChatStreamEvent>()
             val assistantContent = StringBuilder()
             val pendingDelta = StringBuilder()
