@@ -8,7 +8,6 @@ out/
 # Gradle
 .gradle/
 build/
-!gradle-wrapper.jar
 
 # Kotlin
 *.class
@@ -24,6 +23,7 @@ build/
 *.zip
 *.tar.gz
 *.rar
+!gradle/wrapper/gradle-wrapper.jar
 
 # OS
 .DS_Store

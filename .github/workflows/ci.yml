@@ -31,6 +31,9 @@ jobs:
       - name: Compile plugin
         run: ./gradlew compileKotlin --stacktrace
 
+      - name: Audit oversized ui/spec source files
+        run: ./gradlew largeFileWarningAudit --stacktrace
+
       - name: Run core and architecture regression tests
         run: ./gradlew coreRegressionTest architectureRegressionTest --stacktrace
 

@@ -1,5 +1,6 @@
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.gradle.api.GradleException
+import java.io.File
 import java.util.Locale
 
 buildscript {
@@ -86,6 +87,36 @@ val phase3PackagePrefixes = listOf(
     "com.eacape.speccodingplugin.window",
     "com.eacape.speccodingplugin.ui.history",
     "com.eacape.speccodingplugin.ui.worktree",
+)
+
+data class OversizedSourceScope(
+    val label: String,
+    val directory: String,
+    val warnThreshold: Int,
+    val severeThreshold: Int,
+)
+
+data class OversizedSourceFinding(
+    val scope: OversizedSourceScope,
+    val relativePath: String,
+    val lineCount: Int,
+)
+
+fun countFileLines(file: File): Int = file.useLines { lines -> lines.count() }
+
+val oversizedSourceScopes = listOf(
+    OversizedSourceScope(
+        label = "ui",
+        directory = "src/main/kotlin/com/eacape/speccodingplugin/ui",
+        warnThreshold = 800,
+        severeThreshold = 2000,
+    ),
+    OversizedSourceScope(
+        label = "spec",
+        directory = "src/main/kotlin/com/eacape/speccodingplugin/spec",
+        warnThreshold = 600,
+        severeThreshold = 1500,
+    ),
 )
 
 kotlin {
@@ -187,6 +218,81 @@ tasks {
         ),
     )
 
+    val largeFileWarningAudit = register("largeFileWarningAudit") {
+        group = "verification"
+        description = "Warn when ui/ and spec/ Kotlin source files exceed size thresholds"
+
+        doLast {
+            val isGitHubActions = System.getenv("GITHUB_ACTIONS") == "true"
+            val findings = oversizedSourceScopes.flatMap { scope ->
+                val sourceDirectory = layout.projectDirectory.dir(scope.directory).asFile
+                if (!sourceDirectory.exists()) {
+                    emptyList()
+                } else {
+                    sourceDirectory.walkTopDown()
+                        .filter { candidate -> candidate.isFile && candidate.extension == "kt" }
+                        .map { file ->
+                            OversizedSourceFinding(
+                                scope = scope,
+                                relativePath = file.relativeTo(projectDir).invariantSeparatorsPath,
+                                lineCount = countFileLines(file),
+                            )
+                        }
+                        .filter { finding -> finding.lineCount >= finding.scope.warnThreshold }
+                        .toList()
+                }
+            }.sortedWith(
+                compareByDescending<OversizedSourceFinding> { it.lineCount }
+                    .thenBy { it.relativePath }
+            )
+
+            if (findings.isEmpty()) {
+                logger.lifecycle("No oversized ui/spec Kotlin source files exceeded configured thresholds.")
+                return@doLast
+            }
+
+            val severeCount = findings.count { finding ->
+                finding.lineCount >= finding.scope.severeThreshold
+            }
+            logger.warn(
+                "Oversized source audit found {} files over thresholds (severe={}, warn-only={}).",
+                findings.size,
+                severeCount,
+                findings.size - severeCount,
+            )
+            logger.lifecycle("Oversized source audit is advisory only and will not fail the build.")
+
+            oversizedSourceScopes.forEach { scope ->
+                val scopeFindings = findings.filter { finding -> finding.scope == scope }
+                if (scopeFindings.isEmpty()) return@forEach
+
+                logger.warn(
+                    "[{}] {} files exceed threshold (warn>={}, severe>={}).",
+                    scope.label,
+                    scopeFindings.size,
+                    scope.warnThreshold,
+                    scope.severeThreshold,
+                )
+                scopeFindings.take(10).forEach { finding ->
+                    val severity = if (finding.lineCount >= scope.severeThreshold) "severe" else "warn"
+                    val warningMessage =
+                        "Oversized ${scope.label} source file: ${finding.lineCount} lines (warn>${scope.warnThreshold}, severe>${scope.severeThreshold})"
+                    logger.warn(" - [{}] {} lines {}", severity, finding.lineCount, finding.relativePath)
+                    if (isGitHubActions) {
+                        println("::warning file=${finding.relativePath}::$warningMessage")
+                    }
+                }
+                if (scopeFindings.size > 10) {
+                    logger.warn(
+                        " - ... {} additional {} files exceeded the warning threshold.",
+                        scopeFindings.size - 10,
+                        scope.label,
+                    )
+                }
+            }
+        }
+    }
+
     val phase1AcceptanceTest by registering(Test::class) {
         group = "verification"
         description = "Run Phase 1 acceptance-oriented automated test subset"
@@ -215,8 +321,8 @@ tasks {
 
     register("ciCheck") {
         group = "verification"
-        description = "Run minimal CI verification: compile, core regression tests, architecture contract, and plugin packaging"
-        dependsOn("compileKotlin", coreRegressionTest, architectureRegressionTest, "buildPlugin")
+        description = "Run minimal CI verification: compile, oversized source audit, core regression tests, architecture contract, and plugin packaging"
+        dependsOn("compileKotlin", largeFileWarningAudit, coreRegressionTest, architectureRegressionTest, "buildPlugin")
     }
 
     val phase3CoverageReport by registering {
