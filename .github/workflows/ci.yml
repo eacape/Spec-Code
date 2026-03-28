@@ -43,6 +43,9 @@ jobs:
       - name: Run core and architecture regression tests
         run: ./gradlew coreRegressionTest architectureRegressionTest --stacktrace
 
+      - name: Run workflow and UI smoke tests
+        run: ./gradlew workflowSmokeTest --stacktrace
+
       - name: Package plugin
         run: ./gradlew buildPlugin --stacktrace
 

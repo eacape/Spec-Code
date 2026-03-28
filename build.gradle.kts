@@ -207,8 +207,10 @@ intellijPlatform {
 }
 
 tasks {
-    withType<Test> {
-        useJUnitPlatform()
+    named<Test>("test") {
+        useJUnitPlatform {
+            excludeEngines("junit-vintage")
+        }
     }
 
     fun registerVerificationTest(
@@ -219,7 +221,9 @@ tasks {
         group = "verification"
         description = taskDescription
 
-        useJUnitPlatform()
+        useJUnitPlatform {
+            excludeEngines("junit-vintage")
+        }
         testClassesDirs = sourceSets["test"].output.classesDirs
         classpath = sourceSets["test"].runtimeClasspath
 
@@ -243,6 +247,16 @@ tasks {
         taskDescription = "Run architecture contract regression tests used by CI",
         includes = listOf(
             "com.eacape.speccodingplugin.spec.SpecArchitectureContractTest",
+        ),
+    )
+
+    val workflowSmokeTest = registerVerificationTest(
+        taskName = "workflowSmokeTest",
+        taskDescription = "Run minimal workflow and UI smoke tests used by CI",
+        includes = listOf(
+            "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelStateTest",
+            "com.eacape.speccodingplugin.ui.spec.SpecWorkflowWorkbenchCommandRouterTest",
+            "com.eacape.speccodingplugin.ui.spec.SpecWorkflowOverviewPresenterTest",
         ),
     )
 
@@ -396,8 +410,8 @@ tasks {
 
     register("ciCheck") {
         group = "verification"
-        description = "Run minimal CI verification: plugin config, compile, oversized source audit, frozen UI hotspot guard, core regression tests, architecture contract, and plugin packaging"
-        dependsOn("verifyPluginProjectConfiguration", "compileKotlin", largeFileWarningAudit, uiHotspotGrowthGuard, coreRegressionTest, architectureRegressionTest, "buildPlugin")
+        description = "Run minimal CI verification: plugin config, compile, oversized source audit, frozen UI hotspot guard, core regression tests, workflow/UI smoke, architecture contract, and plugin packaging"
+        dependsOn("verifyPluginProjectConfiguration", "compileKotlin", largeFileWarningAudit, uiHotspotGrowthGuard, coreRegressionTest, workflowSmokeTest, architectureRegressionTest, "buildPlugin")
     }
 
     val phase3CoverageReport by registering {
