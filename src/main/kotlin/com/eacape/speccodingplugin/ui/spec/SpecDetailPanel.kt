@@ -8,11 +8,9 @@ import com.eacape.speccodingplugin.spec.SpecMarkdownSanitizer
 import com.eacape.speccodingplugin.spec.SpecPhase
 import com.eacape.speccodingplugin.spec.SpecWorkflow
 import com.eacape.speccodingplugin.spec.StageId
-import com.eacape.speccodingplugin.spec.StageProgress
 import com.eacape.speccodingplugin.spec.ValidationResult
 import com.eacape.speccodingplugin.spec.WorkflowSourceAsset
 import com.eacape.speccodingplugin.spec.WorkflowStatus
-import com.eacape.speccodingplugin.spec.toStageId
 import com.eacape.speccodingplugin.ui.chat.MarkdownRenderer
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
@@ -167,7 +165,7 @@ class SpecDetailPanel(
     private var composerSourceState = ComposerSourceState()
     private var composerCodeContextState = ComposerCodeContextState()
     private var activePreviewCard: String = CARD_PREVIEW
-    private var clarificationState: ClarificationState? = null
+    private var clarificationState: SpecDetailClarificationFormState? = null
     private var activeChecklistDetailIndex: Int? = null
     private var isClarificationChecklistReadOnly: Boolean = false
     private var isBottomCollapsedForChecklist: Boolean = false
@@ -179,21 +177,12 @@ class SpecDetailPanel(
     private var composerContextKey: String? = null
     private var composerManualOverride: Boolean? = null
     private var hasAppliedInitialBottomHeight: Boolean = false
-    private val processTimelineEntries = mutableListOf<ProcessTimelineEntry>()
+    private var processTimelineModel = SpecDetailProcessTimelineRenderModel()
     private val composerTitleLabel = JBLabel()
 
     init {
         setupUI()
     }
-
-    private data class ClarificationState(
-        val phase: SpecPhase,
-        val input: String,
-        val questionsMarkdown: String,
-        val structuredQuestions: List<String> = emptyList(),
-        val questionDecisions: Map<Int, ClarificationQuestionDecision> = emptyMap(),
-        val questionDetails: Map<Int, String> = emptyMap(),
-    )
 
     private data class PreviewChecklistInteraction(
         val phase: SpecPhase,
@@ -211,12 +200,6 @@ class SpecDetailPanel(
         val workflowId: String? = null,
         val codeContextPack: CodeContextPack? = null,
     )
-
-    private enum class ClarificationQuestionDecision {
-        UNDECIDED,
-        CONFIRMED,
-        NOT_APPLICABLE,
-    }
 
     enum class ProcessTimelineState {
         INFO,
@@ -493,8 +476,9 @@ class SpecDetailPanel(
         }
         editButton.addActionListener {
             val workflow = currentWorkflow ?: return@addActionListener
-            val phase = resolveEditablePhase(workflow) ?: return@addActionListener
-            if (isReadOnlyRevisionLocked(workflow, phase)) {
+            val viewState = resolveDetailViewState(workflow)
+            val phase = viewState.editablePhase ?: return@addActionListener
+            if (viewState.revisionLockedPhase == phase) {
                 explicitRevisionPhase = phase
             }
             startEditing()
@@ -507,24 +491,13 @@ class SpecDetailPanel(
         }
         confirmGenerateButton.addActionListener {
             val state = clarificationState ?: return@addActionListener
-            if (state.structuredQuestions.isNotEmpty()) {
-                val firstMissingDetail = state.questionDecisions.entries
-                    .asSequence()
-                    .filter { it.value == ClarificationQuestionDecision.CONFIRMED }
-                    .mapNotNull { (index, _) ->
-                        val question = state.structuredQuestions.getOrNull(index)?.trim().orEmpty()
-                        if (question.isBlank()) {
-                            null
-                        } else {
-                            question to state.questionDetails[index].orEmpty().trim()
-                        }
-                    }
-                    .firstOrNull { (_, detail) -> detail.isBlank() }
-                if (firstMissingDetail != null) {
+            if (state.checklistMode) {
+                val firstMissingDetailQuestion = state.firstMissingConfirmedQuestion()
+                if (firstMissingDetailQuestion != null) {
                     setValidationMessage(
                         SpecCodingBundle.message(
                             "spec.detail.clarify.checklist.detail.required",
-                            firstMissingDetail.first,
+                            firstMissingDetailQuestion,
                         ),
                         JBColor(Color(213, 52, 52), Color(255, 140, 140)),
                     )
@@ -647,8 +620,8 @@ class SpecDetailPanel(
 
     private fun currentEditActionIcon(): Icon {
         val workflow = currentWorkflow
-        val phase = workflow?.let(::resolveDisplayedDocumentPhase)
-        return if (workflow != null && phase != null && isReadOnlyRevisionLocked(workflow, phase)) {
+        val viewState = workflow?.let(::resolveDetailViewState)
+        return if (viewState?.editRequiresExplicitRevisionStart == true) {
             DETAIL_START_REVISION_ICON
         } else {
             SpecWorkflowIcons.Edit
@@ -657,8 +630,8 @@ class SpecDetailPanel(
 
     private fun currentEditActionTooltip(): String {
         val workflow = currentWorkflow
-        val phase = workflow?.let(::resolveDisplayedDocumentPhase)
-        return if (workflow != null && phase != null && isReadOnlyRevisionLocked(workflow, phase)) {
+        val viewState = workflow?.let(::resolveDetailViewState)
+        return if (viewState?.editRequiresExplicitRevisionStart == true) {
             SpecCodingBundle.message("spec.detail.revision.start")
         } else {
             SpecCodingBundle.message("spec.detail.edit")
@@ -730,7 +703,7 @@ class SpecDetailPanel(
     }
 
     private fun isWorkbenchArtifactOnlyView(): Boolean {
-        return workbenchArtifactBinding?.documentPhase == null && !workbenchArtifactBinding?.fileName.isNullOrBlank()
+        return SpecDetailPanelViewState.isArtifactOnlyView(workbenchArtifactBinding)
     }
 
     internal fun allowStageFocusChange(targetStage: StageId): Boolean {
@@ -1754,34 +1727,11 @@ class SpecDetailPanel(
     }
 
     private fun resolveDisplayedDocumentPhase(workflow: SpecWorkflow): SpecPhase? {
-        if (isWorkbenchArtifactOnlyView()) {
-            return null
-        }
-        return selectedPhase ?: preferredWorkbenchPhase ?: workflow.currentPhase
-    }
-
-    private fun stageProgressForPhase(workflow: SpecWorkflow, phase: SpecPhase): StageProgress {
-        return workflow.stageStates[phase.toStageId()]?.status ?: when {
-            phase == workflow.currentPhase -> StageProgress.IN_PROGRESS
-            workflow.currentPhase.ordinal > phase.ordinal -> StageProgress.DONE
-            else -> StageProgress.NOT_STARTED
-        }
-    }
-
-    private fun requiresExplicitRevisionEntry(workflow: SpecWorkflow, phase: SpecPhase): Boolean {
-        if (phase != SpecPhase.SPECIFY && phase != SpecPhase.DESIGN) {
-            return false
-        }
-        return stageProgressForPhase(workflow, phase) == StageProgress.DONE
-    }
-
-    private fun isReadOnlyRevisionLocked(workflow: SpecWorkflow, phase: SpecPhase): Boolean {
-        return requiresExplicitRevisionEntry(workflow, phase) && explicitRevisionPhase != phase
+        return resolveDetailViewState(workflow).displayedDocumentPhase
     }
 
     private fun currentReadOnlyRevisionLockedPhase(workflow: SpecWorkflow): SpecPhase? {
-        val phase = resolveDisplayedDocumentPhase(workflow) ?: return null
-        return phase.takeIf { isReadOnlyRevisionLocked(workflow, it) }
+        return resolveDetailViewState(workflow).revisionLockedPhase
     }
 
     private fun revisionLockedHint(phase: SpecPhase): String {
@@ -1793,17 +1743,15 @@ class SpecDetailPanel(
     }
 
     private fun resolveEditablePhase(workflow: SpecWorkflow): SpecPhase? {
-        if (isWorkbenchArtifactOnlyView()) {
-            return null
-        }
-        return selectedPhase ?: preferredWorkbenchPhase ?: workflow.currentPhase
+        return resolveDetailViewState(workflow).editablePhase
     }
 
     private fun startEditing() {
         if (isEditing || clarificationState != null) return
         val workflow = currentWorkflow ?: return
-        val phase = resolveEditablePhase(workflow) ?: return
-        if (isReadOnlyRevisionLocked(workflow, phase)) {
+        val viewState = resolveDetailViewState(workflow)
+        val phase = viewState.editablePhase ?: return
+        if (viewState.revisionLockedPhase == phase) {
             return
         }
         val document = workflow.getDocument(phase)
@@ -1876,7 +1824,7 @@ class SpecDetailPanel(
         suggestedDetails: String = input,
     ) {
         val generatingText = ArtifactComposeActionUiText.clarificationGenerating(currentComposeActionMode(phase))
-        clarificationState = ClarificationState(
+        clarificationState = SpecDetailClarificationFormState(
             phase = phase,
             input = input,
             questionsMarkdown = generatingText,
@@ -1916,42 +1864,24 @@ class SpecDetailPanel(
         isGeneratingActive = false
         isClarificationGenerating = false
         stopGeneratingAnimation()
-        val normalizedQuestions = structuredQuestions
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .distinct()
-        val inferredDecisions = inferQuestionDecisions(
-            structuredQuestions = normalizedQuestions,
-            confirmedContext = suggestedDetails,
-        )
-        val inferredDetails = inferQuestionDetails(
-            structuredQuestions = normalizedQuestions,
-            confirmedContext = suggestedDetails,
-            questionDecisions = inferredDecisions,
-        )
-        clarificationState = ClarificationState(
+        val draftState = SpecDetailClarificationFormState.draft(
             phase = phase,
             input = input,
             questionsMarkdown = questionsMarkdown,
-            structuredQuestions = normalizedQuestions,
-            questionDecisions = inferredDecisions,
-            questionDetails = inferredDetails,
+            suggestedDetails = suggestedDetails,
+            structuredQuestions = structuredQuestions,
+            text = clarificationText(),
         )
-        activeChecklistDetailIndex = inferredDecisions
-            .entries
-            .asSequence()
-            .filter { it.value == ClarificationQuestionDecision.CONFIRMED }
-            .map { it.key }
-            .sorted()
-            .firstOrNull()
+        clarificationState = draftState.state
+        activeChecklistDetailIndex = draftState.activeDetailIndex
         isClarificationChecklistReadOnly = false
         renderClarificationQuestions(
             markdown = questionsMarkdown,
-            structuredQuestions = normalizedQuestions,
-            questionDecisions = inferredDecisions,
-            questionDetails = inferredDetails,
+            structuredQuestions = draftState.state.structuredQuestions,
+            questionDecisions = draftState.state.questionDecisions,
+            questionDetails = draftState.state.questionDetails,
         )
-        if (normalizedQuestions.isNotEmpty()) {
+        if (draftState.state.checklistMode) {
             syncClarificationInputFromSelection(clarificationState)
         } else {
             inputArea.text = suggestedDetails
@@ -1971,16 +1901,7 @@ class SpecDetailPanel(
     }
 
     fun showProcessTimeline(entries: List<ProcessTimelineEntry>) {
-        processTimelineEntries.clear()
-        entries.forEach { entry ->
-            val normalized = entry.text.trim()
-            if (normalized.isNotBlank()) {
-                processTimelineEntries += entry.copy(text = normalized)
-            }
-        }
-        while (processTimelineEntries.size > MAX_PROCESS_TIMELINE_ENTRIES) {
-            processTimelineEntries.removeAt(0)
-        }
+        processTimelineModel = processTimelineModel.replace(entries)
         renderProcessTimeline()
     }
 
@@ -1988,26 +1909,15 @@ class SpecDetailPanel(
         text: String,
         state: ProcessTimelineState = ProcessTimelineState.INFO,
     ) {
-        val normalized = text.trim()
-        if (normalized.isBlank()) {
-            return
-        }
-        val previous = processTimelineEntries.lastOrNull()
-        if (previous != null && previous.text == normalized && previous.state == state) {
-            return
-        }
-        processTimelineEntries += ProcessTimelineEntry(
-            text = normalized,
+        processTimelineModel = processTimelineModel.append(
+            text = text,
             state = state,
         )
-        while (processTimelineEntries.size > MAX_PROCESS_TIMELINE_ENTRIES) {
-            processTimelineEntries.removeAt(0)
-        }
         renderProcessTimeline()
     }
 
     fun clearProcessTimeline() {
-        processTimelineEntries.clear()
+        processTimelineModel = processTimelineModel.clear()
         renderProcessTimeline()
     }
 
@@ -2025,7 +1935,7 @@ class SpecDetailPanel(
         }
         isClarificationChecklistReadOnly = readOnly
         clarificationState
-            ?.takeIf { it.structuredQuestions.isNotEmpty() }
+            ?.takeIf { it.checklistMode }
             ?.let { state ->
                 renderClarificationQuestions(
                     markdown = state.questionsMarkdown,
@@ -2064,7 +1974,7 @@ class SpecDetailPanel(
     private fun renderClarificationQuestions(
         markdown: String,
         structuredQuestions: List<String>,
-        questionDecisions: Map<Int, ClarificationQuestionDecision>,
+        questionDecisions: Map<Int, SpecDetailClarificationQuestionDecision>,
         questionDetails: Map<Int, String>,
     ) {
         if (structuredQuestions.isNotEmpty()) {
@@ -2096,21 +2006,24 @@ class SpecDetailPanel(
 
     private fun renderChecklistClarificationQuestions(
         structuredQuestions: List<String>,
-        questionDecisions: Map<Int, ClarificationQuestionDecision>,
+        questionDecisions: Map<Int, SpecDetailClarificationQuestionDecision>,
         questionDetails: Map<Int, String>,
     ) {
         clarificationChecklistPanel.removeAll()
-        val confirmedIndexes = structuredQuestions.indices
-            .filter { index -> questionDecisions[index] == ClarificationQuestionDecision.CONFIRMED }
-        val resolvedActiveIndex = when {
-            confirmedIndexes.isEmpty() -> null
-            activeChecklistDetailIndex?.let { it in confirmedIndexes } == true -> activeChecklistDetailIndex
-            else -> confirmedIndexes.first()
+        val checklistState = clarificationState
+        val resolvedActiveIndex = checklistState?.resolvedActiveDetailIndex(activeChecklistDetailIndex) ?: run {
+            val confirmedIndexes = structuredQuestions.indices
+                .filter { index -> questionDecisions[index] == SpecDetailClarificationQuestionDecision.CONFIRMED }
+            when {
+                confirmedIndexes.isEmpty() -> null
+                activeChecklistDetailIndex?.let { it in confirmedIndexes } == true -> activeChecklistDetailIndex
+                else -> confirmedIndexes.first()
+            }
         }
         activeChecklistDetailIndex = resolvedActiveIndex
         val checklistEditable = !isClarificationChecklistReadOnly
         structuredQuestions.forEachIndexed { index, question ->
-            val decision = questionDecisions[index] ?: ClarificationQuestionDecision.UNDECIDED
+            val decision = questionDecisions[index] ?: SpecDetailClarificationQuestionDecision.UNDECIDED
             clarificationChecklistPanel.add(
                 createChecklistQuestionItem(
                     index = index,
@@ -2123,13 +2036,17 @@ class SpecDetailPanel(
                 clarificationChecklistPanel.add(Box.createVerticalStrut(JBUI.scale(1)))
             }
         }
-        val confirmedCount = questionDecisions.values.count { it == ClarificationQuestionDecision.CONFIRMED }
-        val notApplicableCount = questionDecisions.values.count { it == ClarificationQuestionDecision.NOT_APPLICABLE }
+        val progress = checklistState?.progress()
+            ?: SpecDetailClarificationChecklistProgress(
+                confirmedCount = questionDecisions.values.count { it == SpecDetailClarificationQuestionDecision.CONFIRMED },
+                notApplicableCount = questionDecisions.values.count { it == SpecDetailClarificationQuestionDecision.NOT_APPLICABLE },
+                totalCount = structuredQuestions.size,
+            )
         val summary = SpecCodingBundle.message(
             "spec.detail.clarify.checklist.progress",
-            confirmedCount,
-            notApplicableCount,
-            structuredQuestions.size,
+            progress.confirmedCount,
+            progress.notApplicableCount,
+            progress.totalCount,
         )
         val hint = SpecCodingBundle.message("spec.detail.clarify.checklist.hint")
         clarificationChecklistHintLabel.text = "$summary  ·  $hint"
@@ -2140,21 +2057,21 @@ class SpecDetailPanel(
     private fun createChecklistQuestionItem(
         index: Int,
         question: String,
-        decision: ClarificationQuestionDecision,
+        decision: SpecDetailClarificationQuestionDecision,
         editable: Boolean,
     ): JPanel {
         val indicator = JBLabel(
             when (decision) {
-                ClarificationQuestionDecision.CONFIRMED -> "✓"
-                ClarificationQuestionDecision.NOT_APPLICABLE -> "∅"
-                ClarificationQuestionDecision.UNDECIDED -> "•"
+                SpecDetailClarificationQuestionDecision.CONFIRMED -> "✓"
+                SpecDetailClarificationQuestionDecision.NOT_APPLICABLE -> "∅"
+                SpecDetailClarificationQuestionDecision.UNDECIDED -> "•"
             },
         ).apply {
             font = JBUI.Fonts.smallFont().deriveFont(Font.BOLD)
             foreground = when (decision) {
-                ClarificationQuestionDecision.CONFIRMED -> CHECKLIST_CONFIRM_TEXT
-                ClarificationQuestionDecision.NOT_APPLICABLE -> CHECKLIST_NA_TEXT
-                ClarificationQuestionDecision.UNDECIDED -> TREE_FILE_TEXT
+                SpecDetailClarificationQuestionDecision.CONFIRMED -> CHECKLIST_CONFIRM_TEXT
+                SpecDetailClarificationQuestionDecision.NOT_APPLICABLE -> CHECKLIST_NA_TEXT
+                SpecDetailClarificationQuestionDecision.UNDECIDED -> TREE_FILE_TEXT
             }
             border = JBUI.Borders.empty(1, 2, 0, 2)
             cursor = if (editable) {
@@ -2176,7 +2093,7 @@ class SpecDetailPanel(
         renderChecklistQuestionText(questionText, question)
         val confirmButton = createChecklistChoiceButton(
             text = SpecCodingBundle.message("spec.detail.clarify.checklist.choice.confirm"),
-            selected = decision == ClarificationQuestionDecision.CONFIRMED,
+            selected = decision == SpecDetailClarificationQuestionDecision.CONFIRMED,
             selectedBackground = CHECKLIST_CONFIRM_BG,
             selectedForeground = CHECKLIST_CONFIRM_TEXT,
             normalBackground = CHECKLIST_CHOICE_BG,
@@ -2187,7 +2104,7 @@ class SpecDetailPanel(
         }
         val notApplicableButton = createChecklistChoiceButton(
             text = SpecCodingBundle.message("spec.detail.clarify.checklist.choice.na"),
-            selected = decision == ClarificationQuestionDecision.NOT_APPLICABLE,
+            selected = decision == SpecDetailClarificationQuestionDecision.NOT_APPLICABLE,
             selectedBackground = CHECKLIST_NA_BG,
             selectedForeground = CHECKLIST_NA_TEXT,
             normalBackground = CHECKLIST_CHOICE_BG,
@@ -2196,10 +2113,10 @@ class SpecDetailPanel(
         ) {
             onChecklistQuestionDecisionChanged(
                 index = index,
-                decision = if (decision == ClarificationQuestionDecision.NOT_APPLICABLE) {
-                    ClarificationQuestionDecision.UNDECIDED
+                decision = if (decision == SpecDetailClarificationQuestionDecision.NOT_APPLICABLE) {
+                    SpecDetailClarificationQuestionDecision.UNDECIDED
                 } else {
-                    ClarificationQuestionDecision.NOT_APPLICABLE
+                    SpecDetailClarificationQuestionDecision.NOT_APPLICABLE
                 },
             )
         }
@@ -2294,7 +2211,7 @@ class SpecDetailPanel(
         }
     }
 
-    private fun onChecklistQuestionRowClicked(index: Int, fallbackDecision: ClarificationQuestionDecision) {
+    private fun onChecklistQuestionRowClicked(index: Int, fallbackDecision: SpecDetailClarificationQuestionDecision) {
         if (isClarificationChecklistReadOnly) {
             return
         }
@@ -2304,11 +2221,11 @@ class SpecDetailPanel(
         }
         val currentDecision = state.questionDecisions[index] ?: fallbackDecision
         val nextDecision = when (currentDecision) {
-            ClarificationQuestionDecision.UNDECIDED -> ClarificationQuestionDecision.CONFIRMED
-            ClarificationQuestionDecision.CONFIRMED -> ClarificationQuestionDecision.UNDECIDED
-            ClarificationQuestionDecision.NOT_APPLICABLE -> ClarificationQuestionDecision.CONFIRMED
+            SpecDetailClarificationQuestionDecision.UNDECIDED -> SpecDetailClarificationQuestionDecision.CONFIRMED
+            SpecDetailClarificationQuestionDecision.CONFIRMED -> SpecDetailClarificationQuestionDecision.UNDECIDED
+            SpecDetailClarificationQuestionDecision.NOT_APPLICABLE -> SpecDetailClarificationQuestionDecision.CONFIRMED
         }
-        if (nextDecision == ClarificationQuestionDecision.CONFIRMED) {
+        if (nextDecision == SpecDetailClarificationQuestionDecision.CONFIRMED) {
             onChecklistQuestionConfirmRequested(index)
             return
         }
@@ -2449,76 +2366,40 @@ class SpecDetailPanel(
         return merged
     }
 
-    private fun checklistRowColors(decision: ClarificationQuestionDecision): ChecklistRowColors {
+    private fun checklistRowColors(decision: SpecDetailClarificationQuestionDecision): ChecklistRowColors {
         return when (decision) {
-            ClarificationQuestionDecision.CONFIRMED -> ChecklistRowColors(
+            SpecDetailClarificationQuestionDecision.CONFIRMED -> ChecklistRowColors(
                 background = CHECKLIST_ROW_BG_SELECTED,
                 border = CHECKLIST_ROW_BORDER_SELECTED,
             )
-            ClarificationQuestionDecision.NOT_APPLICABLE -> ChecklistRowColors(
+            SpecDetailClarificationQuestionDecision.NOT_APPLICABLE -> ChecklistRowColors(
                 background = CHECKLIST_ROW_BG_NA,
                 border = CHECKLIST_ROW_BORDER_NA,
             )
-            ClarificationQuestionDecision.UNDECIDED -> ChecklistRowColors(
+            SpecDetailClarificationQuestionDecision.UNDECIDED -> ChecklistRowColors(
                 background = CHECKLIST_ROW_BG,
                 border = CHECKLIST_ROW_BORDER,
             )
         }
     }
 
-    private fun onChecklistQuestionDecisionChanged(index: Int, decision: ClarificationQuestionDecision) {
+    private fun onChecklistQuestionDecisionChanged(index: Int, decision: SpecDetailClarificationQuestionDecision) {
         if (isClarificationChecklistReadOnly) {
             return
         }
         val state = clarificationState ?: return
-        if (state.structuredQuestions.isEmpty() || index !in state.structuredQuestions.indices) {
-            return
-        }
-        val nextDecisions = state.questionDecisions.toMutableMap()
-        val nextDetails = state.questionDetails.toMutableMap()
-        if (decision == ClarificationQuestionDecision.UNDECIDED) {
-            nextDecisions.remove(index)
-            nextDetails.remove(index)
-            if (activeChecklistDetailIndex == index) {
-                activeChecklistDetailIndex = nextDecisions
-                    .entries
-                    .asSequence()
-                    .filter { it.value == ClarificationQuestionDecision.CONFIRMED }
-                    .map { it.key }
-                    .sorted()
-                    .firstOrNull()
-            }
-        } else {
-            nextDecisions[index] = decision
-            if (decision != ClarificationQuestionDecision.CONFIRMED) {
-                nextDetails.remove(index)
-                if (activeChecklistDetailIndex == index) {
-                    activeChecklistDetailIndex = nextDecisions
-                        .entries
-                        .asSequence()
-                        .filter { it.value == ClarificationQuestionDecision.CONFIRMED }
-                        .map { it.key }
-                        .sorted()
-                        .firstOrNull()
-                }
-            } else {
-                activeChecklistDetailIndex = index
-            }
-        }
-        val nextState = state.copy(
-            questionDecisions = nextDecisions,
-            questionDetails = nextDetails,
-        )
-        clarificationState = nextState
+        val nextMutation = state.withDecision(index, decision, activeChecklistDetailIndex) ?: return
+        clarificationState = nextMutation.state
+        activeChecklistDetailIndex = nextMutation.activeDetailIndex
         renderClarificationQuestions(
-            markdown = nextState.questionsMarkdown,
-            structuredQuestions = nextState.structuredQuestions,
-            questionDecisions = nextState.questionDecisions,
-            questionDetails = nextState.questionDetails,
+            markdown = nextMutation.state.questionsMarkdown,
+            structuredQuestions = nextMutation.state.structuredQuestions,
+            questionDecisions = nextMutation.state.questionDecisions,
+            questionDetails = nextMutation.state.questionDetails,
         )
-        syncClarificationInputFromSelection(nextState)
+        syncClarificationInputFromSelection(nextMutation.state)
         updateClarificationPreview()
-        persistClarificationDraftSnapshot(nextState)
+        persistClarificationDraftSnapshot(nextMutation.state)
         setValidationMessage(
             ArtifactComposeActionUiText.clarificationHint(currentComposeActionMode(state.phase)),
             TREE_TEXT,
@@ -2534,8 +2415,8 @@ class SpecDetailPanel(
         if (state.structuredQuestions.isEmpty() || index !in state.structuredQuestions.indices) {
             return
         }
-        val currentDecision = state.questionDecisions[index] ?: ClarificationQuestionDecision.UNDECIDED
-        if (currentDecision == ClarificationQuestionDecision.CONFIRMED) {
+        val currentDecision = state.questionDecisions[index] ?: SpecDetailClarificationQuestionDecision.UNDECIDED
+        if (currentDecision == SpecDetailClarificationQuestionDecision.CONFIRMED) {
             val updatedDetail = requestClarificationConfirmDetail(
                 question = state.structuredQuestions[index],
                 initialDetail = state.questionDetails[index].orEmpty(),
@@ -2551,7 +2432,7 @@ class SpecDetailPanel(
             initialDetail = existingDetail,
         ) ?: return
 
-        onChecklistQuestionDecisionChanged(index, ClarificationQuestionDecision.CONFIRMED)
+        onChecklistQuestionDecisionChanged(index, SpecDetailClarificationQuestionDecision.CONFIRMED)
         onChecklistQuestionDetailChanged(index, confirmedDetail)
     }
 
@@ -2578,25 +2459,12 @@ class SpecDetailPanel(
         if (state.structuredQuestions.isEmpty() || index !in state.structuredQuestions.indices) {
             return
         }
-        if (state.questionDecisions[index] != ClarificationQuestionDecision.CONFIRMED) {
-            return
-        }
-        activeChecklistDetailIndex = index
-        val normalized = detail
-            .replace("\r\n", "\n")
-            .replace('\r', '\n')
-            .trim()
-        val nextDetails = state.questionDetails.toMutableMap()
-        if (normalized.isBlank()) {
-            nextDetails.remove(index)
-        } else {
-            nextDetails[index] = normalized
-        }
-        val nextState = state.copy(questionDetails = nextDetails)
-        clarificationState = nextState
-        syncClarificationInputFromSelection(nextState)
+        val nextMutation = state.withConfirmedDetail(index, detail, activeChecklistDetailIndex) ?: return
+        clarificationState = nextMutation.state
+        activeChecklistDetailIndex = nextMutation.activeDetailIndex
+        syncClarificationInputFromSelection(nextMutation.state)
         updateClarificationPreview()
-        persistClarificationDraftSnapshot(nextState)
+        persistClarificationDraftSnapshot(nextMutation.state)
         setValidationMessage(
             ArtifactComposeActionUiText.clarificationHint(currentComposeActionMode(state.phase)),
             TREE_TEXT,
@@ -2604,189 +2472,30 @@ class SpecDetailPanel(
         currentWorkflow?.let { updateButtonStates(it) }
     }
 
-    private fun resolveClarificationConfirmedContext(state: ClarificationState): String {
-        if (state.structuredQuestions.isNotEmpty()) {
-            return buildChecklistConfirmedContext(state)
+    private fun resolveClarificationConfirmedContext(state: SpecDetailClarificationFormState): String {
+        if (state.checklistMode) {
+            return state.confirmedContext(clarificationText())
         }
         return normalizeContent(inputArea.text)
     }
 
-    private fun buildChecklistConfirmedContext(state: ClarificationState): String {
-        val confirmedQuestionDetails = state.questionDecisions.entries
-            .filter { it.value == ClarificationQuestionDecision.CONFIRMED }
-            .sortedBy { it.key }
-            .mapNotNull { entry ->
-                val question = state.structuredQuestions.getOrNull(entry.key)?.trim().orEmpty()
-                if (question.isBlank()) {
-                    null
-                } else {
-                    val detail = state.questionDetails[entry.key]
-                        ?.replace("\r\n", "\n")
-                        ?.replace('\r', '\n')
-                        ?.trim()
-                        .orEmpty()
-                    question to detail
-                }
-            }
-        val notApplicableQuestions = state.questionDecisions.entries
-            .filter { it.value == ClarificationQuestionDecision.NOT_APPLICABLE }
-            .sortedBy { it.key }
-            .mapNotNull { entry -> state.structuredQuestions.getOrNull(entry.key) }
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-        if (confirmedQuestionDetails.isEmpty() && notApplicableQuestions.isEmpty()) {
-            return ""
-        }
-        return buildString {
-            if (confirmedQuestionDetails.isNotEmpty()) {
-                appendLine("**${SpecCodingBundle.message("spec.detail.clarify.confirmed.title")}**")
-                confirmedQuestionDetails.forEach { (question, detail) ->
-                    appendLine("- $question")
-                    if (detail.isNotBlank()) {
-                        appendLine("  - ${SpecCodingBundle.message("spec.detail.clarify.checklist.detail.exportPrefix")}: $detail")
-                    }
-                }
-            }
-            if (notApplicableQuestions.isNotEmpty()) {
-                if (confirmedQuestionDetails.isNotEmpty()) {
-                    appendLine()
-                }
-                appendLine("**${SpecCodingBundle.message("spec.detail.clarify.notApplicable.title")}**")
-                notApplicableQuestions.forEach { question ->
-                    appendLine("- $question")
-                }
-            }
-        }.trimEnd()
-    }
-
-    private fun syncClarificationInputFromSelection(state: ClarificationState?) {
+    private fun syncClarificationInputFromSelection(state: SpecDetailClarificationFormState?) {
         val currentState = state ?: clarificationState ?: return
-        if (currentState.structuredQuestions.isEmpty()) {
+        if (!currentState.checklistMode) {
             return
         }
-        inputArea.text = buildChecklistConfirmedContext(currentState)
+        inputArea.text = currentState.confirmedContext(clarificationText())
         inputArea.caretPosition = 0
     }
 
-    private fun inferQuestionDecisions(
-        structuredQuestions: List<String>,
-        confirmedContext: String,
-    ): Map<Int, ClarificationQuestionDecision> {
-        if (structuredQuestions.isEmpty()) {
-            return emptyMap()
-        }
-        val lines = confirmedContext
-            .replace("\r\n", "\n")
-            .replace('\r', '\n')
-            .lines()
-        val normalizedContext = normalizeComparableText(confirmedContext)
-        if (normalizedContext.isBlank()) {
-            return emptyMap()
-        }
-        val lineSections = mapContextSections(lines)
-        return structuredQuestions.mapIndexedNotNull { index, question ->
-            val normalizedQuestion = normalizeComparableText(question)
-            if (normalizedQuestion.isBlank()) {
-                return@mapIndexedNotNull null
-            }
-            val lineIndex = lines.indexOfFirst { line ->
-                normalizeComparableText(line).contains(normalizedQuestion)
-            }
-            val normalizedLine = if (lineIndex >= 0) normalizeComparableText(lines[lineIndex]) else null
-            val section = lineSections[lineIndex] ?: ClarificationContextSection.OTHER
-            when {
-                normalizedLine != null && normalizedLine.contains("[x]") ->
-                    index to ClarificationQuestionDecision.CONFIRMED
-                normalizedLine != null && (normalizedLine.contains("[ ]") || normalizedLine.contains("[]")) ->
-                    index to ClarificationQuestionDecision.NOT_APPLICABLE
-                section == ClarificationContextSection.NOT_APPLICABLE ->
-                    index to ClarificationQuestionDecision.NOT_APPLICABLE
-                section == ClarificationContextSection.CONFIRMED ->
-                    index to ClarificationQuestionDecision.CONFIRMED
-                normalizedContext.contains(normalizedQuestion) ->
-                    index to ClarificationQuestionDecision.CONFIRMED
-                else -> null
-            }
-        }.toMap()
-    }
-
-    private fun inferQuestionDetails(
-        structuredQuestions: List<String>,
-        confirmedContext: String,
-        questionDecisions: Map<Int, ClarificationQuestionDecision>,
-    ): Map<Int, String> {
-        if (structuredQuestions.isEmpty() || questionDecisions.isEmpty()) {
-            return emptyMap()
-        }
-        val lines = confirmedContext
-            .replace("\r\n", "\n")
-            .replace('\r', '\n')
-            .lines()
-        if (lines.isEmpty()) {
-            return emptyMap()
-        }
-        return questionDecisions.entries
-            .asSequence()
-            .filter { it.value == ClarificationQuestionDecision.CONFIRMED }
-            .mapNotNull { (index, _) ->
-                val normalizedQuestion = normalizeComparableText(structuredQuestions.getOrNull(index).orEmpty())
-                if (normalizedQuestion.isBlank()) {
-                    return@mapNotNull null
-                }
-                val questionLineIndex = lines.indexOfFirst { line ->
-                    normalizeComparableText(line).contains(normalizedQuestion)
-                }
-                if (questionLineIndex < 0) {
-                    return@mapNotNull null
-                }
-                val detail = extractChecklistDetail(lines, questionLineIndex)
-                if (detail.isBlank()) {
-                    null
-                } else {
-                    index to detail
-                }
-            }
-            .toMap()
-    }
-
-    private fun extractChecklistDetail(lines: List<String>, questionLineIndex: Int): String {
-        for (lineIndex in (questionLineIndex + 1) until lines.size) {
-            val rawLine = lines[lineIndex]
-            val trimmed = rawLine.trim()
-            if (trimmed.isBlank()) {
-                continue
-            }
-            if (trimmed.startsWith("#")) {
-                break
-            }
-            if (trimmed.startsWith("- ") && !DETAIL_LINE_REGEX.containsMatchIn(trimmed)) {
-                break
-            }
-            val detailMatch = DETAIL_LINE_REGEX.find(trimmed)
-            if (detailMatch != null) {
-                return detailMatch.groupValues[2].trim()
-            }
-        }
-        return ""
-    }
-
-    private fun mapContextSections(lines: List<String>): Map<Int, ClarificationContextSection> {
-        val sectionByLine = mutableMapOf<Int, ClarificationContextSection>()
-        var current = ClarificationContextSection.OTHER
-        lines.forEachIndexed { index, line ->
-            val normalized = normalizeComparableText(line)
-            when {
-                normalized.isBlank() -> Unit
-                clarificationConfirmedSectionMarkers().any { marker -> normalized.contains(marker) } -> {
-                    current = ClarificationContextSection.CONFIRMED
-                }
-                clarificationNotApplicableSectionMarkers().any { marker -> normalized.contains(marker) } -> {
-                    current = ClarificationContextSection.NOT_APPLICABLE
-                }
-            }
-            sectionByLine[index] = current
-        }
-        return sectionByLine
+    private fun clarificationText(): SpecDetailClarificationText {
+        return SpecDetailClarificationText(
+            confirmedTitle = SpecCodingBundle.message("spec.detail.clarify.confirmed.title"),
+            notApplicableTitle = SpecCodingBundle.message("spec.detail.clarify.notApplicable.title"),
+            detailPrefix = SpecCodingBundle.message("spec.detail.clarify.checklist.detail.exportPrefix"),
+            confirmedSectionMarkers = clarificationConfirmedSectionMarkers(),
+            notApplicableSectionMarkers = clarificationNotApplicableSectionMarkers(),
+        )
     }
 
     private fun clarificationConfirmedSectionMarkers(): List<String> {
@@ -2805,12 +2514,6 @@ class SpecDetailPanel(
         ).map(::normalizeComparableText).filter { it.isNotBlank() }
     }
 
-    private enum class ClarificationContextSection {
-        CONFIRMED,
-        NOT_APPLICABLE,
-        OTHER,
-    }
-
     private fun normalizeComparableText(value: String): String {
         return value
             .replace("\r\n", "\n")
@@ -2821,7 +2524,7 @@ class SpecDetailPanel(
 
     private fun refreshInputAreaMode() {
         updateInputPlaceholder(currentWorkflow?.currentPhase)
-        val checklistMode = clarificationState?.structuredQuestions?.isNotEmpty() == true
+        val checklistMode = clarificationState?.checklistMode == true
         val lockedPhase = currentWorkflow?.let(::currentReadOnlyRevisionLockedPhase)
         val showInputSection = !checklistMode
         if (::inputSectionContainer.isInitialized && inputSectionContainer.isVisible != showInputSection) {
@@ -2964,7 +2667,7 @@ class SpecDetailPanel(
 
     private fun updateClarificationPreview() {
         val state = clarificationState ?: return
-        if (state.structuredQuestions.isNotEmpty()) {
+        if (state.checklistMode) {
             renderChecklistPreview(state)
             return
         }
@@ -2980,35 +2683,10 @@ class SpecDetailPanel(
         }
     }
 
-    private fun renderChecklistPreview(state: ClarificationState) {
+    private fun renderChecklistPreview(state: SpecDetailClarificationFormState) {
         val doc = clarificationPreviewPane.styledDocument
-        val confirmedQuestionDetails = state.questionDecisions.entries
-            .filter { it.value == ClarificationQuestionDecision.CONFIRMED }
-            .sortedBy { it.key }
-            .mapNotNull { entry ->
-                val question = state.structuredQuestions.getOrNull(entry.key)?.trim().orEmpty()
-                if (question.isBlank()) {
-                    null
-                } else {
-                    val detail = state.questionDetails[entry.key]
-                        ?.replace("\r\n", "\n")
-                        ?.replace('\r', '\n')
-                        ?.lineSequence()
-                        ?.map { it.trim() }
-                        ?.filter { it.isNotBlank() }
-                        ?.joinToString(" ")
-                        ?.replace(Regex("\\s+"), " ")
-                        ?.trim()
-                        .orEmpty()
-                    question to detail
-                }
-            }
-        val notApplicableQuestions = state.questionDecisions.entries
-            .filter { it.value == ClarificationQuestionDecision.NOT_APPLICABLE }
-            .sortedBy { it.key }
-            .mapNotNull { entry -> state.structuredQuestions.getOrNull(entry.key) }
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
+        val confirmedQuestionDetails = state.confirmedEntries()
+        val notApplicableQuestions = state.notApplicableQuestions()
 
         runCatching {
             doc.remove(0, doc.length)
@@ -3051,22 +2729,22 @@ class SpecDetailPanel(
             if (confirmedQuestionDetails.isNotEmpty()) {
                 doc.insertString(doc.length, SpecCodingBundle.message("spec.detail.clarify.confirmed.title"), titleAttrs)
                 appendNewline()
-                val detailPrefix = SpecCodingBundle.message("spec.detail.clarify.checklist.detail.exportPrefix")
-                confirmedQuestionDetails.forEachIndexed { idx, (question, detail) ->
+                val detailPrefix = clarificationText().detailPrefix
+                confirmedQuestionDetails.forEachIndexed { idx, entry ->
                     if (idx > 0) {
                         appendNewline()
                     }
                     doc.insertString(doc.length, "• ", bodyAttrs)
                     appendInlineMarkdownStyled(
                         doc = doc,
-                        text = question,
+                        text = entry.question,
                         plainAttrs = bodyAttrs,
                         boldAttrs = questionBoldAttrs,
                         codeAttrs = questionCodeAttrs,
                     )
-                    if (detail.isNotBlank()) {
+                    if (entry.detail.isNotBlank()) {
                         doc.insertString(doc.length, "  ", bodyAttrs)
-                        doc.insertString(doc.length, " $detailPrefix: $detail ", detailChipAttrs)
+                        doc.insertString(doc.length, " $detailPrefix: ${entry.detail} ", detailChipAttrs)
                     }
                 }
             }
@@ -3166,63 +2844,11 @@ class SpecDetailPanel(
         data class Code(override val text: String) : InlineMarkdownToken(text)
     }
 
-    private fun buildChecklistPreviewMarkdown(state: ClarificationState): String {
-        val confirmedQuestionDetails = state.questionDecisions.entries
-            .filter { it.value == ClarificationQuestionDecision.CONFIRMED }
-            .sortedBy { it.key }
-            .mapNotNull { entry ->
-                val question = state.structuredQuestions.getOrNull(entry.key)?.trim().orEmpty()
-                if (question.isBlank()) {
-                    null
-                } else {
-                    val detail = state.questionDetails[entry.key]
-                        ?.replace("\r\n", "\n")
-                        ?.replace('\r', '\n')
-                        ?.lineSequence()
-                        ?.map { it.trim() }
-                        ?.filter { it.isNotBlank() }
-                        ?.joinToString(" ")
-                        ?.replace(Regex("\\s+"), " ")
-                        ?.trim()
-                        .orEmpty()
-                    question to detail
-                }
-            }
-        val notApplicableQuestions = state.questionDecisions.entries
-            .filter { it.value == ClarificationQuestionDecision.NOT_APPLICABLE }
-            .sortedBy { it.key }
-            .mapNotNull { entry -> state.structuredQuestions.getOrNull(entry.key) }
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-        if (confirmedQuestionDetails.isEmpty() && notApplicableQuestions.isEmpty()) {
-            return ""
-        }
-        val detailPrefix = SpecCodingBundle.message("spec.detail.clarify.checklist.detail.exportPrefix")
-        return buildString {
-            if (confirmedQuestionDetails.isNotEmpty()) {
-                appendLine("**${SpecCodingBundle.message("spec.detail.clarify.confirmed.title")}**")
-                confirmedQuestionDetails.forEach { (question, detail) ->
-                    if (detail.isNotBlank()) {
-                        val escaped = detail.replace('`', '\'')
-                        appendLine("- $question  `$detailPrefix: $escaped`")
-                    } else {
-                        appendLine("- $question")
-                    }
-                }
-            }
-            if (notApplicableQuestions.isNotEmpty()) {
-                if (confirmedQuestionDetails.isNotEmpty()) {
-                    appendLine()
-                }
-                appendLine("**${SpecCodingBundle.message("spec.detail.clarify.notApplicable.title")}**")
-                notApplicableQuestions.forEach { question ->
-                    appendLine("- $question")
-                }
-            }
-        }.trimEnd()
+    private fun buildChecklistPreviewMarkdown(state: SpecDetailClarificationFormState): String {
+        return state.previewMarkdown(clarificationText())
     }
 
-    private fun persistClarificationDraftSnapshot(state: ClarificationState? = clarificationState) {
+    private fun persistClarificationDraftSnapshot(state: SpecDetailClarificationFormState? = clarificationState) {
         val snapshot = state ?: return
         onClarificationDraftAutosave(
             snapshot.input,
@@ -3332,34 +2958,18 @@ class SpecDetailPanel(
     }
 
     private fun renderProcessTimeline() {
-        if (processTimelineEntries.isEmpty()) {
+        if (!processTimelineModel.visible) {
             processTimelinePane.text = ""
             setProcessTimelineVisible(false)
             return
         }
         setProcessTimelineVisible(true)
-        val markdown = buildString {
-            processTimelineEntries.forEach { entry ->
-                appendLine("- ${processStatePrefix(entry.state)} ${entry.text}")
-            }
-        }.trimEnd()
         runCatching {
-            MarkdownRenderer.render(processTimelinePane, markdown)
+            MarkdownRenderer.render(processTimelinePane, processTimelineModel.markdown)
             processTimelinePane.caretPosition = 0
         }.onFailure {
-            processTimelinePane.text = processTimelineEntries.joinToString("\n") { entry ->
-                "${processStatePrefix(entry.state)} ${entry.text}"
-            }
+            processTimelinePane.text = processTimelineModel.plainText
             processTimelinePane.caretPosition = 0
-        }
-    }
-
-    private fun processStatePrefix(state: ProcessTimelineState): String {
-        return when (state) {
-            ProcessTimelineState.INFO -> "•"
-            ProcessTimelineState.ACTIVE -> "→"
-            ProcessTimelineState.DONE -> "✓"
-            ProcessTimelineState.FAILED -> "✕"
         }
     }
 
@@ -3490,7 +3100,7 @@ class SpecDetailPanel(
         previewChecklistInteraction = if (
             interactivePhase != null &&
             displayContent == normalizedRaw &&
-            (workflow == null || !isReadOnlyRevisionLocked(workflow, interactivePhase))
+            (workflow == null || resolveDetailViewState(workflow).revisionLockedPhase != interactivePhase)
         ) {
             PreviewChecklistInteraction(
                 phase = interactivePhase,
@@ -3737,90 +3347,53 @@ class SpecDetailPanel(
 
     private fun updateButtonStates(workflow: SpecWorkflow) {
         applyActionButtonPresentation()
-        val inProgress = workflow.status == WorkflowStatus.IN_PROGRESS
-        val allowEditing = !isGeneratingActive
-        val clarifying = clarificationState != null
-        val clarificationLocked = clarifying && isClarificationChecklistReadOnly
-        val composeMode = currentComposeActionMode()
-        val revisionLockedPhase = currentReadOnlyRevisionLockedPhase(workflow)
-        val standardModeEnabled = inProgress &&
-            !isEditing &&
-            !clarifying &&
-            !isGeneratingActive &&
-            revisionLockedPhase == null
-        val artifactOnlyView = isWorkbenchArtifactOnlyView()
-        val selectedDocumentAvailable = selectedPhase?.let { currentWorkflow?.documents?.containsKey(it) } == true
-        val artifactOpenAvailable = artifactOnlyView && workbenchArtifactBinding?.available == true
-
-        generateButton.isVisible = !clarifying
-        nextPhaseButton.isVisible = !clarifying
-        goBackButton.isVisible = false
-        completeButton.isVisible = false
-        pauseResumeButton.isVisible = false
-        openEditorButton.isVisible = !clarifying
-        historyDiffButton.isVisible = !clarifying && !artifactOnlyView
-        editButton.isVisible = !clarifying && !isEditing && !artifactOnlyView
-        saveButton.isVisible = !clarifying && isEditing
-        cancelEditButton.isVisible = !clarifying && isEditing
-
-        confirmGenerateButton.isVisible = clarifying
-        regenerateClarificationButton.isVisible = clarifying
-        skipClarificationButton.isVisible = clarifying
-        cancelClarificationButton.isVisible = clarifying
-
-        setActionEnabled(
-            button = generateButton,
-            enabled = standardModeEnabled,
-            disabledReason = revisionLockedPhase?.let(::revisionLockedDisabledReason) ?: ArtifactComposeActionUiText.primaryActionDisabledReason(
-                mode = composeMode,
-                status = workflow.status,
-                isGeneratingActive = isGeneratingActive,
-                isEditing = isEditing,
-            ),
+        val actionState = SpecDetailPanelActionCoordinator.resolve(
+            workflow = workflow,
+            composeMode = currentComposeActionMode(),
+            viewState = resolveDetailViewState(workflow),
+            isEditing = isEditing,
+            isGeneratingActive = isGeneratingActive,
+            isClarifying = clarificationState != null,
+            isClarificationChecklistReadOnly = isClarificationChecklistReadOnly,
+            revisionLockedDisabledReason = ::revisionLockedDisabledReason,
         )
-        setActionEnabled(button = nextPhaseButton, enabled = workflow.canProceedToNext() && standardModeEnabled)
-        setActionEnabled(button = goBackButton, enabled = false)
-        setActionEnabled(button = completeButton, enabled = false)
-        setActionEnabled(button = pauseResumeButton, enabled = false)
+
+        applyActionState(generateButton, actionState.generate)
+        applyActionState(nextPhaseButton, actionState.nextPhase)
+        applyActionState(goBackButton, actionState.goBack)
+        applyActionState(completeButton, actionState.complete)
+        applyActionState(pauseResumeButton, actionState.pauseResume)
         updatePauseResumeButtonPresentation(workflow.status)
         styleActionButton(pauseResumeButton)
-        setActionEnabled(
-            button = openEditorButton,
-            enabled = !isEditing && !clarifying && (selectedDocumentAvailable || artifactOpenAvailable),
-        )
-        setActionEnabled(
-            button = historyDiffButton,
-            enabled = !artifactOnlyView && !isEditing && !clarifying && selectedDocumentAvailable,
-        )
-        setActionEnabled(
-            button = editButton,
-            enabled = !artifactOnlyView && !isEditing && allowEditing && !clarifying && resolveEditablePhase(workflow) != null,
-        )
-        setActionEnabled(button = saveButton, enabled = isEditing)
-        setActionEnabled(button = cancelEditButton, enabled = isEditing)
-        setActionEnabled(
-            button = confirmGenerateButton,
-            enabled = clarifying && inProgress && !isGeneratingActive && !clarificationLocked,
-            disabledReason = ArtifactComposeActionUiText.clarificationConfirmDisabledReason(
-                mode = composeMode,
-                status = workflow.status,
-                isGeneratingActive = isGeneratingActive,
-                clarificationLocked = clarificationLocked,
-            ),
-        )
-        setActionEnabled(
-            button = regenerateClarificationButton,
-            enabled = clarifying && inProgress && !isGeneratingActive && !clarificationLocked,
-        )
-        setActionEnabled(
-            button = skipClarificationButton,
-            enabled = clarifying && inProgress && !isGeneratingActive && !clarificationLocked,
-        )
-        setActionEnabled(
-            button = cancelClarificationButton,
-            enabled = clarifying && !isGeneratingActive && !clarificationLocked,
-        )
+        applyActionState(openEditorButton, actionState.openEditor)
+        applyActionState(historyDiffButton, actionState.historyDiff)
+        applyActionState(editButton, actionState.edit)
+        applyActionState(saveButton, actionState.save)
+        applyActionState(cancelEditButton, actionState.cancelEdit)
+        applyActionState(confirmGenerateButton, actionState.confirmGenerate)
+        applyActionState(regenerateClarificationButton, actionState.regenerateClarification)
+        applyActionState(skipClarificationButton, actionState.skipClarification)
+        applyActionState(cancelClarificationButton, actionState.cancelClarification)
         refreshInputAreaMode()
+    }
+
+    private fun resolveDetailViewState(workflow: SpecWorkflow): SpecDetailPanelViewState {
+        return SpecDetailPanelViewState.resolve(
+            workflow = workflow,
+            selectedPhase = selectedPhase,
+            preferredWorkbenchPhase = preferredWorkbenchPhase,
+            explicitRevisionPhase = explicitRevisionPhase,
+            workbenchArtifactBinding = workbenchArtifactBinding,
+        )
+    }
+
+    private fun applyActionState(button: JButton, state: SpecDetailPanelActionButtonState) {
+        button.isVisible = state.visible
+        setActionEnabled(
+            button = button,
+            enabled = state.enabled,
+            disabledReason = state.disabledReason,
+        )
     }
 
     private fun disableAllButtons() {
@@ -3924,11 +3497,11 @@ class SpecDetailPanel(
         val currentDecision = clarificationState
             ?.questionDecisions
             ?.get(index)
-            ?: ClarificationQuestionDecision.UNDECIDED
-        val nextDecision = if (currentDecision == ClarificationQuestionDecision.CONFIRMED) {
-            ClarificationQuestionDecision.UNDECIDED
+            ?: SpecDetailClarificationQuestionDecision.UNDECIDED
+        val nextDecision = if (currentDecision == SpecDetailClarificationQuestionDecision.CONFIRMED) {
+            SpecDetailClarificationQuestionDecision.UNDECIDED
         } else {
-            ClarificationQuestionDecision.CONFIRMED
+            SpecDetailClarificationQuestionDecision.CONFIRMED
         }
         onChecklistQuestionDecisionChanged(index, nextDecision)
     }
@@ -3937,18 +3510,18 @@ class SpecDetailPanel(
         val currentDecision = clarificationState
             ?.questionDecisions
             ?.get(index)
-            ?: ClarificationQuestionDecision.UNDECIDED
-        val nextDecision = if (currentDecision == ClarificationQuestionDecision.NOT_APPLICABLE) {
-            ClarificationQuestionDecision.UNDECIDED
+            ?: SpecDetailClarificationQuestionDecision.UNDECIDED
+        val nextDecision = if (currentDecision == SpecDetailClarificationQuestionDecision.NOT_APPLICABLE) {
+            SpecDetailClarificationQuestionDecision.UNDECIDED
         } else {
-            ClarificationQuestionDecision.NOT_APPLICABLE
+            SpecDetailClarificationQuestionDecision.NOT_APPLICABLE
         }
         onChecklistQuestionDecisionChanged(index, nextDecision)
     }
 
     internal fun currentChecklistDecisionForTest(index: Int): String? {
         val state = clarificationState ?: return null
-        return (state.questionDecisions[index] ?: ClarificationQuestionDecision.UNDECIDED).name
+        return (state.questionDecisions[index] ?: SpecDetailClarificationQuestionDecision.UNDECIDED).name
     }
 
     internal fun currentChecklistDetailForTest(index: Int): String? {
@@ -4522,14 +4095,12 @@ class SpecDetailPanel(
         private val COLLAPSE_TOGGLE_TEXT_ACTIVE = JBColor(Color(86, 115, 158), Color(187, 205, 230))
         private val DETAIL_START_REVISION_ICON = IconLoader.getIcon("/icons/spec-workflow-start-revision.svg", SpecDetailPanel::class.java)
         private val DETAIL_SAVE_ICON = IconLoader.getIcon("/icons/spec-detail-save.svg", SpecDetailPanel::class.java)
-        private const val MAX_PROCESS_TIMELINE_ENTRIES = 18
         private const val DOCUMENT_VIEWPORT_HEIGHT = 360
         private const val CARD_PREVIEW = "preview"
         private const val CARD_EDIT = "edit"
         private const val CARD_CLARIFY = "clarify"
         private const val CLARIFY_QUESTIONS_CARD_MARKDOWN = "clarify.questions.markdown"
         private const val CLARIFY_QUESTIONS_CARD_CHECKLIST = "clarify.questions.checklist"
-        private val DETAIL_LINE_REGEX = Regex("^-\\s*(detail|details|补充|说明)\\s*[:：]\\s*(.+)$", RegexOption.IGNORE_CASE)
         private val CODE_FENCE_MARKER_REGEX = Regex("```")
         private val HEADING_LINE_REGEX = Regex("""^\s{0,3}#{1,6}\s+\S+""")
         private val LIST_OR_CHECKBOX_LINE_REGEX = Regex("""^\s*(?:[-*]\s+\S+|\d+\.\s+\S+|-?\s*\[[ xX]\]\s+\S+)""")

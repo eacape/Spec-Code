@@ -76,3 +76,5 @@ logs/
 /.gradle-entry-verify/
 /.gradle-local-setup-verify/
 /.gradle-beta-entry-verify/
+/.gradle-spec-detail-verify/
+/.gradle-*/
