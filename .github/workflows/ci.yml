@@ -40,8 +40,8 @@ jobs:
       - name: Guard frozen UI hotspot growth
         run: ./gradlew uiHotspotGrowthGuard --stacktrace
 
-      - name: Run core and architecture regression tests
-        run: ./gradlew coreRegressionTest architectureRegressionTest --stacktrace
+      - name: Run core, architecture, and external process audit regression tests
+        run: ./gradlew coreRegressionTest architectureRegressionTest externalProcessAuditTest --stacktrace
 
       - name: Run workflow and UI smoke tests
         run: ./gradlew workflowSmokeTest --stacktrace

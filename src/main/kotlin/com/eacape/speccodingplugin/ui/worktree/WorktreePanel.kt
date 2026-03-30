@@ -85,6 +85,8 @@ class WorktreePanel(
     private val detailPanel = WorktreeDetailPanel()
 
     private val titleLabel = JBLabel(SpecCodingBundle.message("worktree.panel.title"))
+    private val experimentalBadgeLabel = JBLabel(SpecCodingBundle.message("beta.badge.experimental"))
+    private val noteLabel = JBLabel(SpecCodingBundle.message("worktree.panel.note"))
     private val statusLabel = JBLabel(SpecCodingBundle.message("worktree.status.count", 0))
 
     private var selectedWorktreeId: String? = null
@@ -123,8 +125,37 @@ class WorktreePanel(
 
     private fun buildHeader(): JPanel {
         titleLabel.font = titleLabel.font.deriveFont(Font.BOLD, 13f)
+        experimentalBadgeLabel.font = JBUI.Fonts.miniFont().deriveFont(Font.BOLD)
+        experimentalBadgeLabel.foreground = EXPERIMENT_BADGE_FG
+        experimentalBadgeLabel.isOpaque = true
+        experimentalBadgeLabel.background = EXPERIMENT_BADGE_BG
+        experimentalBadgeLabel.border = SpecUiStyle.roundedCardBorder(
+            lineColor = EXPERIMENT_BADGE_BORDER,
+            arc = JBUI.scale(10),
+            top = 2,
+            left = 8,
+            bottom = 2,
+            right = 8,
+        )
+        noteLabel.font = JBUI.Fonts.smallFont()
+        noteLabel.foreground = NOTE_TEXT_FG
         statusLabel.font = JBUI.Fonts.smallFont()
         statusLabel.foreground = STATUS_TEXT_FG
+
+        val titleRow = JPanel().apply {
+            layout = javax.swing.BoxLayout(this, javax.swing.BoxLayout.X_AXIS)
+            isOpaque = false
+            add(titleLabel)
+            add(javax.swing.Box.createHorizontalStrut(JBUI.scale(8)))
+            add(experimentalBadgeLabel)
+        }
+        val titleStack = JPanel().apply {
+            layout = javax.swing.BoxLayout(this, javax.swing.BoxLayout.Y_AXIS)
+            isOpaque = false
+            add(titleRow)
+            add(javax.swing.Box.createVerticalStrut(JBUI.scale(4)))
+            add(noteLabel)
+        }
 
         val statusChip = JPanel(BorderLayout()).apply {
             isOpaque = true
@@ -151,7 +182,7 @@ class WorktreePanel(
                 bottom = 8,
                 right = 10,
             )
-            add(titleLabel, BorderLayout.WEST)
+            add(titleStack, BorderLayout.WEST)
             add(statusChip, BorderLayout.EAST)
         }
 
@@ -322,7 +353,8 @@ class WorktreePanel(
     }
 
     private fun subscribeToLocaleEvents() {
-        ApplicationManager.getApplication().messageBus.connect(this).subscribe(
+        val application = ApplicationManager.getApplication() ?: return
+        application.messageBus.connect(this).subscribe(
             LocaleChangedListener.TOPIC,
             object : LocaleChangedListener {
                 override fun onLocaleChanged(event: LocaleChangedEvent) {
@@ -336,12 +368,20 @@ class WorktreePanel(
 
     private fun refreshLocalizedTexts() {
         titleLabel.text = SpecCodingBundle.message("worktree.panel.title")
+        experimentalBadgeLabel.text = SpecCodingBundle.message("beta.badge.experimental")
+        noteLabel.text = SpecCodingBundle.message("worktree.panel.note")
         statusLabel.text = SpecCodingBundle.message("worktree.status.count", currentItems.size)
         listPanel.refreshLocalizedTexts()
         detailPanel.refreshLocalizedTexts()
     }
 
     internal fun selectedWorktreeIdForTest(): String? = selectedWorktreeId
+
+    internal fun titleTextForTest(): String = titleLabel.text.orEmpty()
+
+    internal fun experimentalBadgeTextForTest(): String = experimentalBadgeLabel.text.orEmpty()
+
+    internal fun noteTextForTest(): String = noteLabel.text.orEmpty()
 
     internal fun itemsForTest(): List<WorktreeListItem> = currentItems
 
@@ -388,6 +428,10 @@ class WorktreePanel(
         private val PANEL_BG = JBColor(Color(247, 250, 255), Color(52, 57, 65))
         private val HEADER_BG = JBColor(Color(246, 249, 255), Color(57, 62, 70))
         private val HEADER_BORDER = JBColor(Color(204, 216, 236), Color(87, 98, 114))
+        private val EXPERIMENT_BADGE_BG = JBColor(Color(252, 245, 229), Color(86, 74, 54))
+        private val EXPERIMENT_BADGE_BORDER = JBColor(Color(230, 196, 128), Color(138, 115, 76))
+        private val EXPERIMENT_BADGE_FG = JBColor(Color(118, 78, 14), Color(241, 221, 176))
+        private val NOTE_TEXT_FG = JBColor(Color(110, 124, 147), Color(183, 194, 208))
         private val STATUS_CHIP_BG = JBColor(Color(236, 244, 255), Color(66, 76, 91))
         private val STATUS_CHIP_BORDER = JBColor(Color(178, 198, 226), Color(99, 116, 140))
         private val STATUS_TEXT_FG = JBColor(Color(52, 72, 106), Color(201, 213, 232))

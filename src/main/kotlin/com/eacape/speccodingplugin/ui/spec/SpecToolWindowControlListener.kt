@@ -2,6 +2,7 @@ package com.eacape.speccodingplugin.ui.spec
 
 import com.eacape.speccodingplugin.spec.RequirementsSectionId
 import com.eacape.speccodingplugin.spec.StageId
+import com.eacape.speccodingplugin.spec.WorkflowTemplate
 import com.intellij.util.messages.Topic
 
 data class RequirementsRepairClarificationRequest(
@@ -20,7 +21,7 @@ data class SpecToolWindowOpenRequest(
 )
 
 interface SpecToolWindowControlListener {
-    fun onCreateWorkflowRequested()
+    fun onCreateWorkflowRequested(preferredTemplate: WorkflowTemplate? = null)
 
     fun onSelectWorkflowRequested(workflowId: String)
 

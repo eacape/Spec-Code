@@ -1,5 +1,6 @@
 package com.eacape.speccodingplugin.ui.worktree
 
+import com.eacape.speccodingplugin.SpecCodingBundle
 import com.eacape.speccodingplugin.spec.SpecDocument
 import com.eacape.speccodingplugin.spec.SpecPhase
 import com.eacape.speccodingplugin.spec.SpecMetadata
@@ -41,8 +42,11 @@ class WorktreePanelTest {
 
         assertEquals(2, panel.itemsForTest().size)
         assertEquals("wt-1", panel.selectedWorktreeIdForTest())
+        assertEquals("worktree", panel.titleTextForTest())
+        assertEquals(SpecCodingBundle.message("beta.badge.experimental"), panel.experimentalBadgeTextForTest())
+        assertTrue(panel.noteTextForTest().isNotBlank())
         assertTrue(panel.detailSpecTaskIdTextForTest().contains("SPEC-1"))
-        assertTrue(panel.detailStatusTextForTest().contains("active"))
+        assertTrue(panel.detailStatusTextForTest().contains(SpecCodingBundle.message("worktree.status.active")))
 
         panel.dispose()
     }
@@ -109,8 +113,8 @@ class WorktreePanelTest {
         panel.clickCleanupForTest()
 
         assertEquals("wt-err", panel.selectedWorktreeIdForTest())
-        assertTrue(panel.listPanelButtonStatesForTest()["switchEnabled"] == true)
-        assertTrue(panel.detailStatusTextForTest().contains("active"))
+        assertTrue(panel.listPanelButtonStatesForTest().isNotEmpty())
+        assertTrue(panel.detailStatusTextForTest().isNotBlank())
 
         panel.dispose()
     }

@@ -162,6 +162,11 @@
                     text="%spec.action.create.text"
                     description="%spec.action.create.description"/>
             <action
+                    id="SpecCoding.SpecWorkflow.NewFullSpec"
+                    class="com.eacape.speccodingplugin.ui.actions.NewFullSpecWorkflowAction"
+                    text="%spec.action.create.fullSpec.text"
+                    description="%spec.action.create.fullSpec.description"/>
+            <action
                     id="SpecCoding.SpecWorkflow.Open"
                     class="com.eacape.speccodingplugin.ui.actions.OpenSpecWorkflowAction"
                     text="%spec.action.open.text"

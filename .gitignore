@@ -72,3 +72,7 @@ logs/
 /.gradle-local/
 /.gradle-user/
 /build-codex-temp/
+/.gradle-user-home-dump/
+/.gradle-entry-verify/
+/.gradle-local-setup-verify/
+/.gradle-beta-entry-verify/

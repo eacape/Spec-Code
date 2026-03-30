@@ -1,5 +1,8 @@
 package com.eacape.speccodingplugin.session
 
+import com.eacape.speccodingplugin.telemetry.PersistenceOperationTelemetry
+import com.eacape.speccodingplugin.telemetry.buildPersistenceTelemetryDetails
+import com.eacape.speccodingplugin.telemetry.emitPersistenceTelemetry
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.thisLogger
@@ -415,22 +418,38 @@ class SessionManager internal constructor(
         }
 
         val normalizedLimit = limit.coerceAtLeast(1)
-        return withConnection { connection ->
-            connection.prepareStatement(
-                """
-                SELECT id, session_id, role, content, token_count, metadata_json, created_at
-                FROM messages
-                WHERE session_id = ?
-                ORDER BY created_at ASC
-                LIMIT ?
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setString(1, normalizedSessionId)
-                statement.setInt(2, normalizedLimit)
-                statement.executeQuery().use { resultSet ->
-                    buildList {
-                        while (resultSet.next()) {
-                            add(resultSet.toMessage())
+        return traceSessionOperation(
+            operation = "listMessages",
+            scope = "session:$normalizedSessionId",
+            describeSuccess = { messages, elapsedMs ->
+                PersistenceOperationTelemetry(
+                    component = "SessionManager",
+                    operation = "listMessages",
+                    scope = "session:$normalizedSessionId",
+                    elapsedMs = elapsedMs,
+                    outcome = "success",
+                    limit = normalizedLimit,
+                    itemCount = messages.size,
+                )
+            },
+        ) {
+            withConnection { connection ->
+                connection.prepareStatement(
+                    """
+                    SELECT id, session_id, role, content, token_count, metadata_json, created_at
+                    FROM messages
+                    WHERE session_id = ?
+                    ORDER BY created_at ASC
+                    LIMIT ?
+                    """.trimIndent(),
+                ).use { statement ->
+                    statement.setString(1, normalizedSessionId)
+                    statement.setInt(2, normalizedLimit)
+                    statement.executeQuery().use { resultSet ->
+                        buildList {
+                            while (resultSet.next()) {
+                                add(resultSet.toMessage())
+                            }
                         }
                     }
                 }
@@ -447,79 +466,99 @@ class SessionManager internal constructor(
         val normalizedLimit = limit.coerceAtLeast(1)
         val hasQuery = normalizedQuery.isNotBlank()
 
-        return withConnection { connection ->
-            val baseSql = StringBuilder(
-                """
-                SELECT
-                    s.id,
-                    s.title,
-                    s.spec_task_id,
-                    s.worktree_id,
-                    s.model_provider,
-                    s.workflow_id,
-                    s.task_id,
-                    s.focused_stage,
-                    s.workflow_source,
-                    s.workflow_action_intent,
-                    s.parent_session_id,
-                    s.branch_name,
-                    s.updated_at,
-                    COUNT(m.id) AS message_count
-                FROM sessions s
-                LEFT JOIN messages m ON m.session_id = s.id
-                """.trimIndent()
-            )
-
-            val conditions = mutableListOf<String>()
-            val specSessionCondition = """
-                (
-                    (s.workflow_id IS NOT NULL AND TRIM(s.workflow_id) <> '')
-                    OR
-                    (s.spec_task_id IS NOT NULL AND TRIM(s.spec_task_id) <> '')
-                    OR LOWER(TRIM(s.title)) LIKE '/workflow%'
-                    OR LOWER(TRIM(s.title)) LIKE '/spec%'
-                    OR LOWER(TRIM(s.title)) LIKE '[workflow]%'
-                    OR LOWER(TRIM(s.title)) LIKE '[spec]%'
+        return traceSessionOperation(
+            operation = "searchSessions",
+            scope = "sessions",
+            describeSuccess = { sessions, elapsedMs ->
+                PersistenceOperationTelemetry(
+                    component = "SessionManager",
+                    operation = "searchSessions",
+                    scope = "sessions",
+                    elapsedMs = elapsedMs,
+                    outcome = "success",
+                    limit = normalizedLimit,
+                    itemCount = sessions.size,
+                    details = buildPersistenceTelemetryDetails(
+                        "filter" to filter.name,
+                        "query" to normalizedQuery.takeIf { hasQuery },
+                    ),
                 )
-            """.trimIndent()
-            when (filter) {
-                SessionFilter.ALL -> Unit
-                SessionFilter.SPEC -> conditions += specSessionCondition
-                SessionFilter.VIBE -> conditions += "NOT $specSessionCondition"
-            }
+            },
+        ) {
+            withConnection { connection ->
+                val baseSql = StringBuilder(
+                    """
+                    SELECT
+                        s.id,
+                        s.title,
+                        s.spec_task_id,
+                        s.worktree_id,
+                        s.model_provider,
+                        s.workflow_id,
+                        s.task_id,
+                        s.focused_stage,
+                        s.workflow_source,
+                        s.workflow_action_intent,
+                        s.parent_session_id,
+                        s.branch_name,
+                        s.updated_at,
+                        COUNT(m.id) AS message_count
+                    FROM sessions s
+                    LEFT JOIN messages m ON m.session_id = s.id
+                    """.trimIndent()
+                )
 
-            if (hasQuery) {
-                conditions += """
+                val conditions = mutableListOf<String>()
+                val specSessionCondition = """
                     (
-                        s.title LIKE ? OR s.id LIKE ? OR s.spec_task_id LIKE ? OR s.workflow_id LIKE ? OR
-                        s.task_id LIKE ? OR s.worktree_id LIKE ? OR s.branch_name LIKE ?
+                        (s.workflow_id IS NOT NULL AND TRIM(s.workflow_id) <> '')
+                        OR
+                        (s.spec_task_id IS NOT NULL AND TRIM(s.spec_task_id) <> '')
+                        OR LOWER(TRIM(s.title)) LIKE '/workflow%'
+                        OR LOWER(TRIM(s.title)) LIKE '/spec%'
+                        OR LOWER(TRIM(s.title)) LIKE '[workflow]%'
+                        OR LOWER(TRIM(s.title)) LIKE '[spec]%'
                     )
                 """.trimIndent()
-            }
-
-            if (conditions.isNotEmpty()) {
-                baseSql.append(" WHERE ").append(conditions.joinToString(" AND "))
-            }
-
-            baseSql.append(" GROUP BY s.id")
-            baseSql.append(" ORDER BY s.updated_at DESC")
-            baseSql.append(" LIMIT ?")
-
-            connection.prepareStatement(baseSql.toString()).use { statement ->
-                var index = 1
-                if (hasQuery) {
-                    val pattern = "%$normalizedQuery%"
-                    repeat(7) {
-                        statement.setString(index, pattern)
-                        index += 1
-                    }
+                when (filter) {
+                    SessionFilter.ALL -> Unit
+                    SessionFilter.SPEC -> conditions += specSessionCondition
+                    SessionFilter.VIBE -> conditions += "NOT $specSessionCondition"
                 }
-                statement.setInt(index, normalizedLimit)
 
-                statement.executeQuery().use { resultSet ->
-                    buildList {
-                        while (resultSet.next()) {
-                            add(resultSet.toSummary())
+                if (hasQuery) {
+                    conditions += """
+                        (
+                            s.title LIKE ? OR s.id LIKE ? OR s.spec_task_id LIKE ? OR s.workflow_id LIKE ? OR
+                            s.task_id LIKE ? OR s.worktree_id LIKE ? OR s.branch_name LIKE ?
+                        )
+                    """.trimIndent()
+                }
+
+                if (conditions.isNotEmpty()) {
+                    baseSql.append(" WHERE ").append(conditions.joinToString(" AND "))
+                }
+
+                baseSql.append(" GROUP BY s.id")
+                baseSql.append(" ORDER BY s.updated_at DESC")
+                baseSql.append(" LIMIT ?")
+
+                connection.prepareStatement(baseSql.toString()).use { statement ->
+                    var index = 1
+                    if (hasQuery) {
+                        val pattern = "%$normalizedQuery%"
+                        repeat(7) {
+                            statement.setString(index, pattern)
+                            index += 1
+                        }
+                    }
+                    statement.setInt(index, normalizedLimit)
+
+                    statement.executeQuery().use { resultSet ->
+                        buildList {
+                            while (resultSet.next()) {
+                                add(resultSet.toSummary())
+                            }
                         }
                     }
                 }
@@ -566,8 +605,27 @@ class SessionManager internal constructor(
         fromMessageId: String? = null,
         branchName: String? = null,
     ): Result<ConversationSession> {
-        return runCatching {
-            val normalizedSourceId = sourceSessionId.trim()
+        val normalizedSourceId = sourceSessionId.trim()
+        var copiedMessageCount = 0
+        var effectiveBranchNameForTelemetry: String? = null
+        return traceSessionResultOperation(
+            operation = "forkSession",
+            scope = "session:$normalizedSourceId",
+            describeSuccess = { result, elapsedMs ->
+                PersistenceOperationTelemetry(
+                    component = "SessionManager",
+                    operation = "forkSession",
+                    scope = "session:$normalizedSourceId",
+                    elapsedMs = elapsedMs,
+                    outcome = "success",
+                    itemCount = copiedMessageCount,
+                    details = buildPersistenceTelemetryDetails(
+                        "targetSessionId" to result.id,
+                        "branchName" to effectiveBranchNameForTelemetry,
+                    ),
+                )
+            },
+        ) {
             require(normalizedSourceId.isNotBlank()) { "Source session id cannot be blank" }
 
             val source = getSession(normalizedSourceId)
@@ -585,6 +643,7 @@ class SessionManager internal constructor(
 
             val normalizedBranchName = branchName?.trim()?.ifBlank { null }
             val effectiveBranchName = normalizedBranchName ?: "branch-${clock()}"
+            effectiveBranchNameForTelemetry = effectiveBranchName
             val targetMessageId = normalizedMessageId ?: sourceMessages.lastOrNull()?.id
             val branchTitle = "${source.title} [$effectiveBranchName]"
 
@@ -608,6 +667,7 @@ class SessionManager internal constructor(
                     metadataJson = message.metadataJson,
                 ).getOrThrow()
             }
+            copiedMessageCount = copyUntilExclusive
 
             getSession(forked.id) ?: forked
         }
@@ -765,14 +825,36 @@ class SessionManager internal constructor(
         snapshotId: String,
         branchName: String? = null,
     ): Result<ConversationSession> {
-        return runCatching {
-            val normalizedSnapshotId = snapshotId.trim()
+        val normalizedSnapshotId = snapshotId.trim()
+        var copiedMessageCount = 0
+        var sourceSessionIdForTelemetry: String? = null
+        var effectiveBranchNameForTelemetry: String? = null
+        return traceSessionResultOperation(
+            operation = "continueFromSnapshot",
+            scope = "snapshot:$normalizedSnapshotId",
+            describeSuccess = { result, elapsedMs ->
+                PersistenceOperationTelemetry(
+                    component = "SessionManager",
+                    operation = "continueFromSnapshot",
+                    scope = "snapshot:$normalizedSnapshotId",
+                    elapsedMs = elapsedMs,
+                    outcome = "success",
+                    itemCount = copiedMessageCount,
+                    details = buildPersistenceTelemetryDetails(
+                        "sourceSessionId" to sourceSessionIdForTelemetry,
+                        "targetSessionId" to result.id,
+                        "branchName" to effectiveBranchNameForTelemetry,
+                    ),
+                )
+            },
+        ) {
             require(normalizedSnapshotId.isNotBlank()) { "Snapshot id cannot be blank" }
 
             val snapshot = getContextSnapshot(normalizedSnapshotId)
                 ?: throw IllegalArgumentException("Context snapshot not found: $normalizedSnapshotId")
             val source = getSession(snapshot.sessionId)
                 ?: throw IllegalArgumentException("Session not found: ${snapshot.sessionId}")
+            sourceSessionIdForTelemetry = source.id
             val sourceMessages = listMessages(source.id, 5000)
             val copyUntilExclusive = if (snapshot.messageId == null) {
                 snapshot.messageCount.coerceAtMost(sourceMessages.size)
@@ -784,6 +866,7 @@ class SessionManager internal constructor(
 
             val normalizedBranchName = branchName?.trim()?.ifBlank { null }
             val effectiveBranchName = normalizedBranchName ?: "continue-${clock()}"
+            effectiveBranchNameForTelemetry = effectiveBranchName
             val continuedTitle = "${source.title} [continue]"
             val continued = createSession(
                 title = continuedTitle,
@@ -805,6 +888,7 @@ class SessionManager internal constructor(
                     metadataJson = message.metadataJson,
                 ).getOrThrow()
             }
+            copiedMessageCount = copyUntilExclusive
 
             getSession(continued.id) ?: continued
         }
@@ -895,6 +979,56 @@ class SessionManager internal constructor(
         openConnection().use { connection ->
             return block(connection)
         }
+    }
+
+    private inline fun <T> traceSessionOperation(
+        operation: String,
+        scope: String,
+        describeSuccess: (T, Long) -> PersistenceOperationTelemetry,
+        block: () -> T,
+    ): T {
+        val startedAt = System.nanoTime()
+        return try {
+            val result = block()
+            emitPersistenceTelemetry(logger, describeSuccess(result, elapsedMsSince(startedAt)))
+            result
+        } catch (error: Exception) {
+            emitPersistenceTelemetry(
+                logger,
+                PersistenceOperationTelemetry(
+                    component = "SessionManager",
+                    operation = operation,
+                    scope = scope,
+                    elapsedMs = elapsedMsSince(startedAt),
+                    outcome = "failure",
+                    details = buildPersistenceTelemetryDetails(
+                        "error" to error.message,
+                    ),
+                ),
+                error,
+            )
+            throw error
+        }
+    }
+
+    private inline fun <T> traceSessionResultOperation(
+        operation: String,
+        scope: String,
+        describeSuccess: (T, Long) -> PersistenceOperationTelemetry,
+        block: () -> T,
+    ): Result<T> {
+        return runCatching {
+            traceSessionOperation(
+                operation = operation,
+                scope = scope,
+                describeSuccess = describeSuccess,
+                block = block,
+            )
+        }
+    }
+
+    private fun elapsedMsSince(startedAtNanos: Long): Long {
+        return (System.nanoTime() - startedAtNanos) / 1_000_000
     }
 
     private fun openConnection(): Connection {

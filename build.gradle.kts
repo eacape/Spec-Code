@@ -111,6 +111,8 @@ data class FrozenSourceBudgetResult(
 
 fun countFileLines(file: File): Int = file.useLines { lines -> lines.count() }
 
+fun classNameToClassFilePattern(className: String): String = "${className.replace('.', '/')}.class"
+
 val oversizedSourceScopes = listOf(
     OversizedSourceScope(
         label = "ui",
@@ -124,6 +126,12 @@ val oversizedSourceScopes = listOf(
         warnThreshold = 600,
         severeThreshold = 1500,
     ),
+)
+
+val platformTestJvmArgs = listOf(
+    "--add-exports=java.desktop/sun.awt=ALL-UNNAMED",
+    "--add-opens=java.desktop/sun.awt=ALL-UNNAMED",
+    "--add-opens=java.base/java.lang=ALL-UNNAMED",
 )
 
 val frozenUiHotspotBudgets = listOf(
@@ -232,6 +240,30 @@ tasks {
         }
     }
 
+    fun registerPlatformVerificationTest(
+        taskName: String,
+        taskDescription: String,
+        classNames: List<String>,
+    ) = register<Test>(taskName) {
+        val sandboxRoot = layout.buildDirectory.dir("platform-test-sandbox/$taskName")
+        group = "verification"
+        description = taskDescription
+
+        useJUnit()
+        testClassesDirs = sourceSets["test"].output.classesDirs
+        classpath = sourceSets["test"].runtimeClasspath
+        maxParallelForks = 1
+        isScanForTestClasses = false
+        jvmArgs(*platformTestJvmArgs.toTypedArray())
+        systemProperty("idea.system.path", sandboxRoot.get().dir("system").asFile.absolutePath)
+        systemProperty("idea.config.path", sandboxRoot.get().dir("config").asFile.absolutePath)
+        systemProperty("idea.plugins.path", sandboxRoot.get().dir("plugins").asFile.absolutePath)
+        systemProperty("idea.log.path", sandboxRoot.get().dir("log").asFile.absolutePath)
+        systemProperty("java.io.tmpdir", sandboxRoot.get().dir("tmp").asFile.absolutePath)
+
+        include(classNames.map(::classNameToClassFilePattern))
+    }
+
     val coreRegressionTest = registerVerificationTest(
         taskName = "coreRegressionTest",
         taskDescription = "Run minimal core regression tests used by CI",
@@ -250,6 +282,14 @@ tasks {
         ),
     )
 
+    val externalProcessAuditTest = registerVerificationTest(
+        taskName = "externalProcessAuditTest",
+        taskDescription = "Run external process inventory audit regression tests used by CI",
+        includes = listOf(
+            "com.eacape.speccodingplugin.telemetry.ExternalProcessInventoryContractTest",
+        ),
+    )
+
     val workflowSmokeTest = registerVerificationTest(
         taskName = "workflowSmokeTest",
         taskDescription = "Run minimal workflow and UI smoke tests used by CI",
@@ -257,6 +297,17 @@ tasks {
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelStateTest",
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowWorkbenchCommandRouterTest",
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowOverviewPresenterTest",
+        ),
+    )
+
+    val platformSmokeTest = registerPlatformVerificationTest(
+        taskName = "platformSmokeTest",
+        taskDescription = "Run targeted BasePlatformTestCase smoke tests outside the default CI fast path",
+        classNames = listOf(
+            "com.eacape.speccodingplugin.ui.spec.SpecWorkflowSelectionServiceTest",
+            "com.eacape.speccodingplugin.ui.spec.SpecWorkflowGateDetailsPanelTest",
+            "com.eacape.speccodingplugin.ui.actions.SpecWorkflowActionSupportPlatformTest",
+            "com.eacape.speccodingplugin.spec.SpecRelatedFilesServicePlatformTest",
         ),
     )
 
@@ -410,8 +461,8 @@ tasks {
 
     register("ciCheck") {
         group = "verification"
-        description = "Run minimal CI verification: plugin config, compile, oversized source audit, frozen UI hotspot guard, core regression tests, workflow/UI smoke, architecture contract, and plugin packaging"
-        dependsOn("verifyPluginProjectConfiguration", "compileKotlin", largeFileWarningAudit, uiHotspotGrowthGuard, coreRegressionTest, workflowSmokeTest, architectureRegressionTest, "buildPlugin")
+        description = "Run minimal CI verification: plugin config, compile, oversized source audit, frozen UI hotspot guard, core regression tests, workflow/UI smoke, architecture and external process audits, and plugin packaging"
+        dependsOn("verifyPluginProjectConfiguration", "compileKotlin", largeFileWarningAudit, uiHotspotGrowthGuard, coreRegressionTest, workflowSmokeTest, architectureRegressionTest, externalProcessAuditTest, "buildPlugin")
     }
 
     val phase3CoverageReport by registering {

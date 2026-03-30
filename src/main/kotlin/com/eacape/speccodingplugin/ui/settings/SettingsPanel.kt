@@ -19,6 +19,8 @@ import com.eacape.speccodingplugin.skill.SkillRegistry
 import com.eacape.speccodingplugin.skill.SkillScope
 import com.eacape.speccodingplugin.skill.SkillSourceType
 import com.eacape.speccodingplugin.ui.ComboBoxAutoWidthSupport
+import com.eacape.speccodingplugin.ui.LocalEnvironmentCheckSeverity
+import com.eacape.speccodingplugin.ui.LocalEnvironmentReadiness
 import com.eacape.speccodingplugin.ui.RefreshFeedback
 import com.eacape.speccodingplugin.ui.hook.HookPanel
 import com.eacape.speccodingplugin.ui.mcp.McpPanel
@@ -127,6 +129,8 @@ class SettingsPanel(
     private val detectCliButton = JButton(SpecCodingBundle.message("settings.cli.detectButton"))
     private val claudeCliStatusLabel = JBLabel("")
     private val codexCliStatusLabel = JBLabel("")
+    private val localSetupSummaryLabel = JBLabel("")
+    private val localSetupDetailsArea = JBTextArea()
     private val defaultModeCombo = ComboBox(OperationMode.entries.toTypedArray())
     private val interfaceLanguageCombo = ComboBox(InterfaceLanguage.entries.toTypedArray())
     private val teamPromptRepoUrlField = JBTextField()
@@ -159,15 +163,17 @@ class SettingsPanel(
         isLenient = true
     }
 
-    private val sectionListModel = DefaultListModel<SidebarSection>()
+    private val sectionListModel = DefaultListModel<SettingsSidebarSection>()
     private val sectionList = JBList(sectionListModel)
     private val sectionCardLayout = CardLayout()
     private val sectionCardPanel = JPanel(sectionCardLayout)
     private var basicSectionPanel: JPanel? = null
     private var skillsSectionPanel: JPanel? = null
     private val sidebarToggleButton = JButton()
+    private val experimentalSectionsToggleButton = JButton()
     private lateinit var sidebarCardPanel: JPanel
     private var sidebarExpanded = false
+    private var experimentalSectionsVisible = false
     private var syncingUi = false
     private val autoSaveTimer = Timer(AUTO_SAVE_DEBOUNCE_MILLIS) {
         persistSettings(reason = "settings-panel-auto-save")
@@ -256,6 +262,7 @@ class SettingsPanel(
         styleSkillActionIconButton(skillDeleteButton, SKILL_ACTION_DELETE_ICON)
         styleSkillActionIconButton(skillSaveButton, SKILL_ACTION_SAVE_TARGET_ICON)
         styleSkillActionIconButton(skillSaveCurrentButton, SKILL_ACTION_SAVE_CURRENT_ICON)
+        updateExperimentalSectionsTogglePresentation()
         updateSkillComboPreferredSizes()
 
         buildSectionCards()
@@ -272,6 +279,7 @@ class SettingsPanel(
 
         add(centerPanel, BorderLayout.CENTER)
         updateCliStatusLabels()
+        updateLocalSetupPreview()
         resetSkillEditorForNewDraft()
         refreshSkillDiscovery(forceReload = true)
     }
@@ -295,10 +303,7 @@ class SettingsPanel(
     }
 
     private fun buildSectionCards() {
-        SidebarSection.entries.forEach { sectionListModel.addElement(it) }
-
         sectionList.selectionMode = ListSelectionModel.SINGLE_SELECTION
-        sectionList.visibleRowCount = SidebarSection.entries.size
         sectionList.fixedCellHeight = JBUI.scale(SIDEBAR_ITEM_HEIGHT)
         sectionList.cellRenderer = SidebarSectionRenderer()
         sectionList.border = JBUI.Borders.empty(6, 6, 6, 6)
@@ -313,21 +318,43 @@ class SettingsPanel(
                 showSelectedSection()
             }
         }
+        refreshSidebarSections(selectedSection = SettingsSidebarSection.BASIC)
 
         sectionCardPanel.isOpaque = false
         basicSectionPanel = createBasicSection()
-        sectionCardPanel.add(basicSectionPanel, SidebarSection.BASIC.cardId)
-        sectionCardPanel.add(createEmbeddedSection(promptPanel), SidebarSection.PROMPTS.cardId)
-        sectionCardPanel.add(createEmbeddedSection(mcpPanel), SidebarSection.MCP.cardId)
+        sectionCardPanel.add(basicSectionPanel, SettingsSidebarSection.BASIC.cardId)
+        sectionCardPanel.add(
+            createEmbeddedSection(
+                section = SettingsSidebarSection.PROMPTS,
+                component = promptPanel,
+            ),
+            SettingsSidebarSection.PROMPTS.cardId,
+        )
+        sectionCardPanel.add(
+            createEmbeddedSection(
+                section = SettingsSidebarSection.MCP,
+                component = mcpPanel,
+            ),
+            SettingsSidebarSection.MCP.cardId,
+        )
         skillsSectionPanel = createSkillsSection()
-        sectionCardPanel.add(skillsSectionPanel, SidebarSection.SKILLS.cardId)
-        sectionCardPanel.add(createEmbeddedSection(hookPanel), SidebarSection.HOOKS.cardId)
+        sectionCardPanel.add(skillsSectionPanel, SettingsSidebarSection.SKILLS.cardId)
+        sectionCardPanel.add(
+            createEmbeddedSection(
+                section = SettingsSidebarSection.HOOKS,
+                component = hookPanel,
+            ),
+            SettingsSidebarSection.HOOKS.cardId,
+        )
     }
 
     private fun createSidebarCard(): JPanel {
         styleSidebarToggleButton(sidebarToggleButton)
         sidebarToggleButton.addActionListener {
             setSidebarExpanded(!sidebarExpanded)
+        }
+        experimentalSectionsToggleButton.addActionListener {
+            setExperimentalSectionsVisible(!experimentalSectionsVisible)
         }
 
         val scrollPane = JBScrollPane(sectionList).apply {
@@ -340,6 +367,7 @@ class SettingsPanel(
         val toggleHost = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(4, 4, 2, 4)
+            add(experimentalSectionsToggleButton, BorderLayout.WEST)
             add(sidebarToggleButton, BorderLayout.EAST)
         }
 
@@ -392,6 +420,7 @@ class SettingsPanel(
     }
 
     private fun createBasicSection(): JPanel {
+        configureLocalSetupPreviewArea()
         val cliDetectPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
             isOpaque = false
             add(detectCliButton)
@@ -451,10 +480,27 @@ class SettingsPanel(
                 isOpaque = false
                 border = JBUI.Borders.empty()
             }
+        val localSetupPanel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+            localSetupSummaryLabel.alignmentX = JComponent.LEFT_ALIGNMENT
+            localSetupDetailsArea.alignmentX = JComponent.LEFT_ALIGNMENT
+            add(localSetupSummaryLabel)
+            add(Box.createVerticalStrut(JBUI.scale(8)))
+            add(localSetupDetailsArea)
+        }
 
         val stackPanel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             isOpaque = false
+            add(
+                createBasicModuleCard(
+                    titleKey = "settings.section.localSetup",
+                    summary = SpecCodingBundle.message("settings.section.localSetup.summary"),
+                    content = localSetupPanel,
+                ),
+            )
+            add(Box.createVerticalStrut(JBUI.scale(8)))
             add(
                 createBasicModuleCard(
                     titleKey = "settings.section.cliTools",
@@ -728,11 +774,42 @@ class SettingsPanel(
         }
     }
 
-    private fun createEmbeddedSection(component: JPanel): JPanel {
-        return JPanel(BorderLayout()).apply {
+    private fun createEmbeddedSection(
+        section: SettingsSidebarSection,
+        component: JPanel,
+    ): JPanel {
+        val contentHost = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(2)
             add(component, BorderLayout.CENTER)
+        }
+        if (!section.experimental) {
+            return contentHost
+        }
+
+        val noteLabel = JBLabel(
+            SpecCodingBundle.message(
+                "settings.experimental.section.note",
+                SpecCodingBundle.message(section.titleKey),
+            ),
+        ).apply {
+            font = JBUI.Fonts.smallFont()
+            foreground = EXPERIMENT_NOTE_FG
+        }
+        val notePanel = JPanel(BorderLayout()).apply {
+            isOpaque = true
+            background = EXPERIMENT_NOTE_BG
+            border = BorderFactory.createCompoundBorder(
+                SpecUiStyle.roundedLineBorder(EXPERIMENT_NOTE_BORDER, JBUI.scale(10)),
+                JBUI.Borders.empty(6, 8, 6, 8),
+            )
+            add(noteLabel, BorderLayout.CENTER)
+        }
+
+        return JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(notePanel, BorderLayout.NORTH)
+            add(contentHost, BorderLayout.CENTER)
         }
     }
 
@@ -843,7 +920,7 @@ class SettingsPanel(
     }
 
     private fun showSelectedSection() {
-        val selected = sectionList.selectedValue ?: SidebarSection.BASIC
+        val selected = sectionList.selectedValue ?: SettingsSidebarSection.BASIC
         sectionCardLayout.show(sectionCardPanel, selected.cardId)
     }
 
@@ -883,6 +960,8 @@ class SettingsPanel(
         sidebarToggleButton.toolTipText = SpecCodingBundle.message(
             if (expanded) "settings.sidebar.collapse.tooltip" else "settings.sidebar.expand.tooltip",
         )
+        experimentalSectionsToggleButton.isVisible = expanded
+        updateExperimentalSectionsTogglePresentation()
 
         sidebarCardPanel.revalidate()
         sidebarCardPanel.repaint()
@@ -1005,8 +1084,6 @@ class SettingsPanel(
             proxyPortField,
             maxHistorySizeField,
             chatOutputFontSizeField,
-            codexCliPathField,
-            claudeCodeCliPathField,
             teamPromptRepoUrlField,
             teamPromptRepoBranchField,
         ).forEach { field ->
@@ -1015,6 +1092,15 @@ class SettingsPanel(
                     override fun insertUpdate(e: DocumentEvent?) = scheduleAutoSave()
                     override fun removeUpdate(e: DocumentEvent?) = scheduleAutoSave()
                     override fun changedUpdate(e: DocumentEvent?) = scheduleAutoSave()
+                },
+            )
+        }
+        listOf(codexCliPathField, claudeCodeCliPathField).forEach { field ->
+            field.document.addDocumentListener(
+                object : DocumentListener {
+                    override fun insertUpdate(e: DocumentEvent?) = onCliPathEdited()
+                    override fun removeUpdate(e: DocumentEvent?) = onCliPathEdited()
+                    override fun changedUpdate(e: DocumentEvent?) = onCliPathEdited()
                 },
             )
         }
@@ -1063,6 +1149,7 @@ class SettingsPanel(
             styleSkillActionIconButton(skillDeleteButton, SKILL_ACTION_DELETE_ICON)
             styleSkillActionIconButton(skillSaveButton, SKILL_ACTION_SAVE_TARGET_ICON)
             styleSkillActionIconButton(skillSaveCurrentButton, SKILL_ACTION_SAVE_CURRENT_ICON)
+            updateExperimentalSectionsTogglePresentation()
 
             rebuildLocalizedSectionCards()
             updateSkillComboPreferredSizes()
@@ -1077,15 +1164,35 @@ class SettingsPanel(
     }
 
     private fun rebuildLocalizedSectionCards() {
-        val selectedSection = sectionList.selectedValue ?: SidebarSection.BASIC
+        val selectedSection = sectionList.selectedValue ?: SettingsSidebarSection.BASIC
 
-        basicSectionPanel?.let(sectionCardPanel::remove)
-        skillsSectionPanel?.let(sectionCardPanel::remove)
-
+        sectionCardPanel.removeAll()
+        sectionCardPanel.isOpaque = false
         basicSectionPanel = createBasicSection()
         skillsSectionPanel = createSkillsSection()
-        sectionCardPanel.add(basicSectionPanel, SidebarSection.BASIC.cardId)
-        sectionCardPanel.add(skillsSectionPanel, SidebarSection.SKILLS.cardId)
+        sectionCardPanel.add(basicSectionPanel, SettingsSidebarSection.BASIC.cardId)
+        sectionCardPanel.add(
+            createEmbeddedSection(
+                section = SettingsSidebarSection.PROMPTS,
+                component = promptPanel,
+            ),
+            SettingsSidebarSection.PROMPTS.cardId,
+        )
+        sectionCardPanel.add(
+            createEmbeddedSection(
+                section = SettingsSidebarSection.MCP,
+                component = mcpPanel,
+            ),
+            SettingsSidebarSection.MCP.cardId,
+        )
+        sectionCardPanel.add(skillsSectionPanel, SettingsSidebarSection.SKILLS.cardId)
+        sectionCardPanel.add(
+            createEmbeddedSection(
+                section = SettingsSidebarSection.HOOKS,
+                component = hookPanel,
+            ),
+            SettingsSidebarSection.HOOKS.cardId,
+        )
         sectionCardLayout.show(sectionCardPanel, selectedSection.cardId)
         sectionCardPanel.revalidate()
         sectionCardPanel.repaint()
@@ -1104,6 +1211,71 @@ class SettingsPanel(
             return
         }
         autoSaveTimer.restart()
+    }
+
+    private fun setExperimentalSectionsVisible(visible: Boolean) {
+        if (experimentalSectionsVisible == visible) {
+            return
+        }
+        experimentalSectionsVisible = visible
+        refreshSidebarSections(sectionList.selectedValue)
+        updateExperimentalSectionsTogglePresentation()
+        showSelectedSection()
+    }
+
+    private fun refreshSidebarSections(selectedSection: SettingsSidebarSection?) {
+        val visibleSections = SettingsSidebarSection.visibleSections(experimentalSectionsVisible)
+        val targetSelection = selectedSection
+            ?.takeIf { visibleSections.contains(it) }
+            ?: visibleSections.firstOrNull()
+
+        sectionListModel.clear()
+        visibleSections.forEach(sectionListModel::addElement)
+        sectionList.visibleRowCount = visibleSections.size
+        when {
+            targetSelection == null -> sectionList.clearSelection()
+            else -> sectionList.setSelectedValue(targetSelection, true)
+        }
+    }
+
+    private fun updateExperimentalSectionsTogglePresentation() {
+        experimentalSectionsToggleButton.text = SpecCodingBundle.message(
+            if (experimentalSectionsVisible) {
+                "settings.experimental.toggle.hide"
+            } else {
+                "settings.experimental.toggle.show"
+            },
+        )
+        experimentalSectionsToggleButton.toolTipText = experimentalSectionsToggleButton.text
+        styleActionButton(experimentalSectionsToggleButton)
+    }
+
+    private fun sidebarSectionTitle(section: SettingsSidebarSection): String {
+        val title = SpecCodingBundle.message(section.titleKey)
+        return if (section.experimental) {
+            SpecCodingBundle.message(
+                "settings.sidebar.experimental.entry",
+                title,
+                SpecCodingBundle.message("beta.badge.experimental"),
+            )
+        } else {
+            title
+        }
+    }
+
+    private fun sidebarSectionIcon(section: SettingsSidebarSection): Icon {
+        return when (section) {
+            SettingsSidebarSection.BASIC -> AllIcons.General.GearPlain
+            SettingsSidebarSection.PROMPTS -> AllIcons.FileTypes.Text
+            SettingsSidebarSection.SKILLS -> AllIcons.Actions.EditSource
+            SettingsSidebarSection.MCP -> SIDEBAR_MCP_ICON
+            SettingsSidebarSection.HOOKS -> SIDEBAR_HOOKS_ICON
+        }
+    }
+
+    private fun onCliPathEdited() {
+        updateLocalSetupPreview()
+        scheduleAutoSave()
     }
 
     private inline fun withUiSync(block: () -> Unit) {
@@ -1317,6 +1489,40 @@ class SettingsPanel(
             codexCliStatusLabel.text = SpecCodingBundle.message("settings.cli.codex.notFound")
             codexCliStatusLabel.foreground = STATUS_NORMAL_FG
         }
+        updateLocalSetupPreview()
+    }
+
+    private fun configureLocalSetupPreviewArea() {
+        localSetupSummaryLabel.font = JBUI.Fonts.smallFont().deriveFont(Font.BOLD)
+        localSetupDetailsArea.apply {
+            isEditable = false
+            isOpaque = false
+            isFocusable = false
+            lineWrap = true
+            wrapStyleWord = true
+            rows = 7
+            columns = 48
+            border = JBUI.Borders.empty()
+            font = JBUI.Fonts.smallFont()
+            foreground = STATUS_NORMAL_FG
+            maximumSize = java.awt.Dimension(Int.MAX_VALUE, preferredSize.height)
+        }
+    }
+
+    private fun updateLocalSetupPreview() {
+        val readiness = LocalEnvironmentReadiness.inspect(
+            project = project,
+            configuredClaudePath = claudeCodeCliPathField.text,
+            configuredCodexPath = codexCliPathField.text,
+            settings = settings,
+        )
+        localSetupSummaryLabel.text = readiness.summary
+        localSetupSummaryLabel.foreground = when (readiness.summarySeverity) {
+            LocalEnvironmentCheckSeverity.READY -> STATUS_SUCCESS_FG
+            LocalEnvironmentCheckSeverity.WARNING -> STATUS_WARNING_FG
+            LocalEnvironmentCheckSeverity.BLOCKER -> STATUS_ERROR_FG
+        }
+        localSetupDetailsArea.text = LocalEnvironmentReadiness.formatDetails(readiness)
     }
 
     private fun refreshModelCombo() {
@@ -2219,18 +2425,6 @@ class SettingsPanel(
         scope.cancel()
     }
 
-    private enum class SidebarSection(
-        val cardId: String,
-        val titleKey: String,
-        val icon: Icon,
-    ) {
-        BASIC("basic", "settings.sidebar.basic", AllIcons.General.GearPlain),
-        PROMPTS("prompts", "settings.sidebar.prompts", AllIcons.FileTypes.Text),
-        MCP("mcp", "settings.sidebar.mcp", SIDEBAR_MCP_ICON),
-        SKILLS("skills", "settings.sidebar.skills", AllIcons.Actions.EditSource),
-        HOOKS("hooks", "settings.sidebar.hooks", SIDEBAR_HOOKS_ICON),
-    }
-
     private data class GeneratedSkillDraft(
         val id: String,
         val name: String,
@@ -2349,10 +2543,10 @@ class SettingsPanel(
         ): Component {
             val component = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
             val label = component as? JLabel ?: return component
-            val section = value as? SidebarSection ?: return component
-            val title = SpecCodingBundle.message(section.titleKey)
+            val section = value as? SettingsSidebarSection ?: return component
+            val title = sidebarSectionTitle(section)
             label.text = if (sidebarExpanded) title else ""
-            label.icon = section.icon
+            label.icon = sidebarSectionIcon(section)
             label.toolTipText = if (sidebarExpanded) null else title
             label.iconTextGap = if (sidebarExpanded) JBUI.scale(6) else 0
             label.horizontalAlignment = if (sidebarExpanded) SwingConstants.LEFT else SwingConstants.CENTER
@@ -2540,7 +2734,7 @@ class SettingsPanel(
     }
 
     companion object {
-        private const val SIDEBAR_EXPANDED_WIDTH = 118
+        private const val SIDEBAR_EXPANDED_WIDTH = 188
         private const val SIDEBAR_COLLAPSED_WIDTH = 52
         private const val SIDEBAR_ITEM_HEIGHT = 40
         private val SIDEBAR_BG = JBColor(Color(248, 250, 254), Color(50, 56, 64))
@@ -2592,6 +2786,9 @@ class SettingsPanel(
         private val ACTION_ICON_BUTTON_FG = JBColor(Color(51, 73, 108), Color(209, 220, 238))
         private val SKILL_STATUS_BG = JBColor(Color(238, 245, 255), Color(65, 76, 93))
         private val SKILL_STATUS_BORDER = JBColor(Color(182, 200, 226), Color(101, 118, 142))
+        private val EXPERIMENT_NOTE_BG = JBColor(Color(252, 247, 235), Color(73, 67, 53))
+        private val EXPERIMENT_NOTE_BORDER = JBColor(Color(228, 199, 134), Color(124, 107, 76))
+        private val EXPERIMENT_NOTE_FG = JBColor(Color(104, 76, 24), Color(229, 214, 186))
         private val SKILL_ITEM_BG = JBColor(Color(250, 253, 255), Color(58, 66, 77))
         private val SKILL_ITEM_BORDER = JBColor(Color(216, 228, 245), Color(93, 106, 125))
         private val SKILL_ITEM_TITLE_FG = JBColor(Color(27, 47, 82), Color(223, 232, 246))
@@ -2616,6 +2813,7 @@ class SettingsPanel(
         private val SKILL_ACTION_SAVE_CURRENT_ICON = IconLoader.getIcon("/icons/skill-action-save.svg", SettingsPanel::class.java)
         private val STATUS_NORMAL_FG = JBColor(Color(92, 106, 127), Color(177, 188, 204))
         private val STATUS_SUCCESS_FG = JBColor(Color(42, 128, 74), Color(131, 208, 157))
+        private val STATUS_WARNING_FG = JBColor(Color(170, 112, 36), Color(235, 190, 126))
         private val STATUS_ERROR_FG = JBColor(Color(171, 55, 69), Color(226, 144, 154))
         private val SIDEBAR_MCP_ICON = IconLoader.getIcon("/icons/settings-mcp.svg", SettingsPanel::class.java)
         private val SIDEBAR_HOOKS_ICON = IconLoader.getIcon("/icons/settings-hooks.svg", SettingsPanel::class.java)

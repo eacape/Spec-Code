@@ -1,5 +1,8 @@
 package com.eacape.speccodingplugin.spec
 
+import com.eacape.speccodingplugin.telemetry.PersistenceOperationTelemetry
+import com.eacape.speccodingplugin.telemetry.buildPersistenceTelemetryDetails
+import com.eacape.speccodingplugin.telemetry.emitPersistenceTelemetry
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
 import java.nio.charset.Charset
@@ -57,7 +60,24 @@ class SpecStorage(
      * 保存 Spec 文档
      */
     fun saveDocument(workflowId: String, document: SpecDocument): Result<Path> {
-        return runCatching {
+        var writtenByteCount: Long? = null
+        return traceStorageResultOperation(
+            operation = "saveDocument",
+            scope = "workflow:$workflowId/phase:${document.phase.name}",
+            describeSuccess = { path, elapsedMs ->
+                PersistenceOperationTelemetry(
+                    component = "SpecStorage",
+                    operation = "saveDocument",
+                    scope = "workflow:$workflowId/phase:${document.phase.name}",
+                    elapsedMs = elapsedMs,
+                    outcome = "success",
+                    byteCount = writtenByteCount,
+                    details = buildPersistenceTelemetryDetails(
+                        "file" to path.fileName?.toString(),
+                    ),
+                )
+            },
+        ) {
             lockManager.withWorkflowLock(workflowId) {
                 val workflowDir = workspaceInitializer
                     .initializeWorkflowWorkspace(workflowId)
@@ -65,6 +85,7 @@ class SpecStorage(
 
                 val filePath = workflowDir.resolve(document.phase.outputFileName)
                 val content = formatDocument(document)
+                writtenByteCount = content.toByteArray(StandardCharsets.UTF_8).size.toLong()
                 val operationId = UUID.randomUUID().toString()
                 val beforeSnapshot = captureWorkflowSnapshot(
                     workflowId = workflowId,
@@ -425,7 +446,24 @@ class SpecStorage(
      * 加载 Spec 文档
      */
     fun loadDocument(workflowId: String, phase: SpecPhase): Result<SpecDocument> {
-        return runCatching {
+        var readByteCount: Long? = null
+        return traceStorageResultOperation(
+            operation = "loadDocument",
+            scope = "workflow:$workflowId/phase:${phase.name}",
+            describeSuccess = { _, elapsedMs ->
+                PersistenceOperationTelemetry(
+                    component = "SpecStorage",
+                    operation = "loadDocument",
+                    scope = "workflow:$workflowId/phase:${phase.name}",
+                    elapsedMs = elapsedMs,
+                    outcome = "success",
+                    byteCount = readByteCount,
+                    details = buildPersistenceTelemetryDetails(
+                        "file" to phase.outputFileName,
+                    ),
+                )
+            },
+        ) {
             val workflowDir = getWorkflowDirectory(workflowId)
             val filePath = workflowDir.resolve(phase.outputFileName)
 
@@ -434,6 +472,7 @@ class SpecStorage(
             }
 
             val content = Files.readString(filePath, StandardCharsets.UTF_8)
+            readByteCount = content.toByteArray(StandardCharsets.UTF_8).size.toLong()
             parseDocument(workflowId, phase, content)
         }
     }
@@ -494,7 +533,25 @@ class SpecStorage(
      * 加载工作流状态
      */
     fun loadWorkflow(workflowId: String): Result<SpecWorkflow> {
-        return runCatching {
+        var metadataByteCount: Long? = null
+        return traceStorageResultOperation(
+            operation = "loadWorkflow",
+            scope = "workflow:$workflowId",
+            describeSuccess = { workflow, elapsedMs ->
+                PersistenceOperationTelemetry(
+                    component = "SpecStorage",
+                    operation = "loadWorkflow",
+                    scope = "workflow:$workflowId",
+                    elapsedMs = elapsedMs,
+                    outcome = "success",
+                    byteCount = metadataByteCount,
+                    details = buildPersistenceTelemetryDetails(
+                        "status" to workflow.status.name,
+                        "currentStage" to workflow.currentStage.name,
+                    ),
+                )
+            },
+        ) {
             val workflowDir = getWorkflowDirectory(workflowId)
             val metadataPath = workflowDir.resolve("workflow.yaml")
 
@@ -503,6 +560,7 @@ class SpecStorage(
             }
 
             val metadata = Files.readString(metadataPath, StandardCharsets.UTF_8)
+            metadataByteCount = metadata.toByteArray(StandardCharsets.UTF_8).size.toLong()
             parseWorkflowMetadata(workflowId, metadata)
         }
     }
@@ -2037,54 +2095,77 @@ class SpecStorage(
         eventType: SpecAuditEventType,
         extraAuditDetails: Map<String, String> = emptyMap(),
     ): WorkflowMetadataWriteResult {
-        return lockManager.withWorkflowLock(workflow.id) {
-            val workflowDir = workspaceInitializer
-                .initializeWorkflowWorkspace(workflow.id)
-                .workflowDir
+        var metadataByteCount: Long? = null
+        return traceStorageOperation(
+            operation = "persistWorkflowMetadata",
+            scope = "workflow:${workflow.id}",
+            describeSuccess = { result, elapsedMs ->
+                PersistenceOperationTelemetry(
+                    component = "SpecStorage",
+                    operation = "persistWorkflowMetadata",
+                    scope = "workflow:${workflow.id}",
+                    elapsedMs = elapsedMs,
+                    outcome = "success",
+                    byteCount = metadataByteCount,
+                    details = buildPersistenceTelemetryDetails(
+                        "eventType" to eventType.name,
+                        "status" to workflow.status.name,
+                        "phase" to workflow.currentPhase.name,
+                        "file" to result.path.fileName?.toString(),
+                    ),
+                )
+            },
+        ) {
+            lockManager.withWorkflowLock(workflow.id) {
+                val workflowDir = workspaceInitializer
+                    .initializeWorkflowWorkspace(workflow.id)
+                    .workflowDir
 
-            val metadataPath = workflowDir.resolve(WORKFLOW_METADATA_FILE_NAME)
-            val metadata = formatWorkflowMetadata(workflow)
-            val operationId = UUID.randomUUID().toString()
-            val beforeSnapshot = captureWorkflowSnapshot(
-                workflowId = workflow.id,
-                trigger = SpecSnapshotTrigger.WORKFLOW_SAVE_BEFORE,
-                operationId = operationId,
-            )
+                val metadataPath = workflowDir.resolve(WORKFLOW_METADATA_FILE_NAME)
+                val metadata = formatWorkflowMetadata(workflow)
+                metadataByteCount = metadata.toByteArray(StandardCharsets.UTF_8).size.toLong()
+                val operationId = UUID.randomUUID().toString()
+                val beforeSnapshot = captureWorkflowSnapshot(
+                    workflowId = workflow.id,
+                    trigger = SpecSnapshotTrigger.WORKFLOW_SAVE_BEFORE,
+                    operationId = operationId,
+                )
 
-            atomicFileIO.writeString(metadataPath, metadata, StandardCharsets.UTF_8)
+                atomicFileIO.writeString(metadataPath, metadata, StandardCharsets.UTF_8)
 
-            val afterSnapshot = captureWorkflowSnapshot(
-                workflowId = workflow.id,
-                trigger = SpecSnapshotTrigger.WORKFLOW_SAVE_AFTER,
-                operationId = operationId,
-            )
-            val auditDetails = linkedMapOf(
-                "status" to workflow.status.name,
-                "phase" to workflow.currentPhase.name,
-                "changeIntent" to workflow.changeIntent.name,
-                "beforeSnapshotId" to beforeSnapshot.snapshotId,
-                "afterSnapshotId" to afterSnapshot.snapshotId,
-            )
-            workflow.configPinHash
-                ?.trim()
-                ?.takeIf { it.isNotEmpty() }
-                ?.let { configPinHash ->
-                    auditDetails["configPinHash"] = configPinHash
+                val afterSnapshot = captureWorkflowSnapshot(
+                    workflowId = workflow.id,
+                    trigger = SpecSnapshotTrigger.WORKFLOW_SAVE_AFTER,
+                    operationId = operationId,
+                )
+                val auditDetails = linkedMapOf(
+                    "status" to workflow.status.name,
+                    "phase" to workflow.currentPhase.name,
+                    "changeIntent" to workflow.changeIntent.name,
+                    "beforeSnapshotId" to beforeSnapshot.snapshotId,
+                    "afterSnapshotId" to afterSnapshot.snapshotId,
+                )
+                workflow.configPinHash
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let { configPinHash ->
+                        auditDetails["configPinHash"] = configPinHash
+                    }
+                extraAuditDetails.forEach { (key, value) ->
+                    auditDetails[key] = value
                 }
-            extraAuditDetails.forEach { (key, value) ->
-                auditDetails[key] = value
+                appendAuditEntry(
+                    eventType = eventType,
+                    workflowId = workflow.id,
+                    details = auditDetails,
+                )
+                logger.info("Saved workflow metadata to $metadataPath with event $eventType")
+                WorkflowMetadataWriteResult(
+                    path = metadataPath,
+                    beforeSnapshotId = beforeSnapshot.snapshotId,
+                    afterSnapshotId = afterSnapshot.snapshotId,
+                )
             }
-            appendAuditEntry(
-                eventType = eventType,
-                workflowId = workflow.id,
-                details = auditDetails,
-            )
-            logger.info("Saved workflow metadata to $metadataPath with event $eventType")
-            WorkflowMetadataWriteResult(
-                path = metadataPath,
-                beforeSnapshotId = beforeSnapshot.snapshotId,
-                afterSnapshotId = afterSnapshot.snapshotId,
-            )
         }
     }
 
@@ -2124,6 +2205,56 @@ class SpecStorage(
             .replace("\r", " ")
             .replace("\n", " ")
             .trim()
+    }
+
+    private inline fun <T> traceStorageOperation(
+        operation: String,
+        scope: String,
+        describeSuccess: (T, Long) -> PersistenceOperationTelemetry,
+        block: () -> T,
+    ): T {
+        val startedAt = System.nanoTime()
+        return try {
+            val result = block()
+            emitPersistenceTelemetry(logger, describeSuccess(result, elapsedMsSince(startedAt)))
+            result
+        } catch (error: Exception) {
+            emitPersistenceTelemetry(
+                logger,
+                PersistenceOperationTelemetry(
+                    component = "SpecStorage",
+                    operation = operation,
+                    scope = scope,
+                    elapsedMs = elapsedMsSince(startedAt),
+                    outcome = "failure",
+                    details = buildPersistenceTelemetryDetails(
+                        "error" to error.message,
+                    ),
+                ),
+                error,
+            )
+            throw error
+        }
+    }
+
+    private inline fun <T> traceStorageResultOperation(
+        operation: String,
+        scope: String,
+        describeSuccess: (T, Long) -> PersistenceOperationTelemetry,
+        block: () -> T,
+    ): Result<T> {
+        return runCatching {
+            traceStorageOperation(
+                operation = operation,
+                scope = scope,
+                describeSuccess = describeSuccess,
+                block = block,
+            )
+        }
+    }
+
+    private fun elapsedMsSince(startedAtNanos: Long): Long {
+        return (System.nanoTime() - startedAtNanos) / 1_000_000
     }
 
     companion object {

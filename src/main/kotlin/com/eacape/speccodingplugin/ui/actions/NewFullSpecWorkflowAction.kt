@@ -5,12 +5,12 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.project.DumbAwareAction
 
-class NewSpecWorkflowAction : DumbAwareAction() {
+class NewFullSpecWorkflowAction : DumbAwareAction() {
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         SpecWorkflowActionSupport.showCreateWorkflow(
             project = project,
-            preferredTemplate = WorkflowTemplate.QUICK_TASK,
+            preferredTemplate = WorkflowTemplate.FULL_SPEC,
         )
     }
 

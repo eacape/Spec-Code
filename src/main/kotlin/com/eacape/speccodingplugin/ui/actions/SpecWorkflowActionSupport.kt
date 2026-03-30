@@ -17,6 +17,7 @@ import com.eacape.speccodingplugin.spec.VerifyPlan
 import com.eacape.speccodingplugin.spec.VerifyPlanConfigSource
 import com.eacape.speccodingplugin.spec.VerifyRunResult
 import com.eacape.speccodingplugin.spec.WorkflowMeta
+import com.eacape.speccodingplugin.spec.WorkflowTemplate
 import com.eacape.speccodingplugin.ui.ChatToolWindowFactory
 import com.eacape.speccodingplugin.ui.spec.SpecGateQuickFixSupport
 import com.eacape.speccodingplugin.ui.spec.SpecToolWindowControlListener
@@ -54,10 +55,10 @@ internal object SpecWorkflowActionSupport {
     private const val MAX_VERIFY_COMMANDS = 5
     private const val MAX_VERIFY_TASKS = 5
 
-    fun showCreateWorkflow(project: Project) {
+    fun showCreateWorkflow(project: Project, preferredTemplate: WorkflowTemplate? = null) {
         openSpecTab(project) {
             project.messageBus.syncPublisher(SpecToolWindowControlListener.TOPIC)
-                .onCreateWorkflowRequested()
+                .onCreateWorkflowRequested(preferredTemplate)
         }
     }
 

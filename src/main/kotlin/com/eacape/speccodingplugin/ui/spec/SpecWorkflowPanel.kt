@@ -2199,18 +2199,23 @@ class SpecWorkflowPanel(
         }
     }
 
-    private fun onCreateWorkflow() {
+    private fun onCreateWorkflow(preferredTemplate: WorkflowTemplate? = null) {
         val workflowOptions = listPanel.workflowOptionsForCreate()
         scope.launch(Dispatchers.IO) {
-            val defaultTemplate = runCatching {
+            val configuredDefaultTemplate = runCatching {
                 SpecProjectConfigService(project).load().defaultTemplate
             }.getOrElse { error ->
                 logger.warn("Failed to load default workflow template for create dialog", error)
-                WorkflowTemplate.FULL_SPEC
+                null
             }
+            val defaultTemplate = SpecWorkflowEntryPaths.resolveDefaultTemplate(
+                preferredTemplate = preferredTemplate,
+                configuredDefault = configuredDefaultTemplate,
+            )
 
             invokeLaterSafe {
                 val dialog = NewSpecWorkflowDialog(
+                    project = project,
                     workflowOptions = workflowOptions,
                     defaultTemplate = defaultTemplate,
                 )
@@ -4945,10 +4950,10 @@ class SpecWorkflowPanel(
         project.messageBus.connect(this).subscribe(
             SpecToolWindowControlListener.TOPIC,
             object : SpecToolWindowControlListener {
-                override fun onCreateWorkflowRequested() {
+                override fun onCreateWorkflowRequested(preferredTemplate: WorkflowTemplate?) {
                     invokeLaterSafe {
                         if (project.isDisposed || _isDisposed) return@invokeLaterSafe
-                        onCreateWorkflow()
+                        onCreateWorkflow(preferredTemplate)
                     }
                 }
 

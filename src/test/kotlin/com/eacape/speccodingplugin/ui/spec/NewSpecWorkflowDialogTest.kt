@@ -12,6 +12,19 @@ import org.junit.jupiter.api.Test
 class NewSpecWorkflowDialogTest {
 
     @Test
+    fun `ordered templates should surface beta primary paths first`() {
+        assertEquals(
+            listOf(
+                WorkflowTemplate.QUICK_TASK,
+                WorkflowTemplate.FULL_SPEC,
+                WorkflowTemplate.DESIGN_REVIEW,
+                WorkflowTemplate.DIRECT_IMPLEMENT,
+            ),
+            NewSpecWorkflowDialog.orderedTemplates(),
+        )
+    }
+
+    @Test
     fun `templateSupportsRequirementScope should only allow requirement templates`() {
         assertTrue(NewSpecWorkflowDialog.templateSupportsRequirementScope(WorkflowTemplate.FULL_SPEC))
         assertFalse(NewSpecWorkflowDialog.templateSupportsRequirementScope(WorkflowTemplate.QUICK_TASK))

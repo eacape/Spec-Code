@@ -6,9 +6,11 @@ import com.eacape.speccodingplugin.spec.StageId
 import com.eacape.speccodingplugin.spec.WorkflowTemplate
 import com.eacape.speccodingplugin.spec.WorkflowTemplates
 import com.intellij.openapi.util.text.StringUtil
+import com.eacape.speccodingplugin.ui.LocalEnvironmentReadiness
 import com.eacape.speccodingplugin.ui.ComboBoxAutoWidthSupport
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.ValidationInfo
+import com.intellij.openapi.project.Project
 import com.intellij.ui.JBColor
 import com.intellij.ui.CollectionComboBoxModel
 import com.intellij.ui.SimpleListCellRenderer
@@ -29,6 +31,7 @@ import javax.swing.JPanel
 import javax.swing.JScrollPane
 
 class NewSpecWorkflowDialog(
+    private val project: Project? = null,
     workflowOptions: List<WorkflowOption> = emptyList(),
     defaultTemplate: WorkflowTemplate = WorkflowTemplate.FULL_SPEC,
 ) : DialogWrapper(true) {
@@ -54,10 +57,11 @@ class NewSpecWorkflowDialog(
         )
     }
     private val templateHelpArea = createReadOnlyInfoArea(rows = 2).apply {
-        text = SpecCodingBundle.message("spec.dialog.template.help")
+        text = SpecCodingBundle.message("spec.dialog.template.help.beta")
     }
+    private val localSetupArea = createReadOnlyInfoArea(rows = 8)
     private val templateLabel = JBLabel(SpecCodingBundle.message("spec.dialog.field.template"))
-    private val templateCombo = JComboBox(CollectionComboBoxModel(WorkflowTemplate.entries.toList())).apply {
+    private val templateCombo = JComboBox(CollectionComboBoxModel(orderedTemplates())).apply {
         selectedItem = defaultTemplate
         renderer = SimpleListCellRenderer.create<WorkflowTemplate> { label, value, index ->
             val template = value
@@ -124,6 +128,7 @@ class NewSpecWorkflowDialog(
         incrementalIntentRadio.addActionListener { updateFormState() }
         init()
         title = SpecCodingBundle.message("spec.dialog.newWorkflow.title")
+        updateLocalSetupPresentation()
         updateFormState()
     }
 
@@ -177,6 +182,15 @@ class NewSpecWorkflowDialog(
         templateHelpArea.alignmentX = JComponent.LEFT_ALIGNMENT
         panel.add(templateHelpArea)
         panel.add(javax.swing.Box.createVerticalStrut(8))
+        if (project != null) {
+            val localSetupLabel = JBLabel(SpecCodingBundle.message("spec.dialog.localSetup.title"))
+            localSetupLabel.alignmentX = JComponent.LEFT_ALIGNMENT
+            panel.add(localSetupLabel)
+            panel.add(javax.swing.Box.createVerticalStrut(4))
+            localSetupArea.alignmentX = JComponent.LEFT_ALIGNMENT
+            panel.add(localSetupArea)
+            panel.add(javax.swing.Box.createVerticalStrut(8))
+        }
         panel.add(templateDetailPanel)
         panel.add(javax.swing.Box.createVerticalStrut(12))
 
@@ -345,6 +359,16 @@ class NewSpecWorkflowDialog(
         templateArtifactsArea.text = presentation.artifactSummary
     }
 
+    private fun updateLocalSetupPresentation() {
+        val activeProject = project ?: return
+        val readiness = LocalEnvironmentReadiness.inspect(activeProject)
+        localSetupArea.text = buildString {
+            appendLine(readiness.summary)
+            appendLine()
+            append(LocalEnvironmentReadiness.formatDetails(readiness))
+        }
+    }
+
     override fun getPreferredFocusedComponent() = titleField
 
     companion object {
@@ -360,6 +384,10 @@ class NewSpecWorkflowDialog(
             val stageSummary: String,
             val artifactSummary: String,
         )
+
+        internal fun orderedTemplates(): List<WorkflowTemplate> {
+            return SpecWorkflowEntryPaths.prioritizedTemplates()
+        }
 
         internal fun templateSupportsRequirementScope(template: WorkflowTemplate): Boolean {
             return WorkflowTemplates
