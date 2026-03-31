@@ -35,6 +35,14 @@ set APP_HOME=%DIRNAME%
 @rem Resolve any "." and ".." in APP_HOME to make it shorter.
 for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi
 
+@rem Default to a repo-local Gradle user home so wrapper runs do not depend on
+@rem machine-level caches that may be shared, mutable, or externally managed.
+@rem Set SPEC_CODE_PRESERVE_GRADLE_USER_HOME=true to keep an inherited value.
+if /I not "%SPEC_CODE_PRESERVE_GRADLE_USER_HOME%"=="true" set "GRADLE_USER_HOME=%APP_HOME%\.gradle-user-home"
+
+set "SPEC_CODE_REQUIRED_JAVA_MAJOR=21"
+call :ensureSpecCodeJavaHome
+
 @rem Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
 set DEFAULT_JVM_OPTS="-Xmx64m" "-Xms64m"
 
@@ -91,3 +99,41 @@ exit /b %EXIT_CODE%
 if "%OS%"=="Windows_NT" endlocal
 
 :omega
+goto :eof
+
+:ensureSpecCodeJavaHome
+if defined JAVA_HOME (
+    call :isSpecCodeJavaHomeCompatible "%JAVA_HOME%" && goto :eof
+)
+
+if exist "%APP_HOME%\.gradle-user-home\caches" (
+    for /d /r "%APP_HOME%\.gradle-user-home\caches" %%D in (jbr) do (
+        call :isSpecCodeJavaHomeCompatible "%%~fD" && (
+            set "JAVA_HOME=%%~fD"
+            goto :eof
+        )
+    )
+)
+
+if defined ProgramFiles if exist "%ProgramFiles%\JetBrains" (
+    for /d %%D in ("%ProgramFiles%\JetBrains\*\jbr") do (
+        call :isSpecCodeJavaHomeCompatible "%%~fD" && (
+            set "JAVA_HOME=%%~fD"
+            goto :eof
+        )
+    )
+)
+
+goto :eof
+
+:isSpecCodeJavaHomeCompatible
+set "SPEC_CODE_JAVA_VERSION_FILE=%TEMP%\spec-code-java-version-%RANDOM%.tmp"
+
+if not exist "%~1\bin\java.exe" exit /b 1
+
+call "%~1\bin\java.exe" -version 1>"%SPEC_CODE_JAVA_VERSION_FILE%" 2>&1
+findstr /C:21. "%SPEC_CODE_JAVA_VERSION_FILE%" >nul 2>nul
+set "SPEC_CODE_JAVA_MATCHED=%ERRORLEVEL%"
+if exist "%SPEC_CODE_JAVA_VERSION_FILE%" del /q "%SPEC_CODE_JAVA_VERSION_FILE%"
+if "%SPEC_CODE_JAVA_MATCHED%"=="0" exit /b 0
+exit /b 1

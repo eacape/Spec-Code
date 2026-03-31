@@ -22,6 +22,7 @@ import com.eacape.speccodingplugin.ui.ComboBoxAutoWidthSupport
 import com.eacape.speccodingplugin.ui.LocalEnvironmentCheckSeverity
 import com.eacape.speccodingplugin.ui.LocalEnvironmentReadiness
 import com.eacape.speccodingplugin.ui.RefreshFeedback
+import com.eacape.speccodingplugin.ui.SwingPanelTaskCoordinator
 import com.eacape.speccodingplugin.ui.hook.HookPanel
 import com.eacape.speccodingplugin.ui.mcp.McpPanel
 import com.eacape.speccodingplugin.ui.prompt.PromptManagerPanel
@@ -45,11 +46,6 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.FormBuilder
 import com.intellij.util.ui.JBUI
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -93,7 +89,6 @@ import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.JSplitPane
 import javax.swing.ListSelectionModel
-import javax.swing.SwingUtilities
 import javax.swing.SwingConstants
 import javax.swing.Timer
 import javax.swing.UIManager
@@ -102,7 +97,7 @@ import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 
 /**
- * 内嵌在 Tool Window 中的设置面板
+ * 鍐呭祵鍦?Tool Window 涓殑璁剧疆闈㈡澘
  */
 class SettingsPanel(
     private val project: Project,
@@ -111,7 +106,9 @@ class SettingsPanel(
     private val settings = SpecCodingSettingsState.getInstance()
     private val projectService: SpecCodingProjectService = project.getService(SpecCodingProjectService::class.java)
     private val skillRegistry: SkillRegistry = SkillRegistry.getInstance(project)
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val taskCoordinator = SwingPanelTaskCoordinator(
+        isDisposed = { isDisposed || project.isDisposed },
+    )
 
     @Volatile
     private var isDisposed = false
@@ -583,7 +580,7 @@ class SettingsPanel(
     }
 
     private fun buildSectionSummary(vararg titleKeys: String): String {
-        return titleKeys.joinToString(" · ") { key ->
+        return titleKeys.joinToString(" 路 ") { key ->
             lowerUiText(stripSettingLabel(SpecCodingBundle.message(key)))
         }
     }
@@ -1111,13 +1108,17 @@ class SettingsPanel(
             LocaleChangedListener.TOPIC,
             object : LocaleChangedListener {
                 override fun onLocaleChanged(event: LocaleChangedEvent) {
-                    SwingUtilities.invokeLater {
-                        if (isDisposed || project.isDisposed) return@invokeLater
+                    invokeLaterSafe {
+                        if (isDisposed || project.isDisposed) return@invokeLaterSafe
                         refreshLocalizedTexts()
                     }
                 }
             },
         )
+    }
+
+    private fun invokeLaterSafe(action: () -> Unit) {
+        taskCoordinator.invokeLater(action)
     }
 
     private fun refreshLocalizedTexts() {
@@ -1436,11 +1437,11 @@ class SettingsPanel(
         detectCliButton.isEnabled = false
         detectCliButton.text = SpecCodingBundle.message("settings.cli.detecting")
         val discoveryService = CliDiscoveryService.getInstance()
-        scope.launch {
+        taskCoordinator.launchDefault {
             discoveryService.discoverAll()
-            SwingUtilities.invokeLater {
+            invokeLaterSafe {
                 if (isDisposed || project.isDisposed) {
-                    return@invokeLater
+                    return@invokeLaterSafe
                 }
                 updateCliStatusLabels()
                 if (discoveryService.claudeInfo.available && claudeCodeCliPathField.text.isBlank()) {
@@ -1570,13 +1571,13 @@ class SettingsPanel(
             SpecCodingBundle.message("settings.skills.discovery.scanning"),
             SkillStatusTone.NORMAL,
         )
-        scope.launch {
+        taskCoordinator.launchDefault {
             val result = runCatching {
                 skillRegistry.discoverySnapshot(forceReload = forceReload)
             }
-            SwingUtilities.invokeLater {
+            invokeLaterSafe {
                 if (isDisposed || project.isDisposed) {
-                    return@invokeLater
+                    return@invokeLaterSafe
                 }
                 skillRefreshButton.isEnabled = true
                 result
@@ -1710,11 +1711,11 @@ class SettingsPanel(
             return
         }
         setSkillEditorStatus(SpecCodingBundle.message("settings.skills.editor.loading"), SkillStatusTone.NORMAL)
-        scope.launch {
+        taskCoordinator.launchDefault {
             val result = runCatching { buildEditorDraftFromSkill(skill) }
-            SwingUtilities.invokeLater {
+            invokeLaterSafe {
                 if (isDisposed || project.isDisposed) {
-                    return@invokeLater
+                    return@invokeLaterSafe
                 }
                 result
                     .onSuccess { draft ->
@@ -1886,7 +1887,7 @@ class SettingsPanel(
         val selectedProvider = (skillDraftProviderCombo.selectedItem as? String)?.trim().orEmpty()
         val selectedModelId = (skillDraftModelCombo.selectedItem as? ModelInfo)?.id.orEmpty()
 
-        scope.launch {
+        taskCoordinator.launchDefault {
             val result = runCatching {
                 generateSkillDraft(
                     requirement = requirement,
@@ -1894,9 +1895,9 @@ class SettingsPanel(
                     preferredModelId = selectedModelId,
                 )
             }
-            SwingUtilities.invokeLater {
+            invokeLaterSafe {
                 if (isDisposed || project.isDisposed) {
-                    return@invokeLater
+                    return@invokeLaterSafe
                 }
                 skillAiDraftButton.isEnabled = true
                 result
@@ -1947,11 +1948,11 @@ class SettingsPanel(
         skillSaveCurrentButton.isEnabled = false
         skillDeleteButton.isEnabled = false
         setSkillEditorStatus(SpecCodingBundle.message("settings.skills.editor.saving"), SkillStatusTone.NORMAL)
-        scope.launch {
+        taskCoordinator.launchDefault {
             val result = runCatching { saveDraftToSelectedTargets(draft, targetScope, targetChannel) }
-            SwingUtilities.invokeLater {
+            invokeLaterSafe {
                 if (isDisposed || project.isDisposed) {
-                    return@invokeLater
+                    return@invokeLaterSafe
                 }
                 skillSaveButton.isEnabled = true
                 skillSaveCurrentButton.isEnabled = !activeSkillSourcePath.isNullOrBlank()
@@ -2006,16 +2007,16 @@ class SettingsPanel(
             SpecCodingBundle.message("settings.skills.editor.saveCurrent.running"),
             SkillStatusTone.NORMAL,
         )
-        scope.launch {
+        taskCoordinator.launchDefault {
             val result = runCatching {
                 val path = Paths.get(sourcePath)
                 Files.createDirectories(path.parent)
                 Files.writeString(path, buildGeneratedSkillMarkdown(draft), StandardCharsets.UTF_8)
                 path
             }
-            SwingUtilities.invokeLater {
+            invokeLaterSafe {
                 if (isDisposed || project.isDisposed) {
-                    return@invokeLater
+                    return@invokeLaterSafe
                 }
                 skillSaveButton.isEnabled = true
                 skillSaveCurrentButton.isEnabled = true
@@ -2058,7 +2059,7 @@ class SettingsPanel(
             SpecCodingBundle.message("settings.skills.editor.delete.running"),
             SkillStatusTone.NORMAL,
         )
-        scope.launch {
+        taskCoordinator.launchDefault {
             val result = runCatching {
                 val path = Paths.get(sourcePath)
                 if (!Files.exists(path)) {
@@ -2075,9 +2076,9 @@ class SettingsPanel(
                 }
                 path
             }
-            SwingUtilities.invokeLater {
+            invokeLaterSafe {
                 if (isDisposed || project.isDisposed) {
-                    return@invokeLater
+                    return@invokeLaterSafe
                 }
                 result
                     .onSuccess { deletedPath ->
@@ -2422,7 +2423,7 @@ class SettingsPanel(
                 persistSettings(reason = "settings-panel-dispose-auto-save")
             }
         }
-        scope.cancel()
+        taskCoordinator.dispose()
     }
 
     private data class GeneratedSkillDraft(

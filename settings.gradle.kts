@@ -7,6 +7,10 @@ pluginManagement {
     }
 }
 
+plugins {
+    id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
+}
+
 val localAndroidStudioReleasesListUri = file("gradle/android-studio-releases-list.xml").toURI().toString()
 
 // IntelliJ Platform Gradle Plugin 2.2.1 eagerly probes the Android Studio

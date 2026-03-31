@@ -31,6 +31,9 @@ jobs:
       - name: Verify IntelliJ plugin configuration
         run: ./gradlew verifyPluginProjectConfiguration --stacktrace
 
+      - name: Run static analysis guard
+        run: ./gradlew staticAnalysisCheck --stacktrace
+
       - name: Compile plugin
         run: ./gradlew compileKotlin --stacktrace
 

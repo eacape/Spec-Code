@@ -88,6 +88,54 @@ APP_BASE_NAME=${0##*/}
 # Discard cd standard output in case $CDPATH is set (https://github.com/gradle/gradle/issues/25036)
 APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf '%s\n' "$PWD" ) || exit
 
+# Default to a repo-local Gradle user home so wrapper runs do not depend on
+# machine-level caches that may be shared, mutable, or externally managed.
+# Set SPEC_CODE_PRESERVE_GRADLE_USER_HOME=true to keep an inherited value.
+if [ "${SPEC_CODE_PRESERVE_GRADLE_USER_HOME:-}" != "true" ] ; then
+    GRADLE_USER_HOME="$APP_HOME/.gradle-user-home"
+    export GRADLE_USER_HOME
+fi
+
+spec_code_required_java_major=21
+
+spec_code_java_major() {
+    "$1" -version 2>&1 | awk '
+        NR == 1 {
+            gsub(/"/, "", $3)
+            split($3, parts, ".")
+            if (parts[1] == "1") {
+                print parts[2]
+            } else {
+                print parts[1]
+            }
+            exit
+        }
+    '
+}
+
+spec_code_use_java_home_if_compatible() {
+    candidate=$1
+    [ -n "$candidate" ] || return 1
+    [ -x "$candidate/bin/java" ] || return 1
+
+    major=$(spec_code_java_major "$candidate/bin/java")
+    [ "$major" = "$spec_code_required_java_major" ] || return 1
+
+    JAVA_HOME=$candidate
+    export JAVA_HOME
+    return 0
+}
+
+if ! spec_code_use_java_home_if_compatible "${JAVA_HOME:-}" ; then
+    if [ -d "$APP_HOME/.gradle-user-home/caches" ] ; then
+        spec_code_cached_jbr=$(
+            find "$APP_HOME/.gradle-user-home/caches" -type d -name jbr \
+                -path '*/workspace/transformed/idea*/*' 2>/dev/null | head -n 1
+        )
+        spec_code_use_java_home_if_compatible "$spec_code_cached_jbr" || true
+    fi
+fi
+
 # Use the maximum available, or set MAX_FD != -1 to use that value.
 MAX_FD=maximum
 

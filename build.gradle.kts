@@ -17,6 +17,7 @@ buildscript {
 }
 
 plugins {
+    id("io.gitlab.arturbosch.detekt") version "1.23.8"
     id("org.jetbrains.kotlin.jvm") version "2.0.21"
     id("org.jetbrains.kotlin.plugin.serialization") version "2.0.21"
     id("org.jetbrains.intellij.platform") version "2.2.1"
@@ -164,7 +165,19 @@ java {
     targetCompatibility = JavaVersion.VERSION_21
 }
 
+detekt {
+    buildUponDefaultConfig = false
+    allRules = false
+    parallel = true
+    config.setFrom(files(layout.projectDirectory.file("config/detekt/detekt.yml")))
+    basePath = projectDir.absolutePath
+}
+
 intellijPlatform {
+    // Generating searchable options mutates the transformed IDE dependency on
+    // Windows and trips Gradle 9 immutable-workspace checks during packaging.
+    buildSearchableOptions.set(false)
+
     pluginConfiguration {
         name = providers.gradleProperty("pluginName").get()
         version = providers.gradleProperty("pluginVersion").get()
@@ -215,10 +228,49 @@ intellijPlatform {
 }
 
 tasks {
+    withType<io.gitlab.arturbosch.detekt.Detekt>().configureEach {
+        group = "verification"
+        description = "Run minimal detekt static analysis guard"
+        setSource(files("src/main/kotlin", "src/test/kotlin"))
+        include("**/*.kt")
+        exclude("**/build/**", "**/ui/spec/SpecWorkflowPanel.kt")
+        jvmTarget = "21"
+
+        reports {
+            xml.required.set(true)
+            html.required.set(true)
+            sarif.required.set(true)
+            md.required.set(false)
+            txt.required.set(false)
+        }
+    }
+
     named<Test>("test") {
         useJUnitPlatform {
             excludeEngines("junit-vintage")
         }
+    }
+
+    // The platform plugin still wires searchable-options packaging into buildPlugin
+    // even when generation is disabled. Redirect the intermediate input away from the
+    // IDE runtime and disable the chain so Windows packaging does not touch the
+    // transformed IDE dependency.
+    val emptySearchableOptionsDir = layout.buildDirectory.dir("tmp/empty-searchable-options")
+
+    named<org.jetbrains.intellij.platform.gradle.tasks.PrepareJarSearchableOptionsTask>("prepareJarSearchableOptions") {
+        inputDirectory.set(emptySearchableOptionsDir)
+        doFirst {
+            emptySearchableOptionsDir.get().asFile.mkdirs()
+        }
+        enabled = false
+    }
+
+    named<org.jetbrains.intellij.platform.gradle.tasks.JarSearchableOptionsTask>("jarSearchableOptions") {
+        enabled = false
+    }
+
+    named<org.jetbrains.intellij.platform.gradle.tasks.BuildSearchableOptionsTask>("buildSearchableOptions") {
+        enabled = false
     }
 
     fun registerVerificationTest(
@@ -299,6 +351,12 @@ tasks {
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowOverviewPresenterTest",
         ),
     )
+
+    val staticAnalysisCheck = register("staticAnalysisCheck") {
+        group = "verification"
+        description = "Run minimal detekt static analysis guard used by CI"
+        dependsOn("detektMain", "detektTest")
+    }
 
     val platformSmokeTest = registerPlatformVerificationTest(
         taskName = "platformSmokeTest",
@@ -461,8 +519,8 @@ tasks {
 
     register("ciCheck") {
         group = "verification"
-        description = "Run minimal CI verification: plugin config, compile, oversized source audit, frozen UI hotspot guard, core regression tests, workflow/UI smoke, architecture and external process audits, and plugin packaging"
-        dependsOn("verifyPluginProjectConfiguration", "compileKotlin", largeFileWarningAudit, uiHotspotGrowthGuard, coreRegressionTest, workflowSmokeTest, architectureRegressionTest, externalProcessAuditTest, "buildPlugin")
+        description = "Run minimal CI verification: plugin config, static analysis, compile, oversized source audit, frozen UI hotspot guard, core regression tests, workflow/UI smoke, architecture and external process audits, and plugin packaging"
+        dependsOn("verifyPluginProjectConfiguration", staticAnalysisCheck, "compileKotlin", largeFileWarningAudit, uiHotspotGrowthGuard, coreRegressionTest, workflowSmokeTest, architectureRegressionTest, externalProcessAuditTest, "buildPlugin")
     }
 
     val phase3CoverageReport by registering {

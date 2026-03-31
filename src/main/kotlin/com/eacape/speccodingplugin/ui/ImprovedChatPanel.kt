@@ -72,7 +72,6 @@ import com.eacape.speccodingplugin.spec.StageId
 import com.eacape.speccodingplugin.spec.StructuredTask
 import com.eacape.speccodingplugin.spec.TaskStatus
 import com.eacape.speccodingplugin.spec.attachActiveExecutionRuns
-import com.eacape.speccodingplugin.spec.resolveExecutionLaunchRawPrompt
 import com.eacape.speccodingplugin.spec.resolveExecutionLaunchRestorePayload
 import com.eacape.speccodingplugin.spec.WorkflowStatus
 import com.eacape.speccodingplugin.stream.ChatStreamEvent
@@ -135,12 +134,8 @@ import com.intellij.ui.content.ContentManagerListener
 import com.intellij.util.ui.JBDimension
 import com.intellij.util.ui.JBUI
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -234,12 +229,13 @@ class ImprovedChatPanel(
     private val llmRouter = LlmRouter.getInstance()
     private val modelRegistry = ModelRegistry.getInstance()
     private val changesetStore by lazy { ChangesetStore.getInstance(project) }
-
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val taskCoordinator = SwingPanelTaskCoordinator(
+        isDisposed = { project.isDisposed || _isDisposed },
+    )
     private val discoveryListener: () -> Unit = {
         llmRouter.refreshProviders()
         modelRegistry.refreshFromDiscovery()
-        ApplicationManager.getApplication().invokeLater {
+        taskCoordinator.invokeLater {
             if (project.isDisposed || _isDisposed) {
                 return@invokeLater
             }
@@ -326,11 +322,9 @@ class ImprovedChatPanel(
     private val runningWorkflowCommands = ConcurrentHashMap<String, RunningWorkflowCommand>()
     private val sessionCreationMutex = Mutex()
     private val transientClipboardImagePaths = mutableSetOf<String>()
-    private val pendingPastedTextBlocks = linkedMapOf<String, String>()
+    private var composerInputState = ImprovedChatPanelComposerInputState()
     private val userMessageRawContent = mutableMapOf<ChatMessagePanel, String>()
     private val renderedTaskExecutionSessionMessageIds = linkedSetOf<String>()
-    private var pastedTextSequence = 0
-    private var lastComposerTextSnapshot = ""
     private var composerAutoCollapseScheduled = false
     private var suppressComposerAutoCollapse = false
     private var suppressComposerDividerSync = false
@@ -342,9 +336,7 @@ class ImprovedChatPanel(
     private var compactedConversationCutoff: Int = 0
     @Volatile
     private var currentSessionId: String? = null
-    private var isGenerating = false
-    private var isFinalizingResponse = false
-    private var isRestoringSession = false
+    private var executionState = ImprovedChatPanelExecutionState()
     private var suppressSpecWorkflowSelectionEvents = false
     private var suppressInteractionModeSelectionEvents = false
     @Volatile
@@ -359,6 +351,15 @@ class ImprovedChatPanel(
     private var chatComposerDividerProportion = CHAT_COMPOSER_DEFAULT_DIVIDER_PROPORTION
     @Volatile
     private var _isDisposed = false
+
+    private val isGenerating: Boolean
+        get() = executionState.isGenerating
+
+    private val isFinalizingResponse: Boolean
+        get() = executionState.isFinalizingResponse
+
+    private val isRestoringSession: Boolean
+        get() = executionState.isRestoringSession
 
     private data class ActiveLlmRequest(
         val providerId: String,
@@ -401,23 +402,6 @@ class ImprovedChatPanel(
         COMPLETE,
         STOP,
     }
-
-    private enum class ComposerSendActionKind {
-        CHAT_SEND,
-        CHAT_STOP,
-        TASK_EXECUTE,
-        TASK_RETRY,
-        TASK_COMPLETE,
-        TASK_STOP,
-    }
-
-    private data class ComposerSendAction(
-        val kind: ComposerSendActionKind,
-        val tooltip: String,
-        val accessibleName: String,
-        val enabled: Boolean = true,
-        val taskId: String? = null,
-    )
 
     private data class WorkflowErrorDialogSnapshot(
         val title: String,
@@ -1378,9 +1362,9 @@ class ImprovedChatPanel(
         }
         val requestGeneration = workflowBindingRefreshGeneration.incrementAndGet()
         workflowBindingRefreshJob?.cancel()
-        workflowBindingRefreshJob = scope.launch(Dispatchers.IO) {
+        workflowBindingRefreshJob = taskCoordinator.launchIo {
             val snapshot = buildWorkflowBindingUiSnapshot(binding)
-            ApplicationManager.getApplication().invokeLater {
+            taskCoordinator.invokeLater {
                 if (project.isDisposed || _isDisposed) {
                     return@invokeLater
                 }
@@ -2164,7 +2148,7 @@ class ImprovedChatPanel(
         setExplicitWorkflowChatBinding(binding)
         refreshSpecWorkflowComboBox(selectWorkflowId = binding.workflowId)
         val providerId = providerComboBox.selectedItem as? String
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val sessionId = ensureActiveSpecSessionAsync(
                 titleSeed = buildWorkflowChatSessionTitle(binding),
                 providerId = providerId,
@@ -2212,10 +2196,10 @@ class ImprovedChatPanel(
 
         val targetWorkflowId = selectWorkflowId?.trim()?.ifBlank { null }
         refreshSpecWorkflowComboJob?.cancel()
-        refreshSpecWorkflowComboJob = scope.launch(Dispatchers.IO) {
+        refreshSpecWorkflowComboJob = taskCoordinator.launchIo {
             val options = loadSpecWorkflowOptions()
 
-            ApplicationManager.getApplication().invokeLater {
+            taskCoordinator.invokeLater {
                 if (project.isDisposed || _isDisposed) return@invokeLater
                 if (currentInteractionMode() != ChatInteractionMode.SPEC) {
                     specWorkflowComboBox.isVisible = false
@@ -2284,14 +2268,12 @@ class ImprovedChatPanel(
             showBusyStatus()
             return
         }
-        if (isGenerating) {
+        val sendAction = resolveComposerSendAction()
+        if (sendAction.kind == ComposerSendActionKind.CHAT_STOP) {
             requestStopActiveOperation()
             return
         }
-        val visibleRawInput = inputField.text.trim()
-        prunePendingPastedTextBlocks(visibleRawInput)
-        val rawInput = expandPendingPastedTextBlocks(visibleRawInput)
-        val sendAction = resolveComposerSendAction()
+        val composerInput = captureComposerInputSnapshot()
         if (!sendAction.enabled) {
             showWorkflowTaskErrorDialog(sendAction.tooltip)
             return
@@ -2301,12 +2283,12 @@ class ImprovedChatPanel(
             ComposerSendActionKind.CHAT_STOP -> requestStopActiveOperation()
             ComposerSendActionKind.TASK_EXECUTE -> performTaskBindingAction(
                 actionKind = TaskBindingActionKind.EXECUTE,
-                supplementalInstruction = rawInput,
+                supplementalInstruction = composerInput.rawInput,
             )
 
             ComposerSendActionKind.TASK_RETRY -> performTaskBindingAction(
                 actionKind = TaskBindingActionKind.RETRY,
-                supplementalInstruction = rawInput,
+                supplementalInstruction = composerInput.rawInput,
             )
 
             ComposerSendActionKind.TASK_COMPLETE -> performTaskBindingAction(TaskBindingActionKind.COMPLETE)
@@ -2315,18 +2297,7 @@ class ImprovedChatPanel(
     }
 
     private fun resolveComposerSendAction(): ComposerSendAction {
-        if (isGenerating && !isRestoringSession && !isFinalizingResponse) {
-            return ComposerSendAction(
-                kind = ComposerSendActionKind.CHAT_STOP,
-                tooltip = SpecCodingBundle.message("toolwindow.stop"),
-                accessibleName = SpecCodingBundle.message("toolwindow.stop"),
-            )
-        }
-        return ComposerSendAction(
-            kind = ComposerSendActionKind.CHAT_SEND,
-            tooltip = SpecCodingBundle.message("toolwindow.send"),
-            accessibleName = SpecCodingBundle.message("toolwindow.send"),
-        )
+        return resolveExecutionUiState().sendAction
     }
 
     private fun handleCompactContextAction() {
@@ -2378,7 +2349,7 @@ class ImprovedChatPanel(
         )
         setSendingState(true)
         showStatus(SpecCodingBundle.message("toolwindow.compact.status.compacting"))
-        activeOperationJob = scope.launch(Dispatchers.IO) {
+        activeOperationJob = taskCoordinator.launchIo {
             val result = runCatching {
                 buildSemanticCompactedConversationSummary(
                     sourceMessages = sourceMessages,
@@ -2394,7 +2365,7 @@ class ImprovedChatPanel(
             activeOperationJob = null
             activeLlmRequest = null
             stopRequested.set(false)
-            ApplicationManager.getApplication().invokeLater {
+            taskCoordinator.invokeLater {
                 if (project.isDisposed || _isDisposed) {
                     return@invokeLater
                 }
@@ -2521,9 +2492,9 @@ class ImprovedChatPanel(
     }
 
     private fun sendCurrentInput() {
-        val visibleRawInput = inputField.text.trim()
-        prunePendingPastedTextBlocks(visibleRawInput)
-        val rawInput = expandPendingPastedTextBlocks(visibleRawInput)
+        val composerInput = captureComposerInputSnapshot()
+        val visibleRawInput = composerInput.visibleRawInput
+        val rawInput = composerInput.rawInput
         val selectedImagePaths = imageAttachmentPreviewPanel.getImagePaths()
         if ((visibleRawInput.isBlank() && selectedImagePaths.isEmpty()) || isGenerating || project.isDisposed || _isDisposed) {
             return
@@ -2615,13 +2586,13 @@ class ImprovedChatPanel(
         val resolvedProviderId = resolveProviderIdForRequest(providerId)
         stopRequested.set(false)
         activeLlmRequest = ActiveLlmRequest(providerId = resolvedProviderId, requestId = requestId)
-        isFinalizingResponse = false
+        executionState = executionState.withFinalizing(false)
         setSendingState(true)
         val assistantStartedAtMillis = System.currentTimeMillis()
         val assistantPanel = addAssistantMessage(startedAtMillis = assistantStartedAtMillis)
         currentAssistantPanel = assistantPanel
 
-        activeOperationJob = scope.launch(Dispatchers.IO) {
+        activeOperationJob = taskCoordinator.launchIo {
             val streamedTraceEvents = mutableListOf<ChatStreamEvent>()
             val assistantContent = StringBuilder()
             val pendingDelta = StringBuilder()
@@ -2830,6 +2801,11 @@ class ImprovedChatPanel(
         val templates: List<PromptTemplate>,
     )
 
+    private data class ComposerInputSnapshot(
+        val visibleRawInput: String,
+        val rawInput: String,
+    )
+
     private fun configureClipboardImagePaste() {
         val focusedInputMap = inputField.getInputMap(JComponent.WHEN_FOCUSED)
         val ancestorInputMap = inputField.getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT)
@@ -2853,7 +2829,7 @@ class ImprovedChatPanel(
                     return
                 }
                 defaultPasteAction?.actionPerformed(e) ?: inputField.paste()
-                prunePendingPastedTextBlocks(inputField.text.orEmpty())
+                syncComposerInputStateWithCurrentText()
                 if (!hasStringContent) {
                     showStatus(
                         SpecCodingBundle.message("toolwindow.image.attach.unsupported"),
@@ -3023,18 +2999,13 @@ class ImprovedChatPanel(
 
     private fun tryPasteCollapsedTextMarkerFromClipboard(): Boolean {
         val clipboardText = extractClipboardPlainText() ?: return false
-        val normalized = normalizeClipboardText(clipboardText)
-        val rawText = expandPendingPastedTextBlocks(normalized)
-        val lineCount = rawText.lineSequence().count()
-        if (!shouldCollapsePastedText(rawText, lineCount)) {
-            return false
-        }
-
-        val marker = nextPastedTextMarker(lineCount)
-        pendingPastedTextBlocks[marker] = rawText
-        inputField.replaceSelection(marker)
-        prunePendingPastedTextBlocks(inputField.text.orEmpty())
-        lastComposerTextSnapshot = inputField.text.orEmpty()
+        val collapsedPaste = ImprovedChatPanelComposerInputCoordinator.prepareCollapsedClipboardPaste(
+            state = composerInputState,
+            clipboardText = clipboardText,
+        ) ?: return false
+        composerInputState = collapsedPaste.state
+        inputField.replaceSelection(collapsedPaste.marker)
+        syncComposerInputStateWithCurrentText()
         return true
     }
 
@@ -3050,71 +3021,15 @@ class ImprovedChatPanel(
         return null
     }
 
-    private fun normalizeClipboardText(text: String): String {
-        return text.replace("\r\n", "\n").replace('\r', '\n')
-    }
-
-    private fun shouldCollapsePastedText(text: String, lineCount: Int): Boolean {
-        if (PASTED_TEXT_MARKER_REGEX.containsMatchIn(text)) {
-            return true
-        }
-        if (lineCount >= INPUT_PASTE_COLLAPSE_MIN_LINES) {
-            return true
-        }
-        return lineCount >= INPUT_PASTE_COLLAPSE_MIN_LINES_SOFT &&
-            text.length >= INPUT_PASTE_COLLAPSE_MIN_CHARS
-    }
-
-    private fun nextPastedTextMarker(lineCount: Int): String {
-        pastedTextSequence += 1
-        val normalizedLines = lineCount.coerceAtLeast(1)
-        return "[Pasted text #$pastedTextSequence +$normalizedLines lines]"
-    }
-
-    private fun prunePendingPastedTextBlocks(currentInput: String) {
-        if (pendingPastedTextBlocks.isEmpty()) return
-        val iterator = pendingPastedTextBlocks.entries.iterator()
-        while (iterator.hasNext()) {
-            val marker = iterator.next().key
-            if (!currentInput.contains(marker)) {
-                iterator.remove()
-            }
-        }
-    }
-
-    private fun expandPendingPastedTextBlocks(input: String): String {
-        if (pendingPastedTextBlocks.isEmpty() || input.isBlank()) {
-            return input
-        }
-        var expanded = input
-        repeat(pendingPastedTextBlocks.size) {
-            var changed = false
-            pendingPastedTextBlocks.forEach { (marker, rawText) ->
-                if (expanded.contains(marker)) {
-                    expanded = expanded.replace(marker, rawText)
-                    changed = true
-                }
-            }
-            if (!changed) {
-                return expanded
-            }
-        }
-        return expanded
-    }
-
     private fun clearComposerInput() {
-        pendingPastedTextBlocks.clear()
-        pastedTextSequence = 0
-        lastComposerTextSnapshot = ""
+        composerInputState = ImprovedChatPanelComposerInputCoordinator.clear()
         inputField.text = ""
     }
 
     private fun setComposerInput(text: String) {
-        pendingPastedTextBlocks.clear()
-        pastedTextSequence = 0
-        inputField.text = text
-        collapseComposerTextIfNeeded(previousSnapshot = "")
-        lastComposerTextSnapshot = inputField.text.orEmpty()
+        applyComposerInputUpdate(
+            ImprovedChatPanelComposerInputCoordinator.prepareSetComposerInput(text),
+        )
     }
 
     private fun installComposerAutoCollapseListener() {
@@ -3149,76 +3064,54 @@ class ImprovedChatPanel(
             if (project.isDisposed || _isDisposed || suppressComposerAutoCollapse) {
                 return@invokeLater
             }
-            val previousSnapshot = lastComposerTextSnapshot
-            collapseComposerTextIfNeeded(previousSnapshot = previousSnapshot)
-            lastComposerTextSnapshot = inputField.text.orEmpty()
+            applyComposerInputUpdate(
+                ImprovedChatPanelComposerInputCoordinator.resolveAutoCollapse(
+                    state = composerInputState,
+                    currentInput = inputField.text.orEmpty(),
+                ),
+            )
         }
     }
 
-    private fun collapseComposerTextIfNeeded(previousSnapshot: String) {
-        val currentInput = inputField.text.orEmpty()
-        prunePendingPastedTextBlocks(currentInput)
-        if (currentInput.isBlank()) {
-            pastedTextSequence = 0
-            return
+    private fun applyComposerInputUpdate(update: ImprovedChatPanelComposerInputUpdate) {
+        composerInputState = update.state
+        update.mutation?.let(::applyComposerTextMutation)
+    }
+
+    private fun applyComposerTextMutation(
+        mutation: ImprovedChatPanelComposerTextMutation,
+    ) {
+        suppressComposerAutoCollapse = true
+        try {
+            inputField.text = mutation.text
+            mutation.caretPosition?.let { caretPosition ->
+                inputField.caretPosition = caretPosition.coerceAtMost(inputField.text.length)
+            }
+        } finally {
+            suppressComposerAutoCollapse = false
         }
-        if (cleanupDuplicatedPastedTextDisplayIfNeeded(currentInput)) {
-            return
-        }
-        val collapsePlan = planComposerCollapse(
-            previousSnapshot = previousSnapshot,
-            currentInput = currentInput,
-            expandInsertedText = ::expandPendingPastedTextBlocks,
-        ) ?: return
-        applyCollapsedMarkerToComposer(
-            rawText = collapsePlan.rawText,
-            lineCount = collapsePlan.lineCount,
-            replaceStart = collapsePlan.replaceStart,
-            replaceEndExclusive = collapsePlan.replaceEndExclusive,
+    }
+
+    private fun syncComposerInputStateWithCurrentText() {
+        composerInputState = ImprovedChatPanelComposerInputCoordinator.syncExternalTextChange(
+            state = composerInputState,
+            currentInput = inputField.text.orEmpty(),
         )
     }
 
-    private fun applyCollapsedMarkerToComposer(
-        rawText: String,
-        lineCount: Int,
-        replaceStart: Int,
-        replaceEndExclusive: Int,
-    ) {
-        val marker = nextPastedTextMarker(lineCount)
-        pendingPastedTextBlocks[marker] = rawText
-        val originalInput = inputField.text.orEmpty()
-        val safeStart = replaceStart.coerceIn(0, originalInput.length)
-        val safeEnd = replaceEndExclusive.coerceIn(safeStart, originalInput.length)
-        val replaced = buildString(originalInput.length - (safeEnd - safeStart) + marker.length) {
-            append(originalInput, 0, safeStart)
-            append(marker)
-            append(originalInput, safeEnd, originalInput.length)
-        }
-        suppressComposerAutoCollapse = true
-        try {
-            inputField.text = replaced
-            inputField.caretPosition = (safeStart + marker.length).coerceAtMost(inputField.text.length)
-        } finally {
-            suppressComposerAutoCollapse = false
-        }
-        prunePendingPastedTextBlocks(inputField.text.orEmpty())
-    }
-
-    private fun cleanupDuplicatedPastedTextDisplayIfNeeded(currentInput: String): Boolean {
-        val cleanedInput = deduplicatePastedTextMarkerDisplay(
-            currentInput = currentInput,
-            markerPayloads = pendingPastedTextBlocks,
-        ) ?: return false
-        val caret = inputField.caretPosition
-        suppressComposerAutoCollapse = true
-        try {
-            inputField.text = cleanedInput
-            inputField.caretPosition = caret.coerceAtMost(cleanedInput.length)
-        } finally {
-            suppressComposerAutoCollapse = false
-        }
-        prunePendingPastedTextBlocks(cleanedInput)
-        return true
+    private fun captureComposerInputSnapshot(): ComposerInputSnapshot {
+        val visibleRawInput = inputField.text.trim()
+        composerInputState = ImprovedChatPanelComposerInputCoordinator.prunePendingPastedTextBlocks(
+            state = composerInputState,
+            currentInput = visibleRawInput,
+        )
+        return ComposerInputSnapshot(
+            visibleRawInput = visibleRawInput,
+            rawInput = ImprovedChatPanelComposerInputCoordinator.expandPendingPastedTextBlocks(
+                state = composerInputState,
+                input = visibleRawInput,
+            ),
+        )
     }
 
     private fun extractImagePathsFromClipboardFiles(transferable: Transferable): List<String> {
@@ -3640,10 +3533,10 @@ class ImprovedChatPanel(
 
         stopRequested.set(false)
         activeLlmRequest = null
-        isFinalizingResponse = false
+        executionState = executionState.withFinalizing(false)
         setSendingState(true)
 
-        activeOperationJob = scope.launch(Dispatchers.IO) {
+        activeOperationJob = taskCoordinator.launchIo {
             try {
                 val sessionId = ensureActiveSessionAsync(command, providerId)
                 sessionId?.let { persistMessage(it, ConversationRole.USER, command) }
@@ -3709,10 +3602,10 @@ class ImprovedChatPanel(
 
         stopRequested.set(false)
         activeLlmRequest = null
-        isFinalizingResponse = false
+        executionState = executionState.withFinalizing(false)
         setSendingState(true)
 
-        activeOperationJob = scope.launch(Dispatchers.IO) {
+        activeOperationJob = taskCoordinator.launchIo {
             try {
                 val sessionId = ensureActiveSpecSessionAsync(
                     titleSeed = sessionTitleSeed,
@@ -4360,10 +4253,10 @@ class ImprovedChatPanel(
 
         stopRequested.set(false)
         activeLlmRequest = null
-        isFinalizingResponse = false
+        executionState = executionState.withFinalizing(false)
         setSendingState(true)
 
-        activeOperationJob = scope.launch(Dispatchers.IO) {
+        activeOperationJob = taskCoordinator.launchIo {
             try {
                 val sessionId = ensureActiveSessionAsync(command, providerId)
                 sessionId?.let { persistMessage(it, ConversationRole.USER, command) }
@@ -4665,7 +4558,7 @@ class ImprovedChatPanel(
         setSessionRestoringState(true)
         showStatus(SpecCodingBundle.message("toolwindow.status.session.restoring"))
 
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val loaded = runCatching {
                 val session = sessionManager.getSession(sessionId)
                 val messages = sessionManager
@@ -4997,7 +4890,7 @@ class ImprovedChatPanel(
         content: String,
         metadataJson: String? = null,
     ) {
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             persistMessage(
                 sessionId = sessionId,
                 role = role,
@@ -5067,88 +4960,76 @@ class ImprovedChatPanel(
         executionMetadata: TaskExecutionSessionMetadataCodec.DecodedMetadata =
             TaskExecutionSessionMetadataCodec.decode(message.metadataJson),
     ) {
-        when (message.role) {
-            ConversationRole.USER -> {
-                val executionLaunchPayload = executionMetadata.resolveExecutionLaunchRestorePayload(message.content)
-                val rawUserContent = executionMetadata.resolveExecutionLaunchRawPrompt() ?: message.content
-                val shouldRenderExecutionLaunchCard = executionLaunchPayload != null &&
-                    (
-                        !fromSessionRestore ||
-                            executionMetadata.runId?.trim()?.takeIf(String::isNotBlank) in activeExecutionLaunchRunIds
-                    )
-                if (shouldRenderExecutionLaunchCard) {
-                    addExecutionLaunchMessage(
-                        visibleContent = message.content,
-                        payload = executionLaunchPayload!!,
-                        rawContent = rawUserContent,
-                    )
-                } else {
-                    appendUserMessage(content = message.content, rawContent = rawUserContent)
-                }
-                appendToConversationHistory(LlmMessage(LlmRole.USER, rawUserContent))
-            }
-
-            ConversationRole.ASSISTANT -> {
-                val restoredSpecMetadata = SpecCardMetadataCodec.decode(message.metadataJson)
-                val restoredContent = if (restoredSpecMetadata != null) {
-                    message.content.ifBlank {
-                        buildSpecCardMarkdown(
-                            metadata = restoredSpecMetadata,
-                            previewContent = "",
-                            summary = null,
-                        )
-                    }
-                } else {
-                    message.content
-                }
-                val restoredTraceMetadata = TraceEventMetadataCodec.decodePayload(message.metadataJson)
-                val restoredTraceEvents = restoredTraceMetadata.events
-                    .mapNotNull(::sanitizeStreamEvent)
-                if (restoredSpecMetadata != null && restoredTraceEvents.isEmpty()) {
-                    addSpecCardMessage(
-                        cardMarkdown = restoredContent,
-                        metadata = restoredSpecMetadata,
-                    )
-                } else {
-                    val timelineExpandButtonsVisible = timelineExpandButtonsVisibleFor(interactionMode)
-                    val panel = ChatMessagePanel(
-                        ChatMessagePanel.MessageRole.ASSISTANT,
-                        restoredContent,
-                        onDelete = ::handleDeleteMessage,
-                        onRegenerate = ::handleRegenerateMessage,
-                        onContinue = continueHandler,
-                        onWorkflowFileOpen = ::handleWorkflowFileOpen,
-                        onWorkflowCommandExecute = ::handleWorkflowCommandExecute,
-                        workflowSectionsEnabled = workflowSectionsEnabled,
-                        timelineExpandButtonsVisible = timelineExpandButtonsVisible,
-                        startedAtMillis = restoredTraceMetadata.startedAtMillis,
-                        finishedAtMillis = restoredTraceMetadata.finishedAtMillis,
-                        captureElapsedAutomatically = false,
-                    )
-                    if (restoredTraceEvents.isNotEmpty()) {
-                        panel.appendStreamContent(text = "", events = restoredTraceEvents)
-                    }
-                    panel.finishMessage()
-                    messagesPanel.addMessage(panel)
-                }
-                appendToConversationHistory(LlmMessage(LlmRole.ASSISTANT, restoredContent))
-            }
-
-            ConversationRole.SYSTEM -> {
-                addSystemMessage(message.content)
-                appendToConversationHistory(LlmMessage(LlmRole.SYSTEM, message.content))
-            }
-
-            ConversationRole.TOOL -> {
-                val panel = ChatMessagePanel(
-                    ChatMessagePanel.MessageRole.SYSTEM,
-                    SpecCodingBundle.message("toolwindow.message.tool.entry", message.content),
+        val renderDecision = ImprovedChatPanelMessageRenderCoordinator.planRestoredMessage(
+            message = message,
+            fromSessionRestore = fromSessionRestore,
+            activeExecutionLaunchRunIds = activeExecutionLaunchRunIds,
+            executionMetadata = executionMetadata,
+            sanitizeTraceEvent = ::sanitizeStreamEvent,
+            buildSpecCardFallbackMarkdown = { metadata ->
+                buildSpecCardMarkdown(
+                    metadata = metadata,
+                    previewContent = "",
+                    summary = null,
                 )
+            },
+        )
+        when (val plan = renderDecision.plan) {
+            is ImprovedChatPanelMessageRenderPlan.UserPlain -> {
+                appendUserMessage(
+                    content = plan.visibleContent,
+                    rawContent = plan.rawContent,
+                )
+            }
+
+            is ImprovedChatPanelMessageRenderPlan.UserExecutionLaunch -> {
+                addExecutionLaunchMessage(
+                    visibleContent = plan.visibleContent,
+                    payload = plan.payload,
+                    rawContent = plan.rawContent,
+                )
+            }
+
+            is ImprovedChatPanelMessageRenderPlan.AssistantSpecCard -> {
+                addSpecCardMessage(
+                    cardMarkdown = plan.cardMarkdown,
+                    metadata = plan.metadata,
+                )
+            }
+
+            is ImprovedChatPanelMessageRenderPlan.AssistantPanel -> {
+                val timelineExpandButtonsVisible = timelineExpandButtonsVisibleFor(interactionMode)
+                val panel = ChatMessagePanel(
+                    ChatMessagePanel.MessageRole.ASSISTANT,
+                    plan.content,
+                    onDelete = ::handleDeleteMessage,
+                    onRegenerate = ::handleRegenerateMessage,
+                    onContinue = continueHandler,
+                    onWorkflowFileOpen = ::handleWorkflowFileOpen,
+                    onWorkflowCommandExecute = ::handleWorkflowCommandExecute,
+                    workflowSectionsEnabled = workflowSectionsEnabled,
+                    timelineExpandButtonsVisible = timelineExpandButtonsVisible,
+                    startedAtMillis = plan.startedAtMillis,
+                    finishedAtMillis = plan.finishedAtMillis,
+                    captureElapsedAutomatically = false,
+                )
+                if (plan.traceEvents.isNotEmpty()) {
+                    panel.appendStreamContent(text = "", events = plan.traceEvents)
+                }
                 panel.finishMessage()
                 messagesPanel.addMessage(panel)
             }
+
+            is ImprovedChatPanelMessageRenderPlan.SystemMessage -> {
+                addSystemMessage(plan.content)
+            }
+
+            is ImprovedChatPanelMessageRenderPlan.ToolMessage -> {
+                addToolMessage(plan.content)
+            }
         }
-        if (executionMetadata.isTaskExecutionMessage()) {
+        renderDecision.historyMessage?.let(::appendToConversationHistory)
+        if (renderDecision.marksTaskExecutionMessageRendered) {
             renderedTaskExecutionSessionMessageIds += message.id
         }
     }
@@ -5393,7 +5274,7 @@ class ImprovedChatPanel(
             return
         }
 
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val workflowResult = specEngine.loadWorkflow(normalizedId)
             val workflow = workflowResult.getOrNull()
             ApplicationManager.getApplication().invokeLater {
@@ -5421,7 +5302,7 @@ class ImprovedChatPanel(
                 val title = dialog.resultTitle ?: return@invokeLater
                 val description = dialog.resultDescription ?: ""
 
-                scope.launch(Dispatchers.IO) {
+                taskCoordinator.launchIo {
                     val updateResult = specEngine.updateWorkflowMetadata(
                         workflowId = normalizedId,
                         title = title,
@@ -5532,7 +5413,7 @@ class ImprovedChatPanel(
         }
         clearComposerInput()
         appendUserMessage(slashCommand)
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val sessionId = ensureActiveSessionAsync(slashCommand, providerId)
             sessionId?.let { persistMessage(it, ConversationRole.USER, slashCommand) }
             ApplicationManager.getApplication().invokeLater {
@@ -5769,10 +5650,10 @@ class ImprovedChatPanel(
         val sessionId = currentSessionId
         stopRequested.set(false)
         activeLlmRequest = null
-        isFinalizingResponse = false
+        executionState = executionState.withFinalizing(false)
         setSendingState(true)
 
-        activeOperationJob = scope.launch(Dispatchers.IO) {
+        activeOperationJob = taskCoordinator.launchIo {
             try {
                 val result = transitionSpecWorkflow(
                     advance = true,
@@ -5821,6 +5702,12 @@ class ImprovedChatPanel(
     }
 
     private fun addSystemMessage(content: String) {
+        val panel = ChatMessagePanel(ChatMessagePanel.MessageRole.SYSTEM, content)
+        panel.finishMessage()
+        messagesPanel.addMessage(panel)
+    }
+
+    private fun addToolMessage(content: String) {
         val panel = ChatMessagePanel(ChatMessagePanel.MessageRole.SYSTEM, content)
         panel.finishMessage()
         messagesPanel.addMessage(panel)
@@ -5889,10 +5776,7 @@ class ImprovedChatPanel(
     }
 
     private fun setSendingState(sending: Boolean) {
-        if (!sending) {
-            isFinalizingResponse = false
-        }
-        isGenerating = sending
+        executionState = executionState.withSending(sending)
         refreshSendButtonState()
         inputField.isEnabled = true
         providerComboBox.isEnabled = true
@@ -5908,8 +5792,9 @@ class ImprovedChatPanel(
     }
 
     private fun setResponseFinalizingState(finalizing: Boolean) {
-        if (isFinalizingResponse == finalizing) return
-        isFinalizingResponse = finalizing
+        val updatedState = executionState.withFinalizing(finalizing)
+        if (updatedState == executionState) return
+        executionState = updatedState
         refreshSendButtonState()
         if (isGenerating && !isRestoringSession) {
             showBusyStatus()
@@ -5922,24 +5807,23 @@ class ImprovedChatPanel(
     }
 
     private fun currentBusyStatusText(): String? {
-        return when {
-            isRestoringSession -> SpecCodingBundle.message("toolwindow.status.session.restoring")
-            !isGenerating -> null
-            isFinalizingResponse -> SpecCodingBundle.message("toolwindow.status.finalizing")
-            else -> SpecCodingBundle.message("toolwindow.status.generating")
-        }
+        return resolveExecutionUiState().busyStatusText
     }
 
     private fun setSessionRestoringState(restoring: Boolean) {
-        isRestoringSession = restoring
+        executionState = executionState.withRestoring(restoring)
         refreshSendButtonState()
     }
 
     private fun refreshSendButtonState() {
-        val sendAction = resolveComposerSendAction()
-        sendButton.isEnabled = !isRestoringSession && !isFinalizingResponse && sendAction.enabled
-        compactButton.isEnabled = !isGenerating && !isRestoringSession
-        refreshActionButtonTexts(sendAction)
+        val uiState = resolveExecutionUiState()
+        sendButton.isEnabled = uiState.sendEnabled
+        compactButton.isEnabled = uiState.compactEnabled
+        refreshActionButtonTexts(uiState.sendAction)
+    }
+
+    private fun resolveExecutionUiState(): ImprovedChatPanelExecutionUiState {
+        return ImprovedChatPanelExecutionStateCoordinator.resolve(executionState)
     }
 
     private fun showStatus(
@@ -6681,7 +6565,7 @@ class ImprovedChatPanel(
             return
         }
 
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             runWorkflowShellCommandInBackground(normalizedCommand, request)
         }
     }
@@ -6773,8 +6657,7 @@ class ImprovedChatPanel(
         } finally {
             suppressComposerAutoCollapse = false
         }
-        prunePendingPastedTextBlocks(inputField.text.orEmpty())
-        lastComposerTextSnapshot = inputField.text.orEmpty()
+        syncComposerInputStateWithCurrentText()
     }
 
     private fun looksLikeTerminalCommandEcho(
@@ -6834,7 +6717,7 @@ class ImprovedChatPanel(
             )
         }
 
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             runCatching {
                 running.process.destroy()
                 if (running.process.isAlive) {
@@ -7294,13 +7177,13 @@ class ImprovedChatPanel(
         val resolvedProviderId = resolveProviderIdForRequest(providerId)
         stopRequested.set(false)
         activeLlmRequest = ActiveLlmRequest(providerId = resolvedProviderId, requestId = requestId)
-        isFinalizingResponse = false
+        executionState = executionState.withFinalizing(false)
         setSendingState(true)
         val assistantStartedAtMillis = System.currentTimeMillis()
         val assistantPanel = addAssistantMessage(startedAtMillis = assistantStartedAtMillis)
         currentAssistantPanel = assistantPanel
 
-        activeOperationJob = scope.launch(Dispatchers.IO) {
+        activeOperationJob = taskCoordinator.launchIo {
             val streamedTraceEvents = mutableListOf<ChatStreamEvent>()
             val assistantContent = StringBuilder()
             val pendingDelta = StringBuilder()
@@ -7693,7 +7576,7 @@ class ImprovedChatPanel(
         }
         runningWorkflowCommands.clear()
         clearImageAttachments()
-        pendingPastedTextBlocks.clear()
+        composerInputState = ImprovedChatPanelComposerInputCoordinator.clear()
         userMessageRawContent.clear()
         CliDiscoveryService.getInstance().removeDiscoveryListener(discoveryListener)
         specTaskExecutionService.removeLiveProgressListener(taskExecutionLiveProgressListener)
@@ -7703,7 +7586,7 @@ class ImprovedChatPanel(
         }
         activeTaskExecutionPanel = null
         latestObservedTaskLiveProgress = null
-        scope.cancel()
+        taskCoordinator.dispose()
     }
 
     private class SidebarGripSplitPaneUI(
@@ -7966,87 +7849,6 @@ class ImprovedChatPanel(
     }
 
     companion object {
-        internal data class ComposerCollapsePlan(
-            val rawText: String,
-            val lineCount: Int,
-            val replaceStart: Int,
-            val replaceEndExclusive: Int,
-        )
-
-        private data class InsertedTextDeltaSnapshot(
-            val start: Int,
-            val endExclusive: Int,
-            val insertedText: String,
-        )
-
-        internal fun planComposerCollapse(
-            previousSnapshot: String,
-            currentInput: String,
-            expandInsertedText: (String) -> String,
-        ): ComposerCollapsePlan? {
-            val delta = detectInsertedTextDeltaForCollapse(previousSnapshot, currentInput) ?: return null
-            val insertedNormalized = normalizeClipboardTextForCollapse(delta.insertedText)
-            if (insertedNormalized.isBlank()) {
-                return null
-            }
-            val insertedRawText = expandInsertedText(insertedNormalized)
-            val lineCount = insertedRawText.lineSequence().count()
-            if (!shouldCollapsePastedTextForCollapse(insertedRawText, lineCount)) {
-                return null
-            }
-
-            val previousNormalized = normalizeClipboardTextForCollapse(previousSnapshot)
-            val currentNormalized = normalizeClipboardTextForCollapse(currentInput)
-            val previousLines = if (previousNormalized.isBlank()) 0 else previousNormalized.lineSequence().count()
-            val currentLines = currentNormalized.lineSequence().count()
-            val deltaChars = insertedRawText.length
-            val deltaLines = (currentLines - previousLines).coerceAtLeast(0)
-            if (previousNormalized.isNotBlank() &&
-                deltaChars < INPUT_PASTE_COLLAPSE_ABRUPT_MIN_CHARS &&
-                deltaLines < INPUT_PASTE_COLLAPSE_ABRUPT_MIN_LINES &&
-                !PASTED_TEXT_MARKER_REGEX.containsMatchIn(insertedRawText)
-            ) {
-                return null
-            }
-
-            return ComposerCollapsePlan(
-                rawText = insertedRawText,
-                lineCount = lineCount,
-                replaceStart = delta.start,
-                replaceEndExclusive = delta.endExclusive,
-            )
-        }
-
-        internal fun deduplicatePastedTextMarkerDisplay(
-            currentInput: String,
-            markerPayloads: Map<String, String>,
-        ): String? {
-            if (currentInput.isBlank() || markerPayloads.isEmpty()) {
-                return null
-            }
-            var normalized = currentInput
-            var changed = false
-            repeat(markerPayloads.size.coerceAtLeast(1) * 2) {
-                var passChanged = false
-                markerPayloads.forEach { (marker, rawText) ->
-                    val deduplicated = deduplicateSinglePastedTextMarker(
-                        currentInput = normalized,
-                        marker = marker,
-                        rawText = normalizeClipboardTextForCollapse(rawText),
-                    ) ?: return@forEach
-                    if (deduplicated != normalized) {
-                        normalized = deduplicated
-                        passChanged = true
-                        changed = true
-                    }
-                }
-                if (!passChanged) {
-                    return if (changed) normalized else null
-                }
-            }
-            return if (changed) normalized else null
-        }
-
         internal fun resolveInitialComposerDividerProportion(snapshot: WindowRuntimeState): Float {
             val restored = snapshot.chatComposerDividerProportion
             return restored.takeIf {
@@ -8083,83 +7885,6 @@ class ImprovedChatPanel(
         ): List<TaskExecutionLiveProgress> {
             return pending.sortedWith(
                 compareBy<TaskExecutionLiveProgress> { it.lastUpdatedAt }.thenBy { it.runId },
-            )
-        }
-
-        private fun normalizeClipboardTextForCollapse(text: String): String {
-            return text.replace("\r\n", "\n").replace('\r', '\n')
-        }
-
-        private fun deduplicateSinglePastedTextMarker(
-            currentInput: String,
-            marker: String,
-            rawText: String,
-        ): String? {
-            if (rawText.isBlank() || !currentInput.contains(marker)) {
-                return null
-            }
-            val candidatePatterns = listOf(
-                rawText + "\n" + marker,
-                rawText + marker,
-                marker + "\n" + rawText,
-                marker + rawText,
-            )
-            candidatePatterns.forEach { pattern ->
-                val start = currentInput.indexOf(pattern)
-                if (start >= 0) {
-                    val endExclusive = start + pattern.length
-                    return currentInput.replaceRange(start, endExclusive, marker)
-                }
-            }
-            return null
-        }
-
-        private fun shouldCollapsePastedTextForCollapse(text: String, lineCount: Int): Boolean {
-            if (PASTED_TEXT_MARKER_REGEX.containsMatchIn(text)) {
-                return true
-            }
-            if (lineCount >= INPUT_PASTE_COLLAPSE_MIN_LINES) {
-                return true
-            }
-            return lineCount >= INPUT_PASTE_COLLAPSE_MIN_LINES_SOFT &&
-                text.length >= INPUT_PASTE_COLLAPSE_MIN_CHARS
-        }
-
-        private fun detectInsertedTextDeltaForCollapse(
-            previousText: String,
-            currentText: String,
-        ): InsertedTextDeltaSnapshot? {
-            if (previousText == currentText) {
-                return null
-            }
-            var prefix = 0
-            val sharedPrefixLimit = minOf(previousText.length, currentText.length)
-            while (prefix < sharedPrefixLimit && previousText[prefix] == currentText[prefix]) {
-                prefix += 1
-            }
-
-            var previousSuffix = previousText.length - 1
-            var currentSuffix = currentText.length - 1
-            while (previousSuffix >= prefix &&
-                currentSuffix >= prefix &&
-                previousText[previousSuffix] == currentText[currentSuffix]
-            ) {
-                previousSuffix -= 1
-                currentSuffix -= 1
-            }
-
-            val endExclusive = currentSuffix + 1
-            if (endExclusive <= prefix) {
-                return null
-            }
-            val insertedText = currentText.substring(prefix, endExclusive)
-            if (insertedText.isBlank()) {
-                return null
-            }
-            return InsertedTextDeltaSnapshot(
-                start = prefix,
-                endExclusive = endExclusive,
-                insertedText = insertedText,
             )
         }
 
@@ -8250,11 +7975,6 @@ class ImprovedChatPanel(
         private const val TASK_EXECUTION_UI_BATCH_INTERVAL_MILLIS = 180
         private const val ACTION_PASTE_IMAGE_OR_TEXT = "specCoding.pasteImageOrText"
         private const val PASTE_DIAGNOSTICS_ENABLED = true
-        private const val INPUT_PASTE_COLLAPSE_MIN_LINES = 48
-        private const val INPUT_PASTE_COLLAPSE_MIN_LINES_SOFT = 24
-        private const val INPUT_PASTE_COLLAPSE_MIN_CHARS = 1200
-        private const val INPUT_PASTE_COLLAPSE_ABRUPT_MIN_LINES = 6
-        private const val INPUT_PASTE_COLLAPSE_ABRUPT_MIN_CHARS = 160
         private const val CLIPBOARD_IMAGE_TEMP_DIR_NAME = "Spec Code"
         private const val SPEC_CARD_PREVIEW_MAX_LINES = 18
         private const val SPEC_CARD_PREVIEW_MAX_CHARS = 1800
@@ -8323,7 +8043,6 @@ class ImprovedChatPanel(
         )
         private const val CONTINUE_PROMPT_UNWRAP_MAX_DEPTH = 8
         private val CONTINUE_CODE_LIKE_FOCUS_REGEX = Regex("""^[a-z0-9_.:+\-/]{2,64}$""", RegexOption.IGNORE_CASE)
-        private val PASTED_TEXT_MARKER_REGEX = Regex("""\[Pasted text #\d+ \+\d+ lines]""")
         private val CONTINUE_DYNAMIC_ZH_REGEX = Regex(
             """^请承接上一轮输出继续执行，?\s*重点[:：]\s*(.+?)(?:。?\s*避免重复已完成内容.*)?$"""
         )

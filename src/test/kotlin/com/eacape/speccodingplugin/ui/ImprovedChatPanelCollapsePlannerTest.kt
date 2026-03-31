@@ -11,7 +11,7 @@ class ImprovedChatPanelCollapsePlannerTest {
     fun `typing after collapsed pasted text should not create a new collapse plan`() {
         val marker = "[Pasted text #1 +60 lines]"
 
-        val plan = ImprovedChatPanel.planComposerCollapse(
+        val plan = ImprovedChatPanelComposerInputCoordinator.planComposerCollapse(
             previousSnapshot = marker,
             currentInput = "$marker\nfollow-up summary",
             expandInsertedText = { inserted -> inserted },
@@ -25,7 +25,7 @@ class ImprovedChatPanelCollapsePlannerTest {
         val marker = "[Pasted text #1 +60 lines]"
         val rawText = buildLargeText(lines = 60, prefix = "alpha")
 
-        val cleaned = ImprovedChatPanel.deduplicatePastedTextMarkerDisplay(
+        val cleaned = ImprovedChatPanelComposerInputCoordinator.deduplicatePastedTextMarkerDisplay(
             currentInput = "$rawText\n$marker",
             markerPayloads = mapOf(marker to rawText),
         )
@@ -38,7 +38,7 @@ class ImprovedChatPanelCollapsePlannerTest {
         val marker = "[Pasted text #1 +60 lines]"
         val rawText = buildLargeText(lines = 60, prefix = "alpha")
 
-        val cleaned = ImprovedChatPanel.deduplicatePastedTextMarkerDisplay(
+        val cleaned = ImprovedChatPanelComposerInputCoordinator.deduplicatePastedTextMarkerDisplay(
             currentInput = "$marker\nfollow-up summary",
             markerPayloads = mapOf(marker to rawText),
         )
@@ -52,7 +52,7 @@ class ImprovedChatPanelCollapsePlannerTest {
         val previousSnapshot = "$marker\nnote\n"
         val insertedRawText = buildLargeText(lines = 55, prefix = "beta")
 
-        val plan = ImprovedChatPanel.planComposerCollapse(
+        val plan = ImprovedChatPanelComposerInputCoordinator.planComposerCollapse(
             previousSnapshot = previousSnapshot,
             currentInput = previousSnapshot + insertedRawText,
             expandInsertedText = { inserted -> inserted },

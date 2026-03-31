@@ -23,6 +23,7 @@ import com.eacape.speccodingplugin.ui.ChatToolWindowControlListener
 import com.eacape.speccodingplugin.ui.ChatToolWindowFactory
 import com.eacape.speccodingplugin.ui.ComboBoxAutoWidthSupport
 import com.eacape.speccodingplugin.ui.RefreshFeedback
+import com.eacape.speccodingplugin.ui.SwingPanelTaskCoordinator
 import com.eacape.speccodingplugin.ui.WorkflowChatRefreshEvent
 import com.eacape.speccodingplugin.ui.WorkflowChatRefreshListener
 import com.eacape.speccodingplugin.ui.history.HistorySessionOpenListener
@@ -119,7 +120,9 @@ class SpecWorkflowPanel(
     private val llmRouter = LlmRouter.getInstance()
     private val modelRegistry = ModelRegistry.getInstance()
     private val modeManager = OperationModeManager.getInstance(project)
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val taskCoordinator = SwingPanelTaskCoordinator(
+        isDisposed = { _isDisposed || project.isDisposed },
+    )
     private val discoveryListener: () -> Unit = {
         llmRouter.refreshProviders()
         modelRegistry.refreshFromDiscovery()
@@ -1503,7 +1506,7 @@ class SpecWorkflowPanel(
             liveProgressRefreshPending = true
             return
         }
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val updatedLiveProgress = buildTaskLiveProgressByTaskId(workflowId)
             invokeLaterSafe {
                 liveProgressRefreshLoadInFlight.set(false)
@@ -1997,7 +2000,7 @@ class SpecWorkflowPanel(
         showRefreshFeedback: Boolean = false,
         preserveListMode: Boolean = false,
     ) {
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val items = specEngine.listWorkflowMetadata().map { meta ->
                 SpecWorkflowListPanel.WorkflowListItem(
                     workflowId = meta.workflowId,
@@ -2085,7 +2088,7 @@ class SpecWorkflowPanel(
         detailTasksPanel.showLoading()
         gateDetailsPanel.showLoading()
         showWorkspaceContent()
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val wf = specEngine.reloadWorkflow(workflowId).getOrNull()
             val uiSnapshot = wf?.let(::buildWorkflowUiSnapshot)
             val tasksResult = runCatching { specTasksService.parse(workflowId) }
@@ -2201,7 +2204,7 @@ class SpecWorkflowPanel(
 
     private fun onCreateWorkflow(preferredTemplate: WorkflowTemplate? = null) {
         val workflowOptions = listPanel.workflowOptionsForCreate()
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val configuredDefaultTemplate = runCatching {
                 SpecProjectConfigService(project).load().defaultTemplate
             }.getOrElse { error ->
@@ -2228,7 +2231,7 @@ class SpecWorkflowPanel(
                 val verifyEnabled = dialog.resultVerifyEnabled
                 val changeIntent = dialog.resultChangeIntent
                 val baselineWorkflowId = dialog.resultBaselineWorkflowId
-                scope.launch(Dispatchers.IO) {
+                taskCoordinator.launchIo {
                     specEngine.createWorkflow(
                         title = title,
                         description = desc,
@@ -2255,13 +2258,13 @@ class SpecWorkflowPanel(
     }
 
     private fun onEditWorkflow(workflowId: String) {
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val workflow = specEngine.loadWorkflow(workflowId).getOrNull()
             if (workflow == null) {
                 invokeLaterSafe {
                     setStatusText(SpecCodingBundle.message("spec.workflow.error", SpecCodingBundle.message("common.unknown")))
                 }
-                return@launch
+                return@launchIo
             }
 
             invokeLaterSafe {
@@ -2275,7 +2278,7 @@ class SpecWorkflowPanel(
                 val title = dialog.resultTitle ?: return@invokeLaterSafe
                 val description = dialog.resultDescription ?: ""
 
-                scope.launch(Dispatchers.IO) {
+                taskCoordinator.launchIo {
                     val result = specEngine.updateWorkflowMetadata(
                         workflowId = workflowId,
                         title = title,
@@ -2306,7 +2309,7 @@ class SpecWorkflowPanel(
 
     private fun onDeleteWorkflow(workflowId: String) {
         val refreshTarget = resolveDeleteRefreshTarget(workflowId)
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             specEngine.deleteWorkflow(workflowId).onSuccess {
                 invokeLaterSafe {
                     if (pendingOpenWorkflowRequest?.workflowId == workflowId) {
@@ -2346,7 +2349,7 @@ class SpecWorkflowPanel(
         val shortName = dialog.resultShortName ?: return
         val baseBranch = dialog.resultBaseBranch ?: "main"
 
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val created = worktreeManager.createWorktree(specTaskId, shortName, baseBranch)
             created.onSuccess { binding ->
                 val switched = worktreeManager.switchWorktree(binding.id)
@@ -2380,7 +2383,7 @@ class SpecWorkflowPanel(
             return
         }
 
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val binding = worktreeManager.listBindings(includeInactive = true)
                 .firstOrNull { it.specTaskId == workflow.id && it.status == WorktreeStatus.ACTIVE }
                 ?: worktreeManager.listBindings(includeInactive = true)
@@ -2390,7 +2393,7 @@ class SpecWorkflowPanel(
                 invokeLaterSafe {
                     setStatusText(SpecCodingBundle.message("spec.workflow.worktree.noBinding"))
                 }
-                return@launch
+                return@launchIo
             }
 
             val mergeResult = worktreeManager.mergeWorktree(binding.id, binding.baseBranch)
@@ -3368,7 +3371,7 @@ class SpecWorkflowPanel(
             requestId = requestOptions.requestId.orEmpty(),
         )
         activeGenerationRequest = activeRequest
-        activeGenerationJob = scope.launch(Dispatchers.IO) {
+        activeGenerationJob = taskCoordinator.launchIo {
             try {
                 val safeSuggestedDetails = suggestedDetails.ifBlank { input }
                 val fallbackPhase = context.phase
@@ -3494,7 +3497,7 @@ class SpecWorkflowPanel(
             requestId = requestOptions.requestId.orEmpty(),
         )
         activeGenerationRequest = activeRequest
-        activeGenerationJob = scope.launch(Dispatchers.IO) {
+        activeGenerationJob = taskCoordinator.launchIo {
             try {
                 var modelCallRecorded = false
                 var normalizeRecorded = false
@@ -3921,7 +3924,7 @@ class SpecWorkflowPanel(
         workflowId: String,
         payload: ClarificationRetryPayload?,
     ) {
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             specEngine.saveClarificationRetryState(
                 workflowId = workflowId,
                 state = payload?.toState(),
@@ -3985,7 +3988,7 @@ class SpecWorkflowPanel(
             return
         }
 
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val candidateWorkflows = specEngine.listWorkflows()
                 .filter { it != targetWorkflow.id }
                 .mapNotNull { workflowId ->
@@ -4002,7 +4005,7 @@ class SpecWorkflowPanel(
                 invokeLaterSafe {
                     setStatusText(SpecCodingBundle.message("spec.delta.emptyCandidates"))
                 }
-                return@launch
+                return@launchIo
             }
 
             invokeLaterSafe {
@@ -4020,7 +4023,7 @@ class SpecWorkflowPanel(
                     return@invokeLaterSafe
                 }
 
-                scope.launch(Dispatchers.IO) {
+                taskCoordinator.launchIo {
                     val result = specDeltaService.compareByWorkflowId(
                         baselineWorkflowId = baselineWorkflowId,
                         targetWorkflowId = targetWorkflow.id,
@@ -4067,7 +4070,7 @@ class SpecWorkflowPanel(
         choice: SpecWorkflowDeltaBaselineChoice,
     ) {
         val targetWorkflow = currentWorkflow?.takeIf { workflow -> workflow.id == workflowId } ?: return
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val result = when (choice) {
                 is SpecWorkflowReferenceBaselineChoice -> specDeltaService.compareByWorkflowId(
                     baselineWorkflowId = choice.workflowId,
@@ -4096,13 +4099,13 @@ class SpecWorkflowPanel(
     }
 
     private fun onPinDeltaBaselineRequested(workflowId: String) {
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val snapshot = specEngine.listWorkflowSnapshots(workflowId).firstOrNull()
             if (snapshot == null) {
                 invokeLaterSafe {
                     setStatusText(SpecCodingBundle.message("spec.toolwindow.verifyDelta.pin.unavailable"))
                 }
-                return@launch
+                return@launchIo
             }
             val label = SpecCodingBundle.message(
                 "spec.toolwindow.verifyDelta.pin.autoLabel",
@@ -4169,7 +4172,7 @@ class SpecWorkflowPanel(
             return
         }
 
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val result = specEngine.archiveWorkflow(workflow.id)
             invokeLaterSafe {
                 result.onSuccess {
@@ -4429,9 +4432,9 @@ class SpecWorkflowPanel(
             return
         }
         toolWindow.activate(null)
-        ApplicationManager.getApplication().invokeLater {
+        invokeLaterSafe {
             if (project.isDisposed || _isDisposed) {
-                return@invokeLater
+                return@invokeLaterSafe
             }
             project.messageBus.syncPublisher(ChatToolWindowControlListener.TOPIC)
                 .onOpenWorkflowChatRequested(request)
@@ -4855,7 +4858,7 @@ class SpecWorkflowPanel(
 
     private fun onShowCodeGraph() {
         setStatusText(SpecCodingBundle.message("code.graph.status.generating"))
-        scope.launch(Dispatchers.Default) {
+        taskCoordinator.launchDefault {
             val result = codeGraphService.buildFromActiveEditor()
             invokeLaterSafe {
                 result.onSuccess { snapshot ->
@@ -4884,7 +4887,7 @@ class SpecWorkflowPanel(
 
     private fun onNextPhase() {
         val wfId = selectedWorkflowId ?: return
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             specEngine.proceedToNextPhase(wfId).onSuccess {
                 invokeLaterSafe {
                     detailPanel.clearInput()
@@ -4903,7 +4906,7 @@ class SpecWorkflowPanel(
 
     private fun onGoBack() {
         val wfId = selectedWorkflowId ?: return
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             specEngine.goBackToPreviousPhase(wfId).onSuccess {
                 invokeLaterSafe {
                     detailPanel.clearInput()
@@ -5006,10 +5009,10 @@ class SpecWorkflowPanel(
 
     private fun scheduleDocumentReload(workflowId: String) {
         pendingDocumentReloadJob?.cancel()
-        pendingDocumentReloadJob = scope.launch {
+        pendingDocumentReloadJob = taskCoordinator.launchDefault {
             delay(DOCUMENT_RELOAD_DEBOUNCE_MILLIS)
             if (_isDisposed || project.isDisposed || selectedWorkflowId != workflowId) {
-                return@launch
+                return@launchDefault
             }
             reloadCurrentWorkflow()
         }
@@ -5090,7 +5093,7 @@ class SpecWorkflowPanel(
 
     private fun onComplete() {
         val wfId = selectedWorkflowId ?: return
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             specEngine.completeWorkflow(wfId)
                 .onSuccess { workflow ->
                     invokeLaterSafe {
@@ -5111,7 +5114,7 @@ class SpecWorkflowPanel(
     private fun onPauseResume() {
         val wfId = selectedWorkflowId ?: return
         val isPaused = currentWorkflow?.status == WorkflowStatus.PAUSED
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val result = if (isPaused)
                 specEngine.resumeWorkflow(wfId)
             else
@@ -5162,7 +5165,7 @@ class SpecWorkflowPanel(
             onDone(Result.failure(IllegalStateException(SpecCodingBundle.message("spec.detail.noWorkflow"))))
             return
         }
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val result = specEngine.updateDocumentContent(
                 workflowId = wfId,
                 phase = phase,
@@ -5193,7 +5196,7 @@ class SpecWorkflowPanel(
             return
         }
 
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val history = specEngine.listDocumentHistory(workflowId, phase)
             val snapshots = history.mapNotNull { entry ->
                 specEngine.loadDocumentSnapshot(workflowId, phase, entry.snapshotId).getOrNull()?.let { snapshotDoc ->
@@ -5270,7 +5273,7 @@ class SpecWorkflowPanel(
             detailTasksPanel.showLoading()
             gateDetailsPanel.showLoading()
         }
-        scope.launch(Dispatchers.IO) {
+        taskCoordinator.launchIo {
             val wf = specEngine.reloadWorkflow(wfId).getOrNull()
             val uiSnapshot = wf?.let(::buildWorkflowUiSnapshot)
             val tasksResult = runCatching { specTasksService.parse(wfId) }
@@ -5537,9 +5540,7 @@ class SpecWorkflowPanel(
     }
 
     private fun invokeLaterSafe(action: () -> Unit) {
-        ApplicationManager.getApplication().invokeLater {
-            if (!_isDisposed && !project.isDisposed) action()
-        }
+        taskCoordinator.invokeLater(action)
     }
 
     internal fun isListModeForTest(): Boolean {
@@ -5918,7 +5919,7 @@ class SpecWorkflowPanel(
         specTaskExecutionService.removeLiveProgressListener(liveProgressListener)
         workflowSwitcherPopup?.cancel()
         cancelActiveGenerationRequest("Spec workflow panel disposed")
-        scope.cancel()
+        taskCoordinator.dispose()
     }
 
     companion object {
