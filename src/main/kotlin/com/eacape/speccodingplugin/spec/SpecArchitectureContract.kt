@@ -133,7 +133,7 @@ object SpecArchitectureContract {
         DependencyDecision(
             key = "stage-transition",
             capability = "workflow stage advance/jump/rollback state machine with gate integration and auditable metadata-only persistence",
-            selection = "SpecEngine transition coordinator + typed `StageTransitionResult` + storage-backed transition snapshots",
+            selection = "SpecStageTransitionCoordinator + typed `StageTransitionResult` + storage-backed transition snapshots",
             rationale = "Task 15 requires stage-aware transitions, warning confirmation, and dedicated transition audit records without rewriting artifacts.",
             status = AdoptionStatus.ADOPTED,
         ),
@@ -376,6 +376,10 @@ object SpecArchitectureContract {
         ),
         SourceRule(
             fileName = "SpecEngine.kt",
+            layer = Layer.APPLICATION,
+        ),
+        SourceRule(
+            fileName = "SpecStageTransitionCoordinator.kt",
             layer = Layer.APPLICATION,
         ),
         SourceRule(

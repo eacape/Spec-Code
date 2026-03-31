@@ -56,37 +56,40 @@ class SpecEngineWorkflowMetadataTest {
         val engine = SpecEngine(project, storage) { request ->
             val rawContent = when (request.phase) {
                 SpecPhase.SPECIFY -> """
-                    ## 功能需求
-                    - 用户可创建任务
+                    ## Functional Requirements
+                    - Create tasks inside the workflow.
 
-                    ## 非功能需求
-                    - 支持离线编辑
+                    ## Non-Functional Requirements
+                    - Keep the editor responsive.
 
-                    ## 用户故事
+                    ## User Stories
                     As a user, I want to create tasks quickly.
+
+                    ## Acceptance Criteria
+                    - [ ] The workflow can advance to design after generation.
                 """.trimIndent()
 
                 SpecPhase.DESIGN -> """
-                    ## 架构设计
-                    - 三层架构
+                    ## Architecture Design
+                    - Use a layered plugin structure.
 
-                    ## 技术选型
+                    ## Technology Choices
                     - Kotlin + IntelliJ Platform
 
-                    ## 数据模型
+                    ## Data Model
                     data class Task(val id: String)
 
-                    ## API 设计
+                    ## API Design
                     - createTask(title: String)
 
-                    ## 非功能设计
-                    - 可观测性与安全审计
+                    ## Non-Functional Design
+                    - Keep stage metadata auditable.
                 """.trimIndent()
 
                 SpecPhase.IMPLEMENT -> """
-                    ## 任务列表
+                    ## Tasks
 
-                    ### T-001: 完成实现
+                    ### T-001: Complete implementation
                     ```spec-task
                     status: PENDING
                     priority: P0
@@ -94,14 +97,14 @@ class SpecEngineWorkflowMetadataTest {
                     relatedFiles: []
                     verificationResult: null
                     ```
-                    - [ ] 编写实现代码
+                    - [ ] Write implementation code
 
-                    ## 实现步骤
-                    1. 编写实现代码
-                    2. 执行测试
+                    ## Implementation Steps
+                    1. Write implementation code
+                    2. Run tests
 
-                    ## 测试计划
-                    - [ ] 单元测试
+                    ## Test Plan
+                    - [ ] Unit tests
                 """.trimIndent()
             }
             val draft = SpecDocument(
@@ -114,7 +117,7 @@ class SpecEngineWorkflowMetadataTest {
                 ),
             )
             SpecGenerationResult.Success(
-                draft.copy(validationResult = SpecValidator.validate(draft))
+                draft.copy(validationResult = SpecValidator.validate(draft)),
             )
         }
 
