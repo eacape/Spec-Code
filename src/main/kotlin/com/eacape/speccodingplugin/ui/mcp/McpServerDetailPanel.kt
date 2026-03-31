@@ -18,12 +18,31 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.util.ui.JBUI
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
-import java.awt.*
+import java.awt.BorderLayout
+import java.awt.Color
+import java.awt.Component
+import java.awt.Cursor
+import java.awt.Dimension
+import java.awt.FlowLayout
+import java.awt.Font
+import java.awt.Toolkit
 import java.awt.datatransfer.StringSelection
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import javax.swing.*
+import javax.swing.BorderFactory
+import javax.swing.Box
+import javax.swing.BoxLayout
+import javax.swing.DefaultListModel
+import javax.swing.Icon
+import javax.swing.JButton
+import javax.swing.JComponent
+import javax.swing.JList
+import javax.swing.ListSelectionModel
+import javax.swing.JPanel
+import javax.swing.JSplitPane
+import javax.swing.ListCellRenderer
+import javax.swing.SwingConstants
 
 /**
  * MCP Server 详情面板（右侧）

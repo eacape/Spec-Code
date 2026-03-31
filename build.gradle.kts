@@ -228,23 +228,6 @@ intellijPlatform {
 }
 
 tasks {
-    withType<io.gitlab.arturbosch.detekt.Detekt>().configureEach {
-        group = "verification"
-        description = "Run minimal detekt static analysis guard"
-        setSource(files("src/main/kotlin", "src/test/kotlin"))
-        include("**/*.kt")
-        exclude("**/build/**", "**/ui/spec/SpecWorkflowPanel.kt")
-        jvmTarget = "21"
-
-        reports {
-            xml.required.set(true)
-            html.required.set(true)
-            sarif.required.set(true)
-            md.required.set(false)
-            txt.required.set(false)
-        }
-    }
-
     named<Test>("test") {
         useJUnitPlatform {
             excludeEngines("junit-vintage")
@@ -352,10 +335,29 @@ tasks {
         ),
     )
 
+    val detektMinimal = register<io.gitlab.arturbosch.detekt.Detekt>("detektMinimal") {
+        group = "verification"
+        description = "Run minimal detekt static analysis guard used by CI"
+        setSource(files("src/main/kotlin", "src/test/kotlin"))
+        include("**/*.kt")
+        exclude("**/build/**", "**/ui/spec/SpecWorkflowPanel.kt")
+        jvmTarget = "21"
+        config.setFrom(files(layout.projectDirectory.file("config/detekt/detekt.yml")))
+        basePath = projectDir.absolutePath
+
+        reports {
+            xml.required.set(true)
+            html.required.set(true)
+            sarif.required.set(true)
+            md.required.set(false)
+            txt.required.set(false)
+        }
+    }
+
     val staticAnalysisCheck = register("staticAnalysisCheck") {
         group = "verification"
         description = "Run minimal detekt static analysis guard used by CI"
-        dependsOn("detektMain", "detektTest")
+        dependsOn(detektMinimal)
     }
 
     val platformSmokeTest = registerPlatformVerificationTest(

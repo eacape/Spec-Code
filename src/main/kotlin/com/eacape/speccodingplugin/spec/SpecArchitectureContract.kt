@@ -379,6 +379,11 @@ object SpecArchitectureContract {
             layer = Layer.APPLICATION,
         ),
         SourceRule(
+            fileName = "SpecEngineResponsibilityCatalog.kt",
+            layer = Layer.DOMAIN,
+            blockedImportPrefixes = domainBlockedImportPrefixes,
+        ),
+        SourceRule(
             fileName = "SpecGenerator.kt",
             layer = Layer.APPLICATION,
         ),

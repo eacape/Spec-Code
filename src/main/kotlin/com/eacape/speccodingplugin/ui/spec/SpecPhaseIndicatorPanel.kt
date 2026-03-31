@@ -4,7 +4,13 @@ import com.eacape.speccodingplugin.spec.SpecPhase
 import com.eacape.speccodingplugin.spec.SpecWorkflow
 import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBUI
-import java.awt.*
+import java.awt.BasicStroke
+import java.awt.Color
+import java.awt.Dimension
+import java.awt.Font
+import java.awt.Graphics
+import java.awt.Graphics2D
+import java.awt.RenderingHints
 import javax.swing.JPanel
 
 /**

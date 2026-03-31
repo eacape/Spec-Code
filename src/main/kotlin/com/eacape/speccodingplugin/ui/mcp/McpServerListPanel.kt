@@ -10,8 +10,21 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
-import java.awt.*
-import javax.swing.*
+import java.awt.BorderLayout
+import java.awt.Color
+import java.awt.Component
+import java.awt.Cursor
+import java.awt.Dimension
+import java.awt.FlowLayout
+import java.awt.Font
+import java.awt.FontMetrics
+import javax.swing.BorderFactory
+import javax.swing.DefaultListModel
+import javax.swing.JButton
+import javax.swing.JList
+import javax.swing.ListSelectionModel
+import javax.swing.JPanel
+import javax.swing.ListCellRenderer
 
 /**
  * MCP Server 列表面板（左侧）

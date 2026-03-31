@@ -1,6 +1,11 @@
 package com.eacape.speccodingplugin.spec
 
-import com.eacape.speccodingplugin.llm.*
+import com.eacape.speccodingplugin.llm.LlmMessage
+import com.eacape.speccodingplugin.llm.LlmRequest
+import com.eacape.speccodingplugin.llm.LlmRequestContext
+import com.eacape.speccodingplugin.llm.LlmResponse
+import com.eacape.speccodingplugin.llm.LlmRole
+import com.eacape.speccodingplugin.llm.LlmRouter
 import com.intellij.openapi.diagnostic.thisLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
