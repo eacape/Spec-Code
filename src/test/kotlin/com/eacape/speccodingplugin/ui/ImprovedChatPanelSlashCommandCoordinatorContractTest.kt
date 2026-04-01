@@ -17,7 +17,6 @@ class ImprovedChatPanelSlashCommandCoordinatorContractTest {
         )
 
         assertTrue(source.contains("ImprovedChatPanelSlashCommandCoordinator.resolve("))
-        assertTrue(source.contains("ImprovedChatPanelSlashCommandCoordinator.extractSlashCommandToken("))
         assertFalse(source.contains("private fun resolveProviderSlashCommand("))
         assertFalse(source.contains("private fun extractSlashCommandToken("))
         assertFalse(source.contains("private fun isRegisteredSkillSlashCommand("))

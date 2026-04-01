@@ -14,7 +14,6 @@ import com.eacape.speccodingplugin.core.OperationResult
 import com.eacape.speccodingplugin.core.SpecCodingProjectService
 import com.eacape.speccodingplugin.engine.CliDiscoveryService
 import com.eacape.speccodingplugin.engine.CliSlashCommandInfo
-import com.eacape.speccodingplugin.engine.CliSlashInvocationKind
 import com.eacape.speccodingplugin.hook.HookEvent
 import com.eacape.speccodingplugin.hook.HookManager
 import com.eacape.speccodingplugin.hook.HookTriggerContext
@@ -5355,10 +5354,12 @@ class ImprovedChatPanel(
         providerId: String?,
         commandInfo: CliSlashCommandInfo,
     ) {
-        val shellCommand = buildProviderSlashShellCommand(
+        val shellPlan = ImprovedChatPanelProviderSlashCommandCoordinator.buildExecutionPlan(
             slashCommand = slashCommand,
             providerId = providerId,
             commandInfo = commandInfo,
+            claudeExecutablePath = CliDiscoveryService.getInstance().claudeInfo.path.ifBlank { "claude" },
+            codexExecutablePath = CliDiscoveryService.getInstance().codexInfo.path.ifBlank { "codex" },
         ) ?: run {
             addErrorMessage(
                 SpecCodingBundle.message(
@@ -5379,73 +5380,10 @@ class ImprovedChatPanel(
                     return@invokeLater
                 }
                 executeShellCommand(
-                    command = shellCommand,
-                    requestDescription = "Provider slash command: $slashCommand",
+                    command = shellPlan.shellCommand,
+                    requestDescription = shellPlan.requestDescription,
                 )
             }
-        }
-    }
-
-    private fun buildProviderSlashShellCommand(
-        slashCommand: String,
-        providerId: String?,
-        commandInfo: CliSlashCommandInfo,
-    ): String? {
-        val normalizedProvider = providerId?.trim().orEmpty()
-        if (normalizedProvider.isBlank()) {
-            return null
-        }
-        val slashToken = ImprovedChatPanelSlashCommandCoordinator.extractSlashCommandToken(slashCommand) ?: return null
-        val args = slashCommand.removePrefix("/")
-            .trim()
-            .substringAfter(" ", "")
-            .trim()
-
-        val cliExecutable = when {
-            normalizedProvider.equals(ClaudeCliLlmProvider.ID, ignoreCase = true) -> {
-                CliDiscoveryService.getInstance().claudeInfo.path.ifBlank { "claude" }
-            }
-
-            normalizedProvider.equals(CodexCliLlmProvider.ID, ignoreCase = true) -> {
-                CliDiscoveryService.getInstance().codexInfo.path.ifBlank { "codex" }
-            }
-
-            else -> {
-                return null
-            }
-        }
-        val invocationToken = if (
-            normalizedProvider.equals(ClaudeCliLlmProvider.ID, ignoreCase = true) &&
-            commandInfo.invocationKind == CliSlashInvocationKind.OPTION
-        ) {
-            "--$slashToken"
-        } else {
-            slashToken
-        }
-        val executable = quoteShellTokenIfNeeded(cliExecutable)
-        return buildString {
-            append(executable)
-            append(' ')
-            append(invocationToken)
-            if (args.isNotBlank()) {
-                append(' ')
-                append(args)
-            }
-        }.trim()
-    }
-
-    private fun quoteShellTokenIfNeeded(value: String): String {
-        val trimmed = value.trim()
-        if (trimmed.isBlank()) {
-            return trimmed
-        }
-        if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
-            return trimmed
-        }
-        return if (trimmed.any { it.isWhitespace() }) {
-            "\"$trimmed\""
-        } else {
-            trimmed
         }
     }
 
@@ -6458,21 +6396,22 @@ class ImprovedChatPanel(
     }
 
     private fun executeShellCommand(command: String, requestDescription: String) {
-        val normalizedCommand = command.trim()
-        if (normalizedCommand.isBlank() || project.isDisposed || _isDisposed) {
+        if (project.isDisposed || _isDisposed) {
             return
         }
-        val request = OperationRequest(
-            operation = Operation.EXECUTE_COMMAND,
-            description = requestDescription,
-            details = mapOf("command" to normalizedCommand),
-        )
-        if (!checkWorkflowCommandPermission(request, normalizedCommand)) {
+        val dispatchRequest = ImprovedChatPanelShellCommandDispatchCoordinator.buildDispatchRequest(
+            command = command,
+            requestDescription = requestDescription,
+        ) ?: return
+        if (!checkWorkflowCommandPermission(dispatchRequest.operationRequest, dispatchRequest.normalizedCommand)) {
             return
         }
 
-        if (workflowCommandRunner.isRunning(normalizedCommand)) {
-            val message = SpecCodingBundle.message("chat.workflow.action.runCommand.alreadyRunning", normalizedCommand)
+        if (workflowCommandRunner.isRunning(dispatchRequest.normalizedCommand)) {
+            val message = SpecCodingBundle.message(
+                "chat.workflow.action.runCommand.alreadyRunning",
+                dispatchRequest.normalizedCommand,
+            )
             addSystemMessage(message)
             currentSessionId?.let { sessionId ->
                 persistMessageAsync(
@@ -6485,32 +6424,34 @@ class ImprovedChatPanel(
         }
 
         taskCoordinator.launchIo {
-            runWorkflowShellCommandInBackground(normalizedCommand, request)
+            runWorkflowShellCommandInBackground(dispatchRequest)
         }
     }
 
     private fun executeShellCommandInIdeTerminal(command: String, requestDescription: String) {
-        val normalizedCommand = command.trim()
-        if (normalizedCommand.isBlank() || project.isDisposed || _isDisposed) {
+        if (project.isDisposed || _isDisposed) {
             return
         }
-        val originalComposerText = inputField.text.orEmpty()
-        val originalComposerCaret = inputField.caretPosition.coerceIn(0, originalComposerText.length)
-        val request = OperationRequest(
-            operation = Operation.EXECUTE_COMMAND,
-            description = requestDescription,
-            details = mapOf("command" to normalizedCommand),
-        )
-        if (!checkWorkflowCommandPermission(request, normalizedCommand)) {
+        val dispatchRequest = ImprovedChatPanelShellCommandDispatchCoordinator.buildDispatchRequest(
+            command = command,
+            requestDescription = requestDescription,
+        ) ?: return
+        if (!checkWorkflowCommandPermission(dispatchRequest.operationRequest, dispatchRequest.normalizedCommand)) {
             return
         }
 
-        val workingDirectory = project.basePath
-            ?.takeIf { it.isNotBlank() }
-            ?: System.getProperty("user.home")
-            ?.takeIf { it.isNotBlank() }
+        val terminalPlan = ImprovedChatPanelShellCommandDispatchCoordinator.buildTerminalLaunchPlan(
+            dispatchRequest = dispatchRequest,
+            projectBasePath = project.basePath,
+            userHome = System.getProperty("user.home"),
+            composerText = inputField.text.orEmpty(),
+            composerCaret = inputField.caretPosition,
+        )
             ?: run {
-                val message = SpecCodingBundle.message("chat.workflow.action.runCommand.terminalUnavailable", normalizedCommand)
+                val message = SpecCodingBundle.message(
+                    "chat.workflow.action.runCommand.terminalUnavailable",
+                    dispatchRequest.normalizedCommand,
+                )
                 addErrorMessage(message)
                 currentSessionId?.let { sessionId ->
                     persistMessageAsync(
@@ -6525,28 +6466,26 @@ class ImprovedChatPanel(
         runCatching {
             IdeTerminalCommandExecutor.execute(
                 project = project,
-                command = normalizedCommand,
-                workingDirectory = workingDirectory,
+                command = terminalPlan.dispatchRequest.normalizedCommand,
+                workingDirectory = terminalPlan.workingDirectory,
             )
         }.fold(
             onSuccess = {
-                restoreComposerIfTerminalCommandEchoed(
-                    originalText = originalComposerText,
-                    originalCaret = originalComposerCaret,
-                    command = normalizedCommand,
+                restoreComposerIfTerminalCommandEchoed(terminalPlan)
+                modeManager.recordOperation(terminalPlan.dispatchRequest.operationRequest, success = true)
+                val message = SpecCodingBundle.message(
+                    "chat.workflow.action.runCommand.startedTerminal",
+                    terminalPlan.dispatchRequest.normalizedCommand,
                 )
-                modeManager.recordOperation(request, success = true)
-                val message = SpecCodingBundle.message("chat.workflow.action.runCommand.startedTerminal", normalizedCommand)
                 showStatus(message)
             },
             onFailure = { error ->
-                restoreComposerIfTerminalCommandEchoed(
-                    originalText = originalComposerText,
-                    originalCaret = originalComposerCaret,
-                    command = normalizedCommand,
-                )
+                restoreComposerIfTerminalCommandEchoed(terminalPlan)
                 logger.warn("Failed to open IDE terminal for workflow command", error)
-                val message = SpecCodingBundle.message("chat.workflow.action.runCommand.terminalUnavailable", normalizedCommand)
+                val message = SpecCodingBundle.message(
+                    "chat.workflow.action.runCommand.terminalUnavailable",
+                    terminalPlan.dispatchRequest.normalizedCommand,
+                )
                 addErrorMessage(message)
                 currentSessionId?.let { sessionId ->
                     persistMessageAsync(
@@ -6559,47 +6498,20 @@ class ImprovedChatPanel(
         )
     }
 
-    private fun restoreComposerIfTerminalCommandEchoed(
-        originalText: String,
-        originalCaret: Int,
-        command: String,
-    ) {
+    private fun restoreComposerIfTerminalCommandEchoed(terminalPlan: ImprovedChatPanelTerminalCommandLaunchPlan) {
         val currentText = inputField.text.orEmpty()
-        if (!looksLikeTerminalCommandEcho(currentText, originalText, originalCaret, command)) {
+        if (!ImprovedChatPanelShellCommandDispatchCoordinator.shouldRestoreComposerAfterTerminalEcho(terminalPlan, currentText)) {
             return
         }
 
         suppressComposerAutoCollapse = true
         try {
-            inputField.text = originalText
-            inputField.caretPosition = originalCaret.coerceIn(0, inputField.text.length)
+            inputField.text = terminalPlan.originalComposerText
+            inputField.caretPosition = terminalPlan.originalComposerCaret.coerceIn(0, inputField.text.length)
         } finally {
             suppressComposerAutoCollapse = false
         }
         syncComposerInputStateWithCurrentText()
-    }
-
-    private fun looksLikeTerminalCommandEcho(
-        currentText: String,
-        originalText: String,
-        originalCaret: Int,
-        command: String,
-    ): Boolean {
-        if (command.isBlank() || currentText == originalText) {
-            return false
-        }
-        if (originalText.isBlank() && currentText == command) {
-            return true
-        }
-
-        val safeCaret = originalCaret.coerceIn(0, currentText.length)
-        val insertedEnd = safeCaret + command.length
-        if (insertedEnd > currentText.length) {
-            return false
-        }
-
-        return currentText.substring(safeCaret, insertedEnd) == command &&
-            currentText.removeRange(safeCaret, insertedEnd) == originalText
     }
 
     private fun handleWorkflowCommandStop(command: String) {
@@ -6694,7 +6606,10 @@ class ImprovedChatPanel(
         }
     }
 
-    private fun runWorkflowShellCommandInBackground(command: String, request: OperationRequest) {
+    private fun runWorkflowShellCommandInBackground(
+        dispatchRequest: ImprovedChatPanelShellCommandDispatchRequest,
+    ) {
+        val command = dispatchRequest.normalizedCommand
         val beforeSnapshot = captureWorkspaceSnapshot()
         val outcome = workflowCommandRunner.execute(
             command = command,
@@ -6726,7 +6641,7 @@ class ImprovedChatPanel(
             }
 
             is ImprovedChatPanelWorkflowCommandRunOutcome.FailedToStart -> {
-                modeManager.recordOperation(request, success = false)
+                modeManager.recordOperation(dispatchRequest.operationRequest, success = false)
                 val execution = ImprovedChatPanelWorkflowCommandExecutionResult(
                     success = false,
                     error = outcome.errorMessage,
@@ -6751,7 +6666,7 @@ class ImprovedChatPanel(
             is ImprovedChatPanelWorkflowCommandRunOutcome.Completed -> {
                 val execution = outcome.execution
                 modeManager.recordOperation(
-                    request,
+                    dispatchRequest.operationRequest,
                     success = execution.success || execution.stoppedByUser,
                 )
                 persistWorkflowCommandChangeset(command, execution, beforeSnapshot)

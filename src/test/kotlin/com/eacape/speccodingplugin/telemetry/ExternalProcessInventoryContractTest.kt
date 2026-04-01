@@ -132,12 +132,12 @@ private object ExternalProcessInventoryContract {
             summary = "VERIFY command runner with timeout, truncation, and redaction.",
         ),
         ExternalProcessInventoryRule(
-            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt",
+            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanelWorkflowCommandRunner.kt",
             category = ExternalProcessCategory.WORKFLOW,
             occurrenceCount = 1,
             threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_ONLY,
             mainThreadRisk = ExternalProcessMainThreadRisk.HIGH,
-            summary = "Workflow shell command launch still owned by giant Swing panel.",
+            summary = "Workflow shell command runtime extracted behind a UI-owned runner, pending broader process unification.",
         ),
         ExternalProcessInventoryRule(
             relativePath = "src/main/kotlin/com/eacape/speccodingplugin/worktree/CliGitWorktreeExecutor.kt",
