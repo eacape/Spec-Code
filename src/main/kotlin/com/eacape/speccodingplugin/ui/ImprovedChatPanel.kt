@@ -43,7 +43,6 @@ import com.eacape.speccodingplugin.session.WorkflowChatEntrySource
 import com.eacape.speccodingplugin.session.WorkflowChatExecutionContext
 import com.eacape.speccodingplugin.session.WorkflowChatExecutionContextResolver
 import com.eacape.speccodingplugin.session.WORKFLOW_CHAT_MODE_KEY
-import com.eacape.speccodingplugin.session.canonicalizeWorkflowChatCommand
 import com.eacape.speccodingplugin.session.canonicalizeWorkflowChatModeKey
 import com.eacape.speccodingplugin.session.displayWorkflowChatCommand
 import com.eacape.speccodingplugin.session.isWorkflowChatCommand
@@ -165,7 +164,6 @@ import java.nio.file.Paths
 import java.util.Base64
 import java.util.Locale
 import java.util.UUID
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -227,6 +225,9 @@ class ImprovedChatPanel(
     private val modelRegistry = ModelRegistry.getInstance()
     private val taskCoordinator = SwingPanelTaskCoordinator(
         isDisposed = { project.isDisposed || _isDisposed },
+    )
+    private val workflowCommandRunner = ImprovedChatPanelWorkflowCommandRunner(
+        workingDirectory = project.basePath?.let(::File),
     )
     private val discoveryListener: () -> Unit = {
         llmRouter.refreshProviders()
@@ -315,7 +316,6 @@ class ImprovedChatPanel(
     private var dividerPersistTimer: Timer? = null
     private var composerDividerPersistTimer: Timer? = null
     private var pasteKeyDispatcher: KeyEventDispatcher? = null
-    private val runningWorkflowCommands = ConcurrentHashMap<String, RunningWorkflowCommand>()
     private val sessionCreationMutex = Mutex()
     private val transientClipboardImagePaths = mutableSetOf<String>()
     private var composerInputState = ImprovedChatPanelComposerInputState()
@@ -3455,63 +3455,68 @@ class ImprovedChatPanel(
 
     private fun handleSlashCommand(command: String) {
         val trimmedCommand = command.trim()
-        if (trimmedCommand == "/skills") {
-            showAvailableSkills()
-            return
-        }
-        if (trimmedCommand.startsWith("/pipeline")) {
-            handlePipelineCommand(trimmedCommand)
-            return
-        }
-        if (handleModeCommand(trimmedCommand)) {
-            return
-        }
-        val workflowCommand = canonicalizeWorkflowChatCommand(trimmedCommand)
-        if (workflowCommand != null) {
-            handleSpecCommand(workflowCommand)
-            return
-        }
-
-        val slashToken = extractSlashCommandToken(trimmedCommand)
         val providerId = providerComboBox.selectedItem as? String
-        val providerSlashCommand = resolveProviderSlashCommand(trimmedCommand, providerId)
-        if (providerSlashCommand != null) {
-            executeProviderSlashCommand(
-                slashCommand = trimmedCommand,
-                providerId = providerId,
-                commandInfo = providerSlashCommand,
-            )
-            return
-        }
+        val route = ImprovedChatPanelSlashCommandCoordinator.resolve(
+            command = trimmedCommand,
+            providerId = providerId,
+            availableProviderCommands = CliDiscoveryService.getInstance().listSlashCommands(),
+            isRegisteredSkillSlashCommand = { token ->
+                skillExecutor.hasSkillSlashCommand(token, forceReload = true)
+            },
+        )
+        when (route.kind) {
+            ImprovedChatPanelSlashCommandKind.SHOW_AVAILABLE_SKILLS -> {
+                showAvailableSkills()
+            }
 
-        if (slashToken != null && isInteractiveOnlySessionSlashCommand(providerId, slashToken)) {
-            addErrorMessage(
-                SpecCodingBundle.message(
-                    "toolwindow.slash.command.interactive.only",
-                    providerDisplayName(providerId).ifBlank { SpecCodingBundle.message("common.unknown") },
-                    "/$slashToken",
+            ImprovedChatPanelSlashCommandKind.PIPELINE_COMMAND -> {
+                handlePipelineCommand(route.command)
+            }
+
+            ImprovedChatPanelSlashCommandKind.MODE_COMMAND -> {
+                handleModeCommand(route.command)
+            }
+
+            ImprovedChatPanelSlashCommandKind.WORKFLOW_COMMAND -> {
+                handleSpecCommand(route.workflowCommand ?: route.command)
+            }
+
+            ImprovedChatPanelSlashCommandKind.PROVIDER_COMMAND -> {
+                executeProviderSlashCommand(
+                    slashCommand = route.command,
+                    providerId = providerId,
+                    commandInfo = route.providerCommandInfo ?: return,
                 )
-            )
-            return
-        }
+            }
 
-        if (!isRegisteredSkillSlashCommand(trimmedCommand)) {
-            addErrorMessage(
-                SpecCodingBundle.message(
-                    "toolwindow.slash.command.unsupported.provider",
-                    providerDisplayName(providerId).ifBlank { SpecCodingBundle.message("common.unknown") },
-                    trimmedCommand,
+            ImprovedChatPanelSlashCommandKind.LOCAL_SKILL_COMMAND -> {
+                val operation = mapSlashCommandToOperation(route.command)
+                if (operation != null && !checkOperationPermission(operation, route.command)) {
+                    return
+                }
+                executeLocalSkillSlashCommand(command = route.command, providerId = providerId)
+            }
+
+            ImprovedChatPanelSlashCommandKind.INTERACTIVE_ONLY_COMMAND -> {
+                addErrorMessage(
+                    SpecCodingBundle.message(
+                        "toolwindow.slash.command.interactive.only",
+                        providerDisplayName(providerId).ifBlank { SpecCodingBundle.message("common.unknown") },
+                        route.displayCommandToken ?: route.command,
+                    )
                 )
-            )
-            return
-        }
+            }
 
-        val operation = mapSlashCommandToOperation(trimmedCommand)
-        if (operation != null && !checkOperationPermission(operation, trimmedCommand)) {
-            return
+            ImprovedChatPanelSlashCommandKind.UNSUPPORTED_COMMAND -> {
+                addErrorMessage(
+                    SpecCodingBundle.message(
+                        "toolwindow.slash.command.unsupported.provider",
+                        providerDisplayName(providerId).ifBlank { SpecCodingBundle.message("common.unknown") },
+                        route.command,
+                    )
+                )
+            }
         }
-
-        executeLocalSkillSlashCommand(command = trimmedCommand, providerId = providerId)
     }
 
     private fun executeLocalSkillSlashCommand(command: String, providerId: String?) {
@@ -5345,52 +5350,11 @@ class ImprovedChatPanel(
         )
     }
 
-    private fun resolveProviderSlashCommand(command: String, providerId: String?): CliSlashCommandInfo? {
-        val normalizedProvider = providerId?.trim().orEmpty()
-        if (normalizedProvider.isBlank()) {
-            return null
-        }
-        val slashToken = extractSlashCommandToken(command) ?: return null
-        return CliDiscoveryService.getInstance().listSlashCommands()
-            .firstOrNull { item ->
-                item.providerId.equals(normalizedProvider, ignoreCase = true) &&
-                    item.command.equals(slashToken, ignoreCase = true)
-            }
-    }
-
-    private fun extractSlashCommandToken(command: String): String? {
-        val trimmed = command.trim()
-        if (!trimmed.startsWith("/")) {
-            return null
-        }
-        return trimmed
-            .removePrefix("/")
-            .substringBefore(" ")
-            .trim()
-            .lowercase(Locale.ROOT)
-            .ifBlank { null }
-    }
-
-    private fun isRegisteredSkillSlashCommand(command: String): Boolean {
-        val token = extractSlashCommandToken(command) ?: return false
-        return skillExecutor.hasSkillSlashCommand(token, forceReload = true)
-    }
-
     private fun executeProviderSlashCommand(
         slashCommand: String,
         providerId: String?,
         commandInfo: CliSlashCommandInfo,
     ) {
-        if (isInteractiveOnlyProviderSlashCommand(providerId, commandInfo)) {
-            addErrorMessage(
-                SpecCodingBundle.message(
-                    "toolwindow.slash.command.interactive.only",
-                    providerDisplayName(providerId).ifBlank { SpecCodingBundle.message("common.unknown") },
-                    "/${commandInfo.command}",
-                )
-            )
-            return
-        }
         val shellCommand = buildProviderSlashShellCommand(
             slashCommand = slashCommand,
             providerId = providerId,
@@ -5422,44 +5386,6 @@ class ImprovedChatPanel(
         }
     }
 
-    private fun isInteractiveOnlyProviderSlashCommand(providerId: String?, commandInfo: CliSlashCommandInfo): Boolean {
-        val provider = providerId?.trim().orEmpty()
-        val command = commandInfo.command.trim().lowercase(Locale.ROOT)
-        if (command.isBlank()) {
-            return false
-        }
-        return when {
-            provider.equals(ClaudeCliLlmProvider.ID, ignoreCase = true) -> {
-                command in CLAUDE_INTERACTIVE_ONLY_CLI_COMMANDS
-            }
-
-            provider.equals(CodexCliLlmProvider.ID, ignoreCase = true) -> {
-                command in CODEX_INTERACTIVE_ONLY_CLI_COMMANDS
-            }
-
-            else -> false
-        }
-    }
-
-    private fun isInteractiveOnlySessionSlashCommand(providerId: String?, slashToken: String): Boolean {
-        val normalizedToken = slashToken.trim().lowercase(Locale.ROOT)
-        if (normalizedToken.isBlank()) {
-            return false
-        }
-        val provider = providerId?.trim().orEmpty()
-        return when {
-            provider.equals(ClaudeCliLlmProvider.ID, ignoreCase = true) -> {
-                normalizedToken in CLAUDE_SESSION_ONLY_SLASH_COMMANDS
-            }
-
-            provider.equals(CodexCliLlmProvider.ID, ignoreCase = true) -> {
-                normalizedToken in CODEX_SESSION_ONLY_SLASH_COMMANDS
-            }
-
-            else -> false
-        }
-    }
-
     private fun buildProviderSlashShellCommand(
         slashCommand: String,
         providerId: String?,
@@ -5469,7 +5395,7 @@ class ImprovedChatPanel(
         if (normalizedProvider.isBlank()) {
             return null
         }
-        val slashToken = extractSlashCommandToken(slashCommand) ?: return null
+        val slashToken = ImprovedChatPanelSlashCommandCoordinator.extractSlashCommandToken(slashCommand) ?: return null
         val args = slashCommand.removePrefix("/")
             .trim()
             .substringAfter(" ", "")
@@ -6545,8 +6471,7 @@ class ImprovedChatPanel(
             return
         }
 
-        val existing = runningWorkflowCommands[normalizedCommand]
-        if (existing != null && existing.process.isAlive) {
+        if (workflowCommandRunner.isRunning(normalizedCommand)) {
             val message = SpecCodingBundle.message("chat.workflow.action.runCommand.alreadyRunning", normalizedCommand)
             addSystemMessage(message)
             currentSessionId?.let { sessionId ->
@@ -6683,8 +6608,7 @@ class ImprovedChatPanel(
             return
         }
 
-        val running = runningWorkflowCommands[normalizedCommand]
-        if (running == null || !running.process.isAlive) {
+        if (!workflowCommandRunner.isRunning(normalizedCommand)) {
             val message = SpecCodingBundle.message("chat.workflow.action.stopCommand.notRunning", normalizedCommand)
             addSystemMessage(message)
             currentSessionId?.let { sessionId ->
@@ -6694,10 +6618,6 @@ class ImprovedChatPanel(
                     content = message,
                 )
             }
-            return
-        }
-
-        if (!running.stopRequested.compareAndSet(false, true)) {
             return
         }
 
@@ -6712,34 +6632,29 @@ class ImprovedChatPanel(
         }
 
         taskCoordinator.launchIo {
-            runCatching {
-                running.process.destroy()
-                if (running.process.isAlive) {
-                    val exited = running.process.waitFor(
-                        WORKFLOW_COMMAND_STOP_GRACE_SECONDS,
-                        TimeUnit.SECONDS,
-                    )
-                    if (!exited && running.process.isAlive) {
-                        running.process.destroyForcibly()
+            when (val stopResult = workflowCommandRunner.stop(normalizedCommand)) {
+                ImprovedChatPanelWorkflowCommandStopOutcome.AlreadyStopping,
+                ImprovedChatPanelWorkflowCommandStopOutcome.NotRunning,
+                ImprovedChatPanelWorkflowCommandStopOutcome.Stopping -> Unit
+
+                is ImprovedChatPanelWorkflowCommandStopOutcome.Failed -> {
+                    val message = SpecCodingBundle.message(
+                        "chat.workflow.action.runCommand.error",
+                        normalizedCommand,
+                    ) + "\n" + (stopResult.error.message ?: SpecCodingBundle.message("common.unknown"))
+                    ApplicationManager.getApplication().invokeLater {
+                        if (project.isDisposed || _isDisposed) {
+                            return@invokeLater
+                        }
+                        addErrorMessage(message)
                     }
-                }
-            }.onFailure { error ->
-                val message = SpecCodingBundle.message(
-                    "chat.workflow.action.runCommand.error",
-                    normalizedCommand,
-                ) + "\n" + (error.message ?: SpecCodingBundle.message("common.unknown"))
-                ApplicationManager.getApplication().invokeLater {
-                    if (project.isDisposed || _isDisposed) {
-                        return@invokeLater
+                    currentSessionId?.let { sessionId ->
+                        persistMessage(
+                            sessionId = sessionId,
+                            role = ConversationRole.TOOL,
+                            content = message,
+                        )
                     }
-                    addErrorMessage(message)
-                }
-                currentSessionId?.let { sessionId ->
-                    persistMessage(
-                        sessionId = sessionId,
-                        role = ConversationRole.TOOL,
-                        content = message,
-                    )
                 }
             }
         }
@@ -6781,84 +6696,88 @@ class ImprovedChatPanel(
 
     private fun runWorkflowShellCommandInBackground(command: String, request: OperationRequest) {
         val beforeSnapshot = captureWorkspaceSnapshot()
-        val started: RunningWorkflowCommand = try {
-            startWorkflowShellCommand(command)
-        } catch (error: Exception) {
-            modeManager.recordOperation(request, success = false)
-            val execution = WorkflowCommandExecutionResult(
-                success = false,
-                error = error.message ?: SpecCodingBundle.message("common.unknown"),
-                output = error.message.orEmpty(),
-            )
-            val summary = formatWorkflowCommandExecutionSummary(command, execution)
-            ApplicationManager.getApplication().invokeLater {
-                if (project.isDisposed || _isDisposed) {
-                    return@invokeLater
+        val outcome = workflowCommandRunner.execute(
+            command = command,
+            onStarted = {
+                ApplicationManager.getApplication().invokeLater {
+                    if (project.isDisposed || _isDisposed) {
+                        return@invokeLater
+                    }
+                    showStatus(SpecCodingBundle.message("chat.workflow.action.runCommand.running", command))
                 }
-                addErrorMessage(summary)
+            },
+        )
+        when (outcome) {
+            ImprovedChatPanelWorkflowCommandRunOutcome.AlreadyRunning -> {
+                val message = SpecCodingBundle.message("chat.workflow.action.runCommand.alreadyRunning", command)
+                ApplicationManager.getApplication().invokeLater {
+                    if (project.isDisposed || _isDisposed) {
+                        return@invokeLater
+                    }
+                    addSystemMessage(message)
+                }
+                currentSessionId?.let { sessionId ->
+                    persistMessage(
+                        sessionId = sessionId,
+                        role = ConversationRole.TOOL,
+                        content = message,
+                    )
+                }
             }
-            currentSessionId?.let { sessionId ->
-                persistMessage(
-                    sessionId = sessionId,
-                    role = ConversationRole.TOOL,
-                    content = summary,
+
+            is ImprovedChatPanelWorkflowCommandRunOutcome.FailedToStart -> {
+                modeManager.recordOperation(request, success = false)
+                val execution = ImprovedChatPanelWorkflowCommandExecutionResult(
+                    success = false,
+                    error = outcome.errorMessage,
+                    output = outcome.errorMessage,
                 )
+                val summary = formatWorkflowCommandExecutionSummary(command, execution)
+                ApplicationManager.getApplication().invokeLater {
+                    if (project.isDisposed || _isDisposed) {
+                        return@invokeLater
+                    }
+                    addErrorMessage(summary)
+                }
+                currentSessionId?.let { sessionId ->
+                    persistMessage(
+                        sessionId = sessionId,
+                        role = ConversationRole.TOOL,
+                        content = summary,
+                    )
+                }
             }
-            return
-        }
 
-        ApplicationManager.getApplication().invokeLater {
-            if (project.isDisposed || _isDisposed) {
-                return@invokeLater
+            is ImprovedChatPanelWorkflowCommandRunOutcome.Completed -> {
+                val execution = outcome.execution
+                modeManager.recordOperation(
+                    request,
+                    success = execution.success || execution.stoppedByUser,
+                )
+                persistWorkflowCommandChangeset(command, execution, beforeSnapshot)
+                val summary = formatWorkflowCommandExecutionSummary(command, execution)
+
+                ApplicationManager.getApplication().invokeLater {
+                    if (project.isDisposed || _isDisposed) {
+                        return@invokeLater
+                    }
+                    if (execution.success || execution.stoppedByUser) {
+                        addSystemMessage(summary)
+                    } else {
+                        addErrorMessage(summary)
+                    }
+                    if (!isGenerating && !isRestoringSession) {
+                        hideStatus()
+                    }
+                }
+                currentSessionId?.let { sessionId ->
+                    persistMessage(
+                        sessionId = sessionId,
+                        role = ConversationRole.TOOL,
+                        content = summary,
+                    )
+                }
             }
-            showStatus(SpecCodingBundle.message("chat.workflow.action.runCommand.running", command))
-        }
-
-        val timedOut = !started.process.waitFor(WORKFLOW_COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-        if (timedOut) {
-            started.stopRequested.set(true)
-            started.process.destroyForcibly()
-            started.process.waitFor(2, TimeUnit.SECONDS)
-        }
-
-        started.outputReaderThread.join(WORKFLOW_COMMAND_JOIN_TIMEOUT_MILLIS)
-        runningWorkflowCommands.remove(command, started)
-
-        val exitCode = runCatching { started.process.exitValue() }.getOrNull()
-        val execution = WorkflowCommandExecutionResult(
-            success = !timedOut && !started.stopRequested.get() && exitCode == 0,
-            exitCode = exitCode,
-            output = started.outputBuffer.toString().trim(),
-            timedOut = timedOut,
-            stoppedByUser = started.stopRequested.get() && !timedOut,
-            outputTruncated = started.outputTruncated.get(),
-        )
-        modeManager.recordOperation(
-            request,
-            success = execution.success || execution.stoppedByUser,
-        )
-        persistWorkflowCommandChangeset(command, execution, beforeSnapshot)
-        val summary = formatWorkflowCommandExecutionSummary(command, execution)
-
-        ApplicationManager.getApplication().invokeLater {
-            if (project.isDisposed || _isDisposed) {
-                return@invokeLater
-            }
-            if (execution.success || execution.stoppedByUser) {
-                addSystemMessage(summary)
-            } else {
-                addErrorMessage(summary)
-            }
-            if (!isGenerating && !isRestoringSession) {
-                hideStatus()
-            }
-        }
-        currentSessionId?.let { sessionId ->
-            persistMessage(
-                sessionId = sessionId,
-                role = ConversationRole.TOOL,
-                content = summary,
-            )
         }
     }
 
@@ -6874,7 +6793,7 @@ class ImprovedChatPanel(
 
     private fun persistWorkflowCommandChangeset(
         command: String,
-        execution: WorkflowCommandExecutionResult,
+        execution: ImprovedChatPanelWorkflowCommandExecutionResult,
         beforeSnapshot: WorkspaceChangesetCollector.Snapshot?,
     ) {
         chatPersistenceCoordinator.persistWorkflowCommandChangeset(
@@ -6908,57 +6827,9 @@ class ImprovedChatPanel(
         }
     }
 
-    private fun startWorkflowShellCommand(command: String): RunningWorkflowCommand {
-        val process = ProcessBuilder(buildShellCommand(command))
-            .directory(project.basePath?.let(::File))
-            .redirectErrorStream(true)
-            .start()
-        val outputBuffer = StringBuilder()
-        val outputTruncated = AtomicBoolean(false)
-        val stopRequested = AtomicBoolean(false)
-        val outputReaderThread = Thread {
-            process.inputStream.bufferedReader().useLines { lines ->
-                lines.forEach { line ->
-                    synchronized(outputBuffer) {
-                        if (outputBuffer.length < WORKFLOW_COMMAND_OUTPUT_MAX_CHARS) {
-                            if (outputBuffer.isNotEmpty()) {
-                                outputBuffer.append('\n')
-                            }
-                            outputBuffer.append(line)
-                        } else {
-                            outputTruncated.set(true)
-                        }
-                    }
-                }
-            }
-        }.apply {
-            isDaemon = true
-            name = "workflow-command-output-${command.hashCode()}"
-            start()
-        }
-
-        val running = RunningWorkflowCommand(
-            command = command,
-            process = process,
-            outputBuffer = outputBuffer,
-            outputTruncated = outputTruncated,
-            stopRequested = stopRequested,
-            outputReaderThread = outputReaderThread,
-        )
-        val previous = runningWorkflowCommands.putIfAbsent(command, running)
-        if (previous != null && previous.process.isAlive) {
-            process.destroyForcibly()
-            throw IllegalStateException("Command already running")
-        }
-        if (previous != null && !previous.process.isAlive) {
-            runningWorkflowCommands[command] = running
-        }
-        return running
-    }
-
     private fun formatWorkflowCommandExecutionSummary(
         command: String,
-        execution: WorkflowCommandExecutionResult,
+        execution: ImprovedChatPanelWorkflowCommandExecutionResult,
     ): String {
         val icon = when {
             execution.stoppedByUser -> {
@@ -6985,7 +6856,7 @@ class ImprovedChatPanel(
             execution.stoppedByUser -> SpecCodingBundle.message("chat.workflow.action.stopCommand.stopped", command)
             execution.timedOut -> SpecCodingBundle.message(
                 "chat.workflow.action.runCommand.timeout",
-                WORKFLOW_COMMAND_TIMEOUT_SECONDS,
+                workflowCommandRunner.timeoutSeconds,
                 command,
             )
             execution.error != null -> SpecCodingBundle.message("chat.workflow.action.runCommand.error", command)
@@ -7004,7 +6875,7 @@ class ImprovedChatPanel(
         var output = sanitizeDisplayText(execution.output, dropGarbledLines = false)
             .ifBlank { SpecCodingBundle.message("chat.workflow.action.runCommand.noOutput") }
         if (execution.outputTruncated) {
-            output += "\n${SpecCodingBundle.message("chat.workflow.action.runCommand.outputTruncated", WORKFLOW_COMMAND_OUTPUT_MAX_CHARS)}"
+            output += "\n${SpecCodingBundle.message("chat.workflow.action.runCommand.outputTruncated", workflowCommandRunner.outputLimitChars)}"
         }
 
         return buildString {
@@ -7013,33 +6884,6 @@ class ImprovedChatPanel(
             append(output)
         }
     }
-
-    private fun buildShellCommand(command: String): List<String> {
-        return if (System.getProperty("os.name").lowercase(Locale.ROOT).contains("win")) {
-            listOf("cmd", "/c", command)
-        } else {
-            listOf("bash", "-lc", command)
-        }
-    }
-
-    private data class WorkflowCommandExecutionResult(
-        val success: Boolean,
-        val exitCode: Int? = null,
-        val output: String = "",
-        val timedOut: Boolean = false,
-        val stoppedByUser: Boolean = false,
-        val error: String? = null,
-        val outputTruncated: Boolean = false,
-    )
-
-    private data class RunningWorkflowCommand(
-        val command: String,
-        val process: Process,
-        val outputBuffer: StringBuilder,
-        val outputTruncated: AtomicBoolean,
-        val stopRequested: AtomicBoolean,
-        val outputReaderThread: Thread,
-    )
 
     private fun handleWorkflowFileOpen(fileAction: com.eacape.speccodingplugin.ui.chat.WorkflowQuickActionParser.FileAction) {
         val basePath = project.basePath ?: return
@@ -7484,15 +7328,7 @@ class ImprovedChatPanel(
         dividerPersistTimer = null
         composerDividerPersistTimer?.stop()
         composerDividerPersistTimer = null
-        runningWorkflowCommands.values.forEach { running ->
-            runCatching {
-                running.stopRequested.set(true)
-                if (running.process.isAlive) {
-                    running.process.destroyForcibly()
-                }
-            }
-        }
-        runningWorkflowCommands.clear()
+        workflowCommandRunner.dispose()
         clearImageAttachments()
         composerInputState = ImprovedChatPanelComposerInputCoordinator.clear()
         userMessageRawContent.clear()
@@ -7795,36 +7631,6 @@ class ImprovedChatPanel(
             includeContainingScope = false,
             preferGraphRelatedContext = false,
         )
-        private val CLAUDE_INTERACTIVE_ONLY_CLI_COMMANDS = setOf(
-            "agents",
-            "auth",
-            "doctor",
-            "install",
-            "mcp",
-            "plugin",
-            "setup-token",
-            "update",
-            "upgrade",
-        )
-        private val CODEX_INTERACTIVE_ONLY_CLI_COMMANDS = setOf(
-            "app-server",
-            "cloud",
-            "completion",
-            "debug",
-            "fork",
-            "login",
-            "logout",
-            "mcp",
-            "mcp-server",
-            "resume",
-            "sandbox",
-        )
-        private val CLAUDE_SESSION_ONLY_SLASH_COMMANDS = setOf(
-            "compact",
-        )
-        private val CODEX_SESSION_ONLY_SLASH_COMMANDS = setOf(
-            "compact",
-        )
         private val MCP_EVENT_KEYWORDS = listOf(
             "mcp",
             "mcp__",
@@ -7856,10 +7662,6 @@ class ImprovedChatPanel(
         private const val MAX_CONVERSATION_HISTORY = 240
         private const val MAX_RESTORED_MESSAGES = 240
         private const val SESSION_LOAD_FETCH_LIMIT = 5000
-        private const val WORKFLOW_COMMAND_TIMEOUT_SECONDS = 1800L
-        private const val WORKFLOW_COMMAND_JOIN_TIMEOUT_MILLIS = 2000L
-        private const val WORKFLOW_COMMAND_STOP_GRACE_SECONDS = 3L
-        private const val WORKFLOW_COMMAND_OUTPUT_MAX_CHARS = 12_000
         private const val STREAM_BATCH_CHUNK_COUNT = 4
         private const val STREAM_BATCH_CHAR_COUNT = 240
         private const val STREAM_BATCH_INTERVAL_NANOS = 120_000_000L
