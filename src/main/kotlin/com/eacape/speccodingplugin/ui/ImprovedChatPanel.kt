@@ -6407,24 +6407,23 @@ class ImprovedChatPanel(
             return
         }
 
-        if (workflowCommandRunner.isRunning(dispatchRequest.normalizedCommand)) {
-            val message = SpecCodingBundle.message(
-                "chat.workflow.action.runCommand.alreadyRunning",
-                dispatchRequest.normalizedCommand,
+        when (
+            val dispatchPlan = ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planDispatch(
+                dispatchRequest = dispatchRequest,
+                alreadyRunning = workflowCommandRunner.isRunning(dispatchRequest.normalizedCommand),
             )
-            addSystemMessage(message)
-            currentSessionId?.let { sessionId ->
-                persistMessageAsync(
-                    sessionId = sessionId,
-                    role = ConversationRole.TOOL,
-                    content = message,
-                )
+        ) {
+            is ImprovedChatPanelWorkflowCommandDispatchPlan.LaunchInBackground -> {
+                taskCoordinator.launchIo {
+                    runWorkflowShellCommandInBackground(dispatchPlan.dispatchRequest)
+                }
             }
-            return
-        }
 
-        taskCoordinator.launchIo {
-            runWorkflowShellCommandInBackground(dispatchRequest)
+            is ImprovedChatPanelWorkflowCommandDispatchPlan.RenderFeedback ->
+                applyWorkflowCommandFeedback(
+                    feedback = dispatchPlan.feedback,
+                    persistAsync = dispatchPlan.persistAsync,
+                )
         }
     }
 
@@ -6448,18 +6447,11 @@ class ImprovedChatPanel(
             composerCaret = inputField.caretPosition,
         )
             ?: run {
-                val message = SpecCodingBundle.message(
-                    "chat.workflow.action.runCommand.terminalUnavailable",
+                val feedback = ImprovedChatPanelWorkflowCommandFeedbackCoordinator.buildTerminalUnavailableFeedback(
                     dispatchRequest.normalizedCommand,
                 )
-                addErrorMessage(message)
-                currentSessionId?.let { sessionId ->
-                    persistMessageAsync(
-                        sessionId = sessionId,
-                        role = ConversationRole.TOOL,
-                        content = message,
-                    )
-                }
+                renderWorkflowCommandFeedback(feedback)
+                persistWorkflowCommandFeedback(feedback, async = true)
                 return
             }
 
@@ -6472,28 +6464,22 @@ class ImprovedChatPanel(
         }.fold(
             onSuccess = {
                 restoreComposerIfTerminalCommandEchoed(terminalPlan)
-                modeManager.recordOperation(terminalPlan.dispatchRequest.operationRequest, success = true)
-                val message = SpecCodingBundle.message(
-                    "chat.workflow.action.runCommand.startedTerminal",
+                val feedback = ImprovedChatPanelWorkflowCommandFeedbackCoordinator.buildTerminalStartedFeedback(
                     terminalPlan.dispatchRequest.normalizedCommand,
                 )
-                showStatus(message)
+                feedback.operationRecordedSuccess?.let { success ->
+                    modeManager.recordOperation(terminalPlan.dispatchRequest.operationRequest, success = success)
+                }
+                renderWorkflowCommandFeedback(feedback)
             },
             onFailure = { error ->
                 restoreComposerIfTerminalCommandEchoed(terminalPlan)
                 logger.warn("Failed to open IDE terminal for workflow command", error)
-                val message = SpecCodingBundle.message(
-                    "chat.workflow.action.runCommand.terminalUnavailable",
+                val feedback = ImprovedChatPanelWorkflowCommandFeedbackCoordinator.buildTerminalUnavailableFeedback(
                     terminalPlan.dispatchRequest.normalizedCommand,
                 )
-                addErrorMessage(message)
-                currentSessionId?.let { sessionId ->
-                    persistMessageAsync(
-                        sessionId = sessionId,
-                        role = ConversationRole.TOOL,
-                        content = message,
-                    )
-                }
+                renderWorkflowCommandFeedback(feedback)
+                persistWorkflowCommandFeedback(feedback, async = true)
             },
         )
     }
@@ -6514,92 +6500,98 @@ class ImprovedChatPanel(
         syncComposerInputStateWithCurrentText()
     }
 
+    private fun renderWorkflowCommandFeedback(feedback: ImprovedChatPanelWorkflowCommandFeedback) {
+        feedback.statusMessage?.let(::showStatus)
+        feedback.conversationMessage?.let { message ->
+            when (feedback.conversationMessageKind) {
+                ImprovedChatPanelWorkflowCommandFeedbackMessageKind.SYSTEM -> addSystemMessage(message)
+                ImprovedChatPanelWorkflowCommandFeedbackMessageKind.ERROR -> addErrorMessage(message)
+                null -> Unit
+            }
+        }
+        if (feedback.shouldHideStatus && !isGenerating && !isRestoringSession) {
+            hideStatus()
+        }
+    }
+
+    private fun persistWorkflowCommandFeedback(
+        feedback: ImprovedChatPanelWorkflowCommandFeedback,
+        async: Boolean,
+    ) {
+        val message = feedback.conversationMessage ?: return
+        currentSessionId?.let { sessionId ->
+            if (async) {
+                persistMessageAsync(
+                    sessionId = sessionId,
+                    role = ConversationRole.TOOL,
+                    content = message,
+                )
+            } else {
+                persistMessage(
+                    sessionId = sessionId,
+                    role = ConversationRole.TOOL,
+                    content = message,
+                )
+            }
+        }
+    }
+
     private fun handleWorkflowCommandStop(command: String) {
         val normalizedCommand = command.trim()
         if (normalizedCommand.isBlank() || project.isDisposed || _isDisposed) {
             return
         }
 
-        if (!workflowCommandRunner.isRunning(normalizedCommand)) {
-            val message = SpecCodingBundle.message("chat.workflow.action.stopCommand.notRunning", normalizedCommand)
-            addSystemMessage(message)
-            currentSessionId?.let { sessionId ->
-                persistMessageAsync(
-                    sessionId = sessionId,
-                    role = ConversationRole.TOOL,
-                    content = message,
-                )
-            }
+        val stopPlan = ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planStop(
+            command = normalizedCommand,
+            isRunning = workflowCommandRunner.isRunning(normalizedCommand),
+        )
+        applyWorkflowCommandFeedback(
+            feedback = stopPlan.immediateFeedback,
+            persistAsync = stopPlan.persistAsync,
+        )
+        if (!stopPlan.shouldAttemptStop) {
             return
         }
 
-        val stoppingMessage = SpecCodingBundle.message("chat.workflow.action.stopCommand.stopping", normalizedCommand)
-        addSystemMessage(stoppingMessage)
-        currentSessionId?.let { sessionId ->
-            persistMessageAsync(
-                sessionId = sessionId,
-                role = ConversationRole.TOOL,
-                content = stoppingMessage,
-            )
-        }
-
         taskCoordinator.launchIo {
-            when (val stopResult = workflowCommandRunner.stop(normalizedCommand)) {
-                ImprovedChatPanelWorkflowCommandStopOutcome.AlreadyStopping,
-                ImprovedChatPanelWorkflowCommandStopOutcome.NotRunning,
-                ImprovedChatPanelWorkflowCommandStopOutcome.Stopping -> Unit
-
-                is ImprovedChatPanelWorkflowCommandStopOutcome.Failed -> {
-                    val message = SpecCodingBundle.message(
-                        "chat.workflow.action.runCommand.error",
-                        normalizedCommand,
-                    ) + "\n" + (stopResult.error.message ?: SpecCodingBundle.message("common.unknown"))
-                    ApplicationManager.getApplication().invokeLater {
-                        if (project.isDisposed || _isDisposed) {
-                            return@invokeLater
-                        }
-                        addErrorMessage(message)
-                    }
-                    currentSessionId?.let { sessionId ->
-                        persistMessage(
-                            sessionId = sessionId,
-                            role = ConversationRole.TOOL,
-                            content = message,
-                        )
-                    }
-                }
+            val stopOutcomePlan = ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planStopOutcome(
+                command = normalizedCommand,
+                stopOutcome = workflowCommandRunner.stop(normalizedCommand),
+            )
+            if (stopOutcomePlan != null) {
+                applyWorkflowCommandFeedback(
+                    feedback = stopOutcomePlan.feedback,
+                    persistAsync = stopOutcomePlan.persistAsync,
+                    renderOnUiThread = true,
+                )
             }
         }
     }
 
     private fun checkWorkflowCommandPermission(request: OperationRequest, command: String): Boolean {
-        return when (val result = modeManager.checkOperation(request)) {
-            is OperationResult.Allowed -> true
-            is OperationResult.Denied -> {
-                addErrorMessage(
-                    SpecCodingBundle.message(
-                        "toolwindow.mode.operation.denied",
-                        modeManager.getCurrentMode().displayName,
-                        result.reason,
-                    )
-                )
+        val decision = ImprovedChatPanelWorkflowCommandFeedbackCoordinator.resolvePermission(
+            result = modeManager.checkOperation(request),
+            currentModeDisplayName = modeManager.getCurrentMode().displayName,
+            request = request,
+            command = command,
+        )
+        return when (decision) {
+            ImprovedChatPanelWorkflowCommandPermissionDecision.Allowed -> true
+            is ImprovedChatPanelWorkflowCommandPermissionDecision.Denied -> {
+                addErrorMessage(decision.errorMessage)
                 false
             }
 
-            is OperationResult.RequiresConfirmation -> {
+            is ImprovedChatPanelWorkflowCommandPermissionDecision.RequiresConfirmation -> {
                 val confirmed = Messages.showYesNoDialog(
                     project,
-                    SpecCodingBundle.message("chat.workflow.action.runCommand.confirm.message", command),
-                    SpecCodingBundle.message("chat.workflow.action.runCommand.confirm.title"),
+                    decision.message,
+                    decision.title,
                     Messages.getQuestionIcon(),
                 ) == Messages.YES
                 if (confirmed) {
-                    addSystemMessage(
-                        SpecCodingBundle.message(
-                            "toolwindow.mode.confirmation.accepted",
-                            request.operation.name,
-                        )
-                    )
+                    addSystemMessage(decision.acceptedSystemMessage)
                 }
                 confirmed
             }
@@ -6618,82 +6610,53 @@ class ImprovedChatPanel(
                     if (project.isDisposed || _isDisposed) {
                         return@invokeLater
                     }
-                    showStatus(SpecCodingBundle.message("chat.workflow.action.runCommand.running", command))
+                    showStatus(
+                        ImprovedChatPanelWorkflowCommandFeedbackCoordinator.buildBackgroundRunningStatus(command),
+                    )
                 }
             },
         )
-        when (outcome) {
-            ImprovedChatPanelWorkflowCommandRunOutcome.AlreadyRunning -> {
-                val message = SpecCodingBundle.message("chat.workflow.action.runCommand.alreadyRunning", command)
-                ApplicationManager.getApplication().invokeLater {
-                    if (project.isDisposed || _isDisposed) {
-                        return@invokeLater
-                    }
-                    addSystemMessage(message)
-                }
-                currentSessionId?.let { sessionId ->
-                    persistMessage(
-                        sessionId = sessionId,
-                        role = ConversationRole.TOOL,
-                        content = message,
-                    )
-                }
-            }
+        val outcomePlan = ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planExecutionOutcome(
+            command = command,
+            outcome = outcome,
+            timeoutSeconds = workflowCommandRunner.timeoutSeconds,
+            outputLimitChars = workflowCommandRunner.outputLimitChars,
+            displayOutput = sanitizeDisplayText(
+                (outcome as? ImprovedChatPanelWorkflowCommandRunOutcome.Completed)?.execution?.output.orEmpty(),
+                dropGarbledLines = false,
+            ),
+            shouldHideStatus = !isGenerating && !isRestoringSession,
+        )
+        outcomePlan.execution?.takeIf { outcomePlan.shouldPersistChangeset }?.let { execution ->
+            persistWorkflowCommandChangeset(command, execution, beforeSnapshot)
+        }
+        applyWorkflowCommandFeedback(
+            feedback = outcomePlan.feedback,
+            persistAsync = outcomePlan.persistAsync,
+            operationRequest = dispatchRequest.operationRequest,
+            renderOnUiThread = true,
+        )
+    }
 
-            is ImprovedChatPanelWorkflowCommandRunOutcome.FailedToStart -> {
-                modeManager.recordOperation(dispatchRequest.operationRequest, success = false)
-                val execution = ImprovedChatPanelWorkflowCommandExecutionResult(
-                    success = false,
-                    error = outcome.errorMessage,
-                    output = outcome.errorMessage,
-                )
-                val summary = formatWorkflowCommandExecutionSummary(command, execution)
-                ApplicationManager.getApplication().invokeLater {
-                    if (project.isDisposed || _isDisposed) {
-                        return@invokeLater
-                    }
-                    addErrorMessage(summary)
-                }
-                currentSessionId?.let { sessionId ->
-                    persistMessage(
-                        sessionId = sessionId,
-                        role = ConversationRole.TOOL,
-                        content = summary,
-                    )
-                }
-            }
-
-            is ImprovedChatPanelWorkflowCommandRunOutcome.Completed -> {
-                val execution = outcome.execution
-                modeManager.recordOperation(
-                    dispatchRequest.operationRequest,
-                    success = execution.success || execution.stoppedByUser,
-                )
-                persistWorkflowCommandChangeset(command, execution, beforeSnapshot)
-                val summary = formatWorkflowCommandExecutionSummary(command, execution)
-
-                ApplicationManager.getApplication().invokeLater {
-                    if (project.isDisposed || _isDisposed) {
-                        return@invokeLater
-                    }
-                    if (execution.success || execution.stoppedByUser) {
-                        addSystemMessage(summary)
-                    } else {
-                        addErrorMessage(summary)
-                    }
-                    if (!isGenerating && !isRestoringSession) {
-                        hideStatus()
-                    }
-                }
-                currentSessionId?.let { sessionId ->
-                    persistMessage(
-                        sessionId = sessionId,
-                        role = ConversationRole.TOOL,
-                        content = summary,
-                    )
-                }
+    private fun applyWorkflowCommandFeedback(
+        feedback: ImprovedChatPanelWorkflowCommandFeedback,
+        persistAsync: Boolean,
+        operationRequest: OperationRequest? = null,
+        renderOnUiThread: Boolean = false,
+    ) {
+        feedback.operationRecordedSuccess?.let { success ->
+            operationRequest?.let { request ->
+                modeManager.recordOperation(request, success = success)
             }
         }
+        if (renderOnUiThread) {
+            taskCoordinator.invokeLater {
+                renderWorkflowCommandFeedback(feedback)
+            }
+        } else {
+            renderWorkflowCommandFeedback(feedback)
+        }
+        persistWorkflowCommandFeedback(feedback, async = persistAsync)
     }
 
     private fun captureWorkspaceSnapshot(): WorkspaceChangesetCollector.Snapshot? {
@@ -6739,64 +6702,6 @@ class ImprovedChatPanel(
             hasExecutionTrace = hasExecutionTrace,
         ).onFailure {
             logger.warn("Failed to persist assistant response changeset", it)
-        }
-    }
-
-    private fun formatWorkflowCommandExecutionSummary(
-        command: String,
-        execution: ImprovedChatPanelWorkflowCommandExecutionResult,
-    ): String {
-        val icon = when {
-            execution.stoppedByUser -> {
-                "⏹"
-            }
-
-            execution.timedOut -> {
-                "⏱"
-            }
-
-            execution.error != null -> {
-                "⚠"
-            }
-
-            execution.success -> {
-                "✅"
-            }
-
-            else -> {
-                "❌"
-            }
-        }
-        val statusText = when {
-            execution.stoppedByUser -> SpecCodingBundle.message("chat.workflow.action.stopCommand.stopped", command)
-            execution.timedOut -> SpecCodingBundle.message(
-                "chat.workflow.action.runCommand.timeout",
-                workflowCommandRunner.timeoutSeconds,
-                command,
-            )
-            execution.error != null -> SpecCodingBundle.message("chat.workflow.action.runCommand.error", command)
-            execution.success -> SpecCodingBundle.message(
-                "chat.workflow.action.runCommand.success",
-                execution.exitCode ?: 0,
-                command,
-            )
-            else -> SpecCodingBundle.message(
-                "chat.workflow.action.runCommand.failed",
-                execution.exitCode ?: -1,
-                command,
-            )
-        }
-
-        var output = sanitizeDisplayText(execution.output, dropGarbledLines = false)
-            .ifBlank { SpecCodingBundle.message("chat.workflow.action.runCommand.noOutput") }
-        if (execution.outputTruncated) {
-            output += "\n${SpecCodingBundle.message("chat.workflow.action.runCommand.outputTruncated", workflowCommandRunner.outputLimitChars)}"
-        }
-
-        return buildString {
-            appendLine("$icon $statusText")
-            appendLine("${SpecCodingBundle.message("chat.workflow.action.runCommand.outputLabel")}：")
-            append(output)
         }
     }
 
