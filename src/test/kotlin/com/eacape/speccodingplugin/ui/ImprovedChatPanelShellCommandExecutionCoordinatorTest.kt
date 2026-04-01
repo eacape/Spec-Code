@@ -15,7 +15,7 @@ class ImprovedChatPanelShellCommandExecutionCoordinatorTest {
         val coordinator = ImprovedChatPanelShellCommandExecutionCoordinator(
             authorizeCommandExecution = { _, _ ->
                 permissionChecked.set(true)
-                true
+                ImprovedChatPanelWorkflowCommandPermissionOutcome.Allowed()
             },
             isWorkflowCommandRunning = { error("Should not query running state for blank command") },
             executeTerminalCommand = { _, _ -> error("Should not launch terminal for blank command") },
@@ -37,12 +37,44 @@ class ImprovedChatPanelShellCommandExecutionCoordinatorTest {
     fun `execute should stop when permission is denied`() {
         val runningChecked = AtomicBoolean(false)
         val coordinator = ImprovedChatPanelShellCommandExecutionCoordinator(
-            authorizeCommandExecution = { _, _ -> false },
+            authorizeCommandExecution = { _, _ ->
+                ImprovedChatPanelWorkflowCommandPermissionOutcome.Denied("command blocked")
+            },
             isWorkflowCommandRunning = {
                 runningChecked.set(true)
                 false
             },
             executeTerminalCommand = { _, _ -> error("Should not launch terminal when permission is denied") },
+        )
+
+        val result = coordinator.execute(
+            ImprovedChatPanelShellCommandExecutionRequest(
+                command = "npm test",
+                requestDescription = "Workflow quick action command: npm test",
+                target = ImprovedChatPanelShellCommandExecutionTarget.Background,
+            ),
+        )
+
+        assertTrue(result is ImprovedChatPanelShellCommandExecutionPlan.PermissionDenied)
+        assertEquals(
+            "command blocked",
+            (result as ImprovedChatPanelShellCommandExecutionPlan.PermissionDenied).errorMessage,
+        )
+        assertTrue(!runningChecked.get())
+    }
+
+    @Test
+    fun `execute should stop when permission confirmation is canceled`() {
+        val runningChecked = AtomicBoolean(false)
+        val coordinator = ImprovedChatPanelShellCommandExecutionCoordinator(
+            authorizeCommandExecution = { _, _ ->
+                ImprovedChatPanelWorkflowCommandPermissionOutcome.Cancelled
+            },
+            isWorkflowCommandRunning = {
+                runningChecked.set(true)
+                false
+            },
+            executeTerminalCommand = { _, _ -> error("Cancelled command should not launch terminal") },
         )
 
         val result = coordinator.execute(
@@ -60,7 +92,11 @@ class ImprovedChatPanelShellCommandExecutionCoordinatorTest {
     @Test
     fun `execute should launch background workflow command when allowed and not running`() {
         val coordinator = ImprovedChatPanelShellCommandExecutionCoordinator(
-            authorizeCommandExecution = { _, _ -> true },
+            authorizeCommandExecution = { _, _ ->
+                ImprovedChatPanelWorkflowCommandPermissionOutcome.Allowed(
+                    acceptedSystemMessage = "Command confirmed",
+                )
+            },
             isWorkflowCommandRunning = { command ->
                 assertEquals("npm test", command)
                 false
@@ -83,12 +119,13 @@ class ImprovedChatPanelShellCommandExecutionCoordinatorTest {
             "Workflow quick action command: npm test",
             launchPlan.dispatchRequest.requestDescription,
         )
+        assertEquals("Command confirmed", launchPlan.preExecutionSystemMessage)
     }
 
     @Test
     fun `execute should convert already running background command to immediate feedback`() {
         val coordinator = ImprovedChatPanelShellCommandExecutionCoordinator(
-            authorizeCommandExecution = { _, _ -> true },
+            authorizeCommandExecution = { _, _ -> ImprovedChatPanelWorkflowCommandPermissionOutcome.Allowed() },
             isWorkflowCommandRunning = { true },
             executeTerminalCommand = { _, _ -> error("Already running background command should not launch terminal") },
         )
@@ -126,7 +163,11 @@ class ImprovedChatPanelShellCommandExecutionCoordinatorTest {
             restorePlan = ImprovedChatPanelComposerRestorePlan(text = "before", caret = 3),
         )
         val coordinator = ImprovedChatPanelShellCommandExecutionCoordinator(
-            authorizeCommandExecution = { _, _ -> true },
+            authorizeCommandExecution = { _, _ ->
+                ImprovedChatPanelWorkflowCommandPermissionOutcome.Allowed(
+                    acceptedSystemMessage = "Command confirmed",
+                )
+            },
             isWorkflowCommandRunning = { error("IDE terminal path should not query background running state") },
             executeTerminalCommand = { request, currentComposerText ->
                 executedRequest = request
@@ -159,5 +200,6 @@ class ImprovedChatPanelShellCommandExecutionCoordinatorTest {
         assertEquals("before npm test", observedComposerText)
         assertEquals("before", feedbackPlan.restorePlan?.text)
         assertEquals(3, feedbackPlan.restorePlan?.caret)
+        assertEquals("Command confirmed", feedbackPlan.preExecutionSystemMessage)
     }
 }

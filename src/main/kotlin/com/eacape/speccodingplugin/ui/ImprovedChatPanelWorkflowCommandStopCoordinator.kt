@@ -1,6 +1,6 @@
 package com.eacape.speccodingplugin.ui
 
-internal data class ImprovedChatPanelWorkflowCommandStopPlan(
+internal data class ImprovedChatPanelWorkflowCommandStopExecutionPlan(
     val normalizedCommand: String,
     val immediateFeedback: ImprovedChatPanelWorkflowCommandFeedback,
     val persistAsync: Boolean,
@@ -12,7 +12,7 @@ internal class ImprovedChatPanelWorkflowCommandStopCoordinator(
     private val stopWorkflowCommand: (String) -> ImprovedChatPanelWorkflowCommandStopOutcome,
 ) {
 
-    fun prepareStop(command: String): ImprovedChatPanelWorkflowCommandStopPlan? {
+    fun prepareStop(command: String): ImprovedChatPanelWorkflowCommandStopExecutionPlan? {
         val normalizedCommand = command.trim()
         if (normalizedCommand.isBlank()) {
             return null
@@ -22,7 +22,7 @@ internal class ImprovedChatPanelWorkflowCommandStopCoordinator(
             command = normalizedCommand,
             isRunning = isWorkflowCommandRunning(normalizedCommand),
         )
-        return ImprovedChatPanelWorkflowCommandStopPlan(
+        return ImprovedChatPanelWorkflowCommandStopExecutionPlan(
             normalizedCommand = normalizedCommand,
             immediateFeedback = stopPlan.immediateFeedback,
             persistAsync = stopPlan.persistAsync,
@@ -31,7 +31,7 @@ internal class ImprovedChatPanelWorkflowCommandStopCoordinator(
     }
 
     fun performStop(
-        stopPlan: ImprovedChatPanelWorkflowCommandStopPlan,
+        stopPlan: ImprovedChatPanelWorkflowCommandStopExecutionPlan,
     ): ImprovedChatPanelWorkflowCommandExecutionOutcomePlan? {
         return ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planStopOutcome(
             command = stopPlan.normalizedCommand,

@@ -17,8 +17,11 @@ class ImprovedChatPanelShellCommandExecutionCoordinatorContractTest {
         )
 
         assertTrue(panelSource.contains("private val shellCommandExecutionCoordinator = ImprovedChatPanelShellCommandExecutionCoordinator("))
+        assertTrue(panelSource.contains("private val workflowCommandPermissionCoordinator = ImprovedChatPanelWorkflowCommandPermissionCoordinator("))
+        assertTrue(panelSource.contains("authorizeCommandExecution = workflowCommandPermissionCoordinator::authorize"))
         assertTrue(panelSource.contains("shellCommandExecutionCoordinator.execute("))
         assertTrue(panelSource.contains("private fun applyShellCommandExecutionPlan("))
+        assertFalse(panelSource.contains("private fun checkWorkflowCommandPermission("))
         assertFalse(panelSource.contains("private fun executeShellCommandInIdeTerminal("))
     }
 }

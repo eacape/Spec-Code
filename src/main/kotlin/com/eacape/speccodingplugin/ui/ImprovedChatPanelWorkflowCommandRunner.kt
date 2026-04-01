@@ -1,5 +1,6 @@
 package com.eacape.speccodingplugin.ui
 
+import com.eacape.speccodingplugin.core.ManagedMergedOutputProcess
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -61,7 +62,7 @@ internal class ImprovedChatPanelWorkflowCommandRunner(
 
     fun isRunning(command: String): Boolean {
         val running = runningCommands[command] ?: return false
-        if (running.process.isAlive) {
+        if (running.handle.process.isAlive) {
             return true
         }
         runningCommands.remove(command, running)
@@ -82,47 +83,37 @@ internal class ImprovedChatPanelWorkflowCommandRunner(
             )
         }
         onStarted?.invoke()
-
-        val timedOut = !started.process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
-        if (timedOut) {
-            started.stopRequested.set(true)
-            started.process.destroyForcibly()
-            started.process.waitFor(2, TimeUnit.SECONDS)
-        }
-
-        started.outputReaderThread.join(joinTimeoutMillis)
+        val completion = started.handle.awaitCompletion(
+            timeout = timeoutSeconds,
+            timeoutUnit = TimeUnit.SECONDS,
+            joinTimeoutMillis = joinTimeoutMillis,
+            timeoutDestroyWait = TIMEOUT_DESTROY_WAIT_SECONDS,
+            timeoutDestroyWaitUnit = TimeUnit.SECONDS,
+        )
         runningCommands.remove(command, started)
-
-        val exitCode = runCatching { started.process.exitValue() }.getOrNull()
         return ImprovedChatPanelWorkflowCommandRunOutcome.Completed(
             ImprovedChatPanelWorkflowCommandExecutionResult(
-                success = !timedOut && !started.stopRequested.get() && exitCode == 0,
-                exitCode = exitCode,
-                output = started.outputBuffer.toString().trim(),
-                timedOut = timedOut,
-                stoppedByUser = started.stopRequested.get() && !timedOut,
-                outputTruncated = started.outputTruncated.get(),
+                success = !completion.timedOut && !completion.stoppedByUser && completion.exitCode == 0,
+                exitCode = completion.exitCode,
+                output = completion.output,
+                timedOut = completion.timedOut,
+                stoppedByUser = completion.stoppedByUser,
+                outputTruncated = completion.outputTruncated,
             ),
         )
     }
 
     fun stop(command: String): ImprovedChatPanelWorkflowCommandStopOutcome {
         val running = runningCommands[command] ?: return ImprovedChatPanelWorkflowCommandStopOutcome.NotRunning
-        if (!running.process.isAlive) {
+        if (!running.handle.process.isAlive) {
             runningCommands.remove(command, running)
             return ImprovedChatPanelWorkflowCommandStopOutcome.NotRunning
         }
-        if (!running.stopRequested.compareAndSet(false, true)) {
+        if (!running.handle.stopRequested.compareAndSet(false, true)) {
             return ImprovedChatPanelWorkflowCommandStopOutcome.AlreadyStopping
         }
         return runCatching {
-            running.process.destroy()
-            if (running.process.isAlive) {
-                val exited = running.process.waitFor(stopGraceSeconds, TimeUnit.SECONDS)
-                if (!exited && running.process.isAlive) {
-                    running.process.destroyForcibly()
-                }
-            }
+            running.handle.destroy(stopGraceSeconds, TimeUnit.SECONDS)
             ImprovedChatPanelWorkflowCommandStopOutcome.Stopping
         }.getOrElse { error ->
             ImprovedChatPanelWorkflowCommandStopOutcome.Failed(error)
@@ -132,10 +123,7 @@ internal class ImprovedChatPanelWorkflowCommandRunner(
     fun dispose() {
         runningCommands.values.forEach { running ->
             runCatching {
-                running.stopRequested.set(true)
-                if (running.process.isAlive) {
-                    running.process.destroyForcibly()
-                }
+                running.handle.dispose()
             }
         }
         runningCommands.clear()
@@ -143,44 +131,22 @@ internal class ImprovedChatPanelWorkflowCommandRunner(
 
     private fun start(command: String): RunningWorkflowCommand {
         val process = processStarter(shellCommandBuilder(command), workingDirectory)
-        val outputBuffer = StringBuilder()
-        val outputTruncated = AtomicBoolean(false)
-        val stopRequested = AtomicBoolean(false)
-        val outputReaderThread = Thread {
-            process.inputStream.bufferedReader().useLines { lines ->
-                lines.forEach { line ->
-                    synchronized(outputBuffer) {
-                        if (outputBuffer.length < outputLimitChars) {
-                            if (outputBuffer.isNotEmpty()) {
-                                outputBuffer.append('\n')
-                            }
-                            outputBuffer.append(line)
-                        } else {
-                            outputTruncated.set(true)
-                        }
-                    }
-                }
-            }
-        }.apply {
-            isDaemon = true
-            name = "workflow-command-output-${command.hashCode()}"
-            start()
-        }
-
+        val handle = ManagedMergedOutputProcess.start(
+            process = process,
+            outputLimitChars = outputLimitChars,
+            threadName = "workflow-command-output-${command.hashCode()}",
+            stopRequested = AtomicBoolean(false),
+        )
         val running = RunningWorkflowCommand(
             command = command,
-            process = process,
-            outputBuffer = outputBuffer,
-            outputTruncated = outputTruncated,
-            stopRequested = stopRequested,
-            outputReaderThread = outputReaderThread,
+            handle = handle,
         )
         val previous = runningCommands.putIfAbsent(command, running)
-        if (previous != null && previous.process.isAlive) {
+        if (previous != null && previous.handle.process.isAlive) {
             process.destroyForcibly()
             throw CommandAlreadyRunningException()
         }
-        if (previous != null && !previous.process.isAlive) {
+        if (previous != null && !previous.handle.process.isAlive) {
             runningCommands[command] = running
         }
         return running
@@ -188,11 +154,7 @@ internal class ImprovedChatPanelWorkflowCommandRunner(
 
     private data class RunningWorkflowCommand(
         val command: String,
-        val process: Process,
-        val outputBuffer: StringBuilder,
-        val outputTruncated: AtomicBoolean,
-        val stopRequested: AtomicBoolean,
-        val outputReaderThread: Thread,
+        val handle: ManagedMergedOutputProcess,
     )
 
     private class CommandAlreadyRunningException : IllegalStateException("Command already running")
@@ -203,6 +165,7 @@ internal class ImprovedChatPanelWorkflowCommandRunner(
 
         private const val DEFAULT_JOIN_TIMEOUT_MILLIS = 2000L
         private const val DEFAULT_STOP_GRACE_SECONDS = 3L
+        private const val TIMEOUT_DESTROY_WAIT_SECONDS = 2L
 
         private fun buildShellCommand(command: String): List<String> {
             return if (System.getProperty("os.name").lowercase(Locale.ROOT).contains("win")) {

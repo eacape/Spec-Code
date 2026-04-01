@@ -23,21 +23,27 @@ internal data class ImprovedChatPanelShellCommandExecutionRequest(
 internal sealed interface ImprovedChatPanelShellCommandExecutionPlan {
     data object NoOp : ImprovedChatPanelShellCommandExecutionPlan
 
+    data class PermissionDenied(
+        val errorMessage: String,
+    ) : ImprovedChatPanelShellCommandExecutionPlan
+
     data class LaunchInBackground(
         val dispatchRequest: ImprovedChatPanelShellCommandDispatchRequest,
+        val preExecutionSystemMessage: String? = null,
     ) : ImprovedChatPanelShellCommandExecutionPlan
 
     data class ApplyImmediateResult(
         val feedback: ImprovedChatPanelWorkflowCommandFeedback,
         val persistAsync: Boolean,
         val operationRequest: OperationRequest,
+        val preExecutionSystemMessage: String? = null,
         val restorePlan: ImprovedChatPanelComposerRestorePlan? = null,
         val launchError: Throwable? = null,
     ) : ImprovedChatPanelShellCommandExecutionPlan
 }
 
 internal class ImprovedChatPanelShellCommandExecutionCoordinator(
-    private val authorizeCommandExecution: (OperationRequest, String) -> Boolean,
+    private val authorizeCommandExecution: (OperationRequest, String) -> ImprovedChatPanelWorkflowCommandPermissionOutcome,
     private val isWorkflowCommandRunning: (String) -> Boolean,
     private val executeTerminalCommand: (
         ImprovedChatPanelTerminalCommandExecutionRequest,
@@ -52,21 +58,38 @@ internal class ImprovedChatPanelShellCommandExecutionCoordinator(
             command = request.command,
             requestDescription = request.requestDescription,
         ) ?: return ImprovedChatPanelShellCommandExecutionPlan.NoOp
-        if (!authorizeCommandExecution(dispatchRequest.operationRequest, dispatchRequest.normalizedCommand)) {
-            return ImprovedChatPanelShellCommandExecutionPlan.NoOp
-        }
 
-        return when (val target = request.target) {
-            ImprovedChatPanelShellCommandExecutionTarget.Background ->
-                buildBackgroundPlan(dispatchRequest)
+        return when (
+            val permissionOutcome = authorizeCommandExecution(
+                dispatchRequest.operationRequest,
+                dispatchRequest.normalizedCommand,
+            )
+        ) {
+            is ImprovedChatPanelWorkflowCommandPermissionOutcome.Allowed -> {
+                when (val target = request.target) {
+                    ImprovedChatPanelShellCommandExecutionTarget.Background ->
+                        buildBackgroundPlan(dispatchRequest, permissionOutcome.acceptedSystemMessage)
 
-            is ImprovedChatPanelShellCommandExecutionTarget.IdeTerminal ->
-                executeInIdeTerminal(dispatchRequest, target)
+                    is ImprovedChatPanelShellCommandExecutionTarget.IdeTerminal ->
+                        executeInIdeTerminal(
+                            dispatchRequest,
+                            target,
+                            permissionOutcome.acceptedSystemMessage,
+                        )
+                }
+            }
+
+            is ImprovedChatPanelWorkflowCommandPermissionOutcome.Denied ->
+                ImprovedChatPanelShellCommandExecutionPlan.PermissionDenied(permissionOutcome.errorMessage)
+
+            ImprovedChatPanelWorkflowCommandPermissionOutcome.Cancelled ->
+                ImprovedChatPanelShellCommandExecutionPlan.NoOp
         }
     }
 
     private fun buildBackgroundPlan(
         dispatchRequest: ImprovedChatPanelShellCommandDispatchRequest,
+        preExecutionSystemMessage: String?,
     ): ImprovedChatPanelShellCommandExecutionPlan {
         return when (
             val dispatchPlan = ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planDispatch(
@@ -75,13 +98,17 @@ internal class ImprovedChatPanelShellCommandExecutionCoordinator(
             )
         ) {
             is ImprovedChatPanelWorkflowCommandDispatchPlan.LaunchInBackground ->
-                ImprovedChatPanelShellCommandExecutionPlan.LaunchInBackground(dispatchPlan.dispatchRequest)
+                ImprovedChatPanelShellCommandExecutionPlan.LaunchInBackground(
+                    dispatchRequest = dispatchPlan.dispatchRequest,
+                    preExecutionSystemMessage = preExecutionSystemMessage,
+                )
 
             is ImprovedChatPanelWorkflowCommandDispatchPlan.RenderFeedback ->
                 ImprovedChatPanelShellCommandExecutionPlan.ApplyImmediateResult(
                     feedback = dispatchPlan.feedback,
                     persistAsync = dispatchPlan.persistAsync,
                     operationRequest = dispatchRequest.operationRequest,
+                    preExecutionSystemMessage = preExecutionSystemMessage,
                 )
         }
     }
@@ -89,6 +116,7 @@ internal class ImprovedChatPanelShellCommandExecutionCoordinator(
     private fun executeInIdeTerminal(
         dispatchRequest: ImprovedChatPanelShellCommandDispatchRequest,
         target: ImprovedChatPanelShellCommandExecutionTarget.IdeTerminal,
+        preExecutionSystemMessage: String?,
     ): ImprovedChatPanelShellCommandExecutionPlan.ApplyImmediateResult {
         val executionResult = executeTerminalCommand(
             ImprovedChatPanelTerminalCommandExecutionRequest(
@@ -104,6 +132,7 @@ internal class ImprovedChatPanelShellCommandExecutionCoordinator(
             feedback = executionResult.feedback,
             persistAsync = executionResult.persistAsync,
             operationRequest = executionResult.operationRequest,
+            preExecutionSystemMessage = preExecutionSystemMessage,
             restorePlan = executionResult.restorePlan,
             launchError = executionResult.launchError,
         )

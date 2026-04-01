@@ -1,5 +1,6 @@
 package com.eacape.speccodingplugin.hook
 
+import com.eacape.speccodingplugin.core.ManagedMergedOutputProcess
 import com.eacape.speccodingplugin.core.Operation
 import com.eacape.speccodingplugin.core.OperationModeManager
 import com.eacape.speccodingplugin.core.OperationRequest
@@ -125,39 +126,27 @@ class HookExecutor internal constructor(
                     .directory(project.basePath?.let(::File))
                     .redirectErrorStream(true)
                     .start()
-
-                val outputBuffer = StringBuilder()
-                val outputReaderThread = Thread {
-                    process.inputStream.bufferedReader().useLines { lines ->
-                        lines.forEach { line ->
-                            if (outputBuffer.length < MAX_COMMAND_OUTPUT_CHARS) {
-                                if (outputBuffer.isNotEmpty()) {
-                                    outputBuffer.append('\n')
-                                }
-                                outputBuffer.append(line)
-                            }
-                        }
-                    }
-                }.apply {
-                    isDaemon = true
-                    start()
-                }
-
-                val completed = process.waitFor(action.timeoutMillis, TimeUnit.MILLISECONDS)
-                if (!completed) {
-                    process.destroyForcibly()
-                    process.waitFor(2, TimeUnit.SECONDS)
-                    outputReaderThread.join(2_000)
+                val runtime = ManagedMergedOutputProcess.start(
+                    process = process,
+                    outputLimitChars = MAX_COMMAND_OUTPUT_CHARS,
+                    threadName = "hook-command-output-${renderedCommand.hashCode()}",
+                )
+                val completion = runtime.awaitCompletion(
+                    timeout = action.timeoutMillis,
+                    timeoutUnit = TimeUnit.MILLISECONDS,
+                    joinTimeoutMillis = COMMAND_OUTPUT_JOIN_TIMEOUT_MILLIS,
+                    timeoutDestroyWait = COMMAND_FORCE_DESTROY_WAIT_SECONDS,
+                    timeoutDestroyWaitUnit = TimeUnit.SECONDS,
+                )
+                if (completion.timedOut) {
                     return@withContext HookActionExecutionResult(
                         success = false,
                         message = "Command timed out after ${action.timeoutMillis}ms: $renderedCommand",
                     )
                 }
 
-                outputReaderThread.join(2_000)
-                val output = outputBuffer.toString().trim()
-
-                val exitCode = process.exitValue()
+                val output = completion.output
+                val exitCode = completion.exitCode ?: -1
                 if (exitCode != 0) {
                     return@withContext HookActionExecutionResult(
                         success = false,
@@ -213,6 +202,8 @@ class HookExecutor internal constructor(
         }
 
         private const val MAX_COMMAND_OUTPUT_CHARS = 8_192
+        private const val COMMAND_OUTPUT_JOIN_TIMEOUT_MILLIS = 2_000L
+        private const val COMMAND_FORCE_DESTROY_WAIT_SECONDS = 2L
     }
 }
 

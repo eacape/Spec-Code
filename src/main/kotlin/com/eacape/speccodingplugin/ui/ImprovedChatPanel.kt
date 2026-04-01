@@ -249,8 +249,20 @@ class ImprovedChatPanel(
             )
         },
     )
+    private val workflowCommandPermissionCoordinator = ImprovedChatPanelWorkflowCommandPermissionCoordinator(
+        checkOperation = modeManager::checkOperation,
+        currentModeDisplayName = { modeManager.getCurrentMode().displayName },
+        requestConfirmation = { title, message ->
+            Messages.showYesNoDialog(
+                project,
+                message,
+                title,
+                Messages.getQuestionIcon(),
+            ) == Messages.YES
+        },
+    )
     private val shellCommandExecutionCoordinator = ImprovedChatPanelShellCommandExecutionCoordinator(
-        authorizeCommandExecution = ::checkWorkflowCommandPermission,
+        authorizeCommandExecution = workflowCommandPermissionCoordinator::authorize,
         isWorkflowCommandRunning = workflowCommandRunner::isRunning,
         executeTerminalCommand = terminalCommandExecutionCoordinator::execute,
     )
@@ -6457,13 +6469,19 @@ class ImprovedChatPanel(
         when (plan) {
             ImprovedChatPanelShellCommandExecutionPlan.NoOp -> Unit
 
+            is ImprovedChatPanelShellCommandExecutionPlan.PermissionDenied -> {
+                addErrorMessage(plan.errorMessage)
+            }
+
             is ImprovedChatPanelShellCommandExecutionPlan.LaunchInBackground -> {
+                plan.preExecutionSystemMessage?.let(::addSystemMessage)
                 taskCoordinator.launchIo {
                     runWorkflowShellCommandInBackground(plan.dispatchRequest)
                 }
             }
 
             is ImprovedChatPanelShellCommandExecutionPlan.ApplyImmediateResult -> {
+                plan.preExecutionSystemMessage?.let(::addSystemMessage)
                 plan.restorePlan?.let(::applyComposerRestorePlan)
                 plan.launchError?.let { error ->
                     logger.warn("Failed to open IDE terminal for workflow command", error)
@@ -6546,35 +6564,6 @@ class ImprovedChatPanel(
                     persistAsync = stopOutcomePlan.persistAsync,
                     renderOnUiThread = true,
                 )
-            }
-        }
-    }
-
-    private fun checkWorkflowCommandPermission(request: OperationRequest, command: String): Boolean {
-        val decision = ImprovedChatPanelWorkflowCommandFeedbackCoordinator.resolvePermission(
-            result = modeManager.checkOperation(request),
-            currentModeDisplayName = modeManager.getCurrentMode().displayName,
-            request = request,
-            command = command,
-        )
-        return when (decision) {
-            ImprovedChatPanelWorkflowCommandPermissionDecision.Allowed -> true
-            is ImprovedChatPanelWorkflowCommandPermissionDecision.Denied -> {
-                addErrorMessage(decision.errorMessage)
-                false
-            }
-
-            is ImprovedChatPanelWorkflowCommandPermissionDecision.RequiresConfirmation -> {
-                val confirmed = Messages.showYesNoDialog(
-                    project,
-                    decision.message,
-                    decision.title,
-                    Messages.getQuestionIcon(),
-                ) == Messages.YES
-                if (confirmed) {
-                    addSystemMessage(decision.acceptedSystemMessage)
-                }
-                confirmed
             }
         }
     }
