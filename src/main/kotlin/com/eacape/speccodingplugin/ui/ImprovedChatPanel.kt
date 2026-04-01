@@ -225,30 +225,6 @@ class ImprovedChatPanel(
     private val taskCoordinator = SwingPanelTaskCoordinator(
         isDisposed = { project.isDisposed || _isDisposed },
     )
-    private val workflowCommandRunner = ImprovedChatPanelWorkflowCommandRunner(
-        workingDirectory = project.basePath?.let(::File),
-    )
-    private val workflowCommandExecutionCoordinator = ImprovedChatPanelWorkflowCommandExecutionCoordinator(
-        timeoutSeconds = workflowCommandRunner.timeoutSeconds,
-        outputLimitChars = workflowCommandRunner.outputLimitChars,
-        captureBeforeSnapshot = ::captureWorkspaceSnapshot,
-        executeCommand = workflowCommandRunner::execute,
-        sanitizeDisplayOutput = { output -> sanitizeDisplayText(output, dropGarbledLines = false) },
-        showRunningStatus = { statusMessage ->
-            taskCoordinator.invokeLater {
-                showStatus(statusMessage)
-            }
-        },
-    )
-    private val terminalCommandExecutionCoordinator = ImprovedChatPanelTerminalCommandExecutionCoordinator(
-        executeInIdeTerminal = { command, workingDirectory ->
-            IdeTerminalCommandExecutor.execute(
-                project = project,
-                command = command,
-                workingDirectory = workingDirectory,
-            )
-        },
-    )
     private val workflowCommandPermissionCoordinator = ImprovedChatPanelWorkflowCommandPermissionCoordinator(
         checkOperation = modeManager::checkOperation,
         currentModeDisplayName = { modeManager.getCurrentMode().displayName },
@@ -261,14 +237,23 @@ class ImprovedChatPanel(
             ) == Messages.YES
         },
     )
-    private val shellCommandExecutionCoordinator = ImprovedChatPanelShellCommandExecutionCoordinator(
+    private val shellCommandRuntimeFacade = ImprovedChatPanelShellCommandRuntimeFacade.create(
+        workingDirectory = project.basePath?.let(::File),
         authorizeCommandExecution = workflowCommandPermissionCoordinator::authorize,
-        isWorkflowCommandRunning = workflowCommandRunner::isRunning,
-        executeTerminalCommand = terminalCommandExecutionCoordinator::execute,
-    )
-    private val workflowCommandStopCoordinator = ImprovedChatPanelWorkflowCommandStopCoordinator(
-        isWorkflowCommandRunning = workflowCommandRunner::isRunning,
-        stopWorkflowCommand = workflowCommandRunner::stop,
+        captureBeforeSnapshot = ::captureWorkspaceSnapshot,
+        sanitizeDisplayOutput = { output -> sanitizeDisplayText(output, dropGarbledLines = false) },
+        showRunningStatus = { statusMessage ->
+            taskCoordinator.invokeLater {
+                showStatus(statusMessage)
+            }
+        },
+        executeInIdeTerminal = { command, workingDirectory ->
+            IdeTerminalCommandExecutor.execute(
+                project = project,
+                command = command,
+                workingDirectory = workingDirectory,
+            )
+        },
     )
     private val discoveryListener: () -> Unit = {
         llmRouter.refreshProviders()
@@ -6453,7 +6438,7 @@ class ImprovedChatPanel(
             return
         }
         applyShellCommandExecutionPlan(
-            shellCommandExecutionCoordinator.execute(
+            shellCommandRuntimeFacade.prepareExecution(
                 ImprovedChatPanelShellCommandExecutionRequest(
                     command = command,
                     requestDescription = requestDescription,
@@ -6547,7 +6532,7 @@ class ImprovedChatPanel(
             return
         }
 
-        val stopPlan = workflowCommandStopCoordinator.prepareStop(command) ?: return
+        val stopPlan = shellCommandRuntimeFacade.prepareStop(command) ?: return
         applyWorkflowCommandFeedback(
             feedback = stopPlan.immediateFeedback,
             persistAsync = stopPlan.persistAsync,
@@ -6557,7 +6542,7 @@ class ImprovedChatPanel(
         }
 
         taskCoordinator.launchIo {
-            val stopOutcomePlan = workflowCommandStopCoordinator.performStop(stopPlan)
+            val stopOutcomePlan = shellCommandRuntimeFacade.performStop(stopPlan)
             if (stopOutcomePlan != null) {
                 applyWorkflowCommandFeedback(
                     feedback = stopOutcomePlan.feedback,
@@ -6571,7 +6556,7 @@ class ImprovedChatPanel(
     private fun runWorkflowShellCommandInBackground(
         dispatchRequest: ImprovedChatPanelShellCommandDispatchRequest,
     ) {
-        val backgroundResult = workflowCommandExecutionCoordinator.executeInBackground(
+        val backgroundResult = shellCommandRuntimeFacade.executeInBackground(
             ImprovedChatPanelWorkflowCommandBackgroundRequest(
                 dispatchRequest = dispatchRequest,
                 shouldHideStatus = !isGenerating && !isRestoringSession,
@@ -7102,7 +7087,7 @@ class ImprovedChatPanel(
         dividerPersistTimer = null
         composerDividerPersistTimer?.stop()
         composerDividerPersistTimer = null
-        workflowCommandRunner.dispose()
+        shellCommandRuntimeFacade.dispose()
         clearImageAttachments()
         composerInputState = ImprovedChatPanelComposerInputCoordinator.clear()
         userMessageRawContent.clear()

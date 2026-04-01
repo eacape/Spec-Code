@@ -15,14 +15,16 @@ class ImprovedChatPanelTerminalCommandExecutionCoordinatorContractTest {
             Paths.get("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt"),
             StandardCharsets.UTF_8,
         )
-        val executionCoordinatorSource = Files.readString(
-            Paths.get("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanelShellCommandExecutionCoordinator.kt"),
+        val runtimeFacadeSource = Files.readString(
+            Paths.get("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanelShellCommandRuntimeFacade.kt"),
             StandardCharsets.UTF_8,
         )
 
-        assertTrue(panelSource.contains("private val terminalCommandExecutionCoordinator = ImprovedChatPanelTerminalCommandExecutionCoordinator("))
-        assertTrue(executionCoordinatorSource.contains("executeTerminalCommand("))
+        assertTrue(panelSource.contains("private val shellCommandRuntimeFacade = ImprovedChatPanelShellCommandRuntimeFacade.create("))
+        assertTrue(runtimeFacadeSource.contains("ImprovedChatPanelTerminalCommandExecutionCoordinator("))
+        assertTrue(runtimeFacadeSource.contains("executeInIdeTerminal = executeInIdeTerminal"))
         assertTrue(panelSource.contains("plan.restorePlan?.let(::applyComposerRestorePlan)"))
+        assertFalse(panelSource.contains("private val terminalCommandExecutionCoordinator = ImprovedChatPanelTerminalCommandExecutionCoordinator("))
         assertFalse(panelSource.contains("terminalCommandExecutionCoordinator.execute("))
         assertFalse(panelSource.contains("private fun restoreComposerIfTerminalCommandEchoed("))
         assertFalse(panelSource.contains("ImprovedChatPanelWorkflowCommandFeedbackCoordinator.buildTerminalStartedFeedback("))

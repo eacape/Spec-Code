@@ -15,12 +15,18 @@ class ImprovedChatPanelShellCommandExecutionCoordinatorContractTest {
             Paths.get("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt"),
             StandardCharsets.UTF_8,
         )
+        val runtimeFacadeSource = Files.readString(
+            Paths.get("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanelShellCommandRuntimeFacade.kt"),
+            StandardCharsets.UTF_8,
+        )
 
-        assertTrue(panelSource.contains("private val shellCommandExecutionCoordinator = ImprovedChatPanelShellCommandExecutionCoordinator("))
+        assertTrue(panelSource.contains("private val shellCommandRuntimeFacade = ImprovedChatPanelShellCommandRuntimeFacade.create("))
         assertTrue(panelSource.contains("private val workflowCommandPermissionCoordinator = ImprovedChatPanelWorkflowCommandPermissionCoordinator("))
-        assertTrue(panelSource.contains("authorizeCommandExecution = workflowCommandPermissionCoordinator::authorize"))
-        assertTrue(panelSource.contains("shellCommandExecutionCoordinator.execute("))
+        assertTrue(runtimeFacadeSource.contains("ImprovedChatPanelShellCommandExecutionCoordinator("))
+        assertTrue(runtimeFacadeSource.contains("authorizeCommandExecution = authorizeCommandExecution"))
+        assertTrue(panelSource.contains("shellCommandRuntimeFacade.prepareExecution("))
         assertTrue(panelSource.contains("private fun applyShellCommandExecutionPlan("))
+        assertFalse(panelSource.contains("private val shellCommandExecutionCoordinator = ImprovedChatPanelShellCommandExecutionCoordinator("))
         assertFalse(panelSource.contains("private fun checkWorkflowCommandPermission("))
         assertFalse(panelSource.contains("private fun executeShellCommandInIdeTerminal("))
     }

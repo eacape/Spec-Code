@@ -11,20 +11,27 @@ class ImprovedChatPanelWorkflowCommandRunnerContractTest {
 
     @Test
     fun `improved chat panel should delegate workflow command runtime to shared runner`() {
-        val source = Files.readString(
+        val panelSource = Files.readString(
             Paths.get("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt"),
             StandardCharsets.UTF_8,
         )
+        val runtimeFacadeSource = Files.readString(
+            Paths.get("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanelShellCommandRuntimeFacade.kt"),
+            StandardCharsets.UTF_8,
+        )
 
-        assertTrue(source.contains("private val workflowCommandRunner = ImprovedChatPanelWorkflowCommandRunner("))
-        assertTrue(source.contains("private val workflowCommandExecutionCoordinator = ImprovedChatPanelWorkflowCommandExecutionCoordinator("))
-        assertTrue(source.contains("workflowCommandRunner.stop(normalizedCommand)"))
-        assertTrue(source.contains("workflowCommandRunner.dispose()"))
-        assertFalse(source.contains("workflowCommandRunner.execute("))
-        assertFalse(source.contains("private val runningWorkflowCommands ="))
-        assertFalse(source.contains("private fun startWorkflowShellCommand("))
-        assertFalse(source.contains("private fun buildShellCommand("))
-        assertFalse(source.contains("private data class RunningWorkflowCommand("))
-        assertFalse(source.contains("ProcessBuilder(buildShellCommand(command))"))
+        assertTrue(panelSource.contains("private val shellCommandRuntimeFacade = ImprovedChatPanelShellCommandRuntimeFacade.create("))
+        assertTrue(panelSource.contains("shellCommandRuntimeFacade.dispose()"))
+        assertTrue(runtimeFacadeSource.contains("val workflowCommandRunner = ImprovedChatPanelWorkflowCommandRunner("))
+        assertTrue(runtimeFacadeSource.contains("disposeRuntime = workflowCommandRunner::dispose"))
+        assertFalse(panelSource.contains("private val workflowCommandRunner = ImprovedChatPanelWorkflowCommandRunner("))
+        assertFalse(panelSource.contains("workflowCommandRunner.execute("))
+        assertFalse(panelSource.contains("workflowCommandRunner.stop(normalizedCommand)"))
+        assertFalse(panelSource.contains("workflowCommandRunner.dispose()"))
+        assertFalse(panelSource.contains("private val runningWorkflowCommands ="))
+        assertFalse(panelSource.contains("private fun startWorkflowShellCommand("))
+        assertFalse(panelSource.contains("private fun buildShellCommand("))
+        assertFalse(panelSource.contains("private data class RunningWorkflowCommand("))
+        assertFalse(panelSource.contains("ProcessBuilder(buildShellCommand(command))"))
     }
 }
