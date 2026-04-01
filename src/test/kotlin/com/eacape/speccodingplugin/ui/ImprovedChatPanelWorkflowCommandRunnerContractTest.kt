@@ -17,9 +17,10 @@ class ImprovedChatPanelWorkflowCommandRunnerContractTest {
         )
 
         assertTrue(source.contains("private val workflowCommandRunner = ImprovedChatPanelWorkflowCommandRunner("))
-        assertTrue(source.contains("workflowCommandRunner.execute("))
+        assertTrue(source.contains("private val workflowCommandExecutionCoordinator = ImprovedChatPanelWorkflowCommandExecutionCoordinator("))
         assertTrue(source.contains("workflowCommandRunner.stop(normalizedCommand)"))
         assertTrue(source.contains("workflowCommandRunner.dispose()"))
+        assertFalse(source.contains("workflowCommandRunner.execute("))
         assertFalse(source.contains("private val runningWorkflowCommands ="))
         assertFalse(source.contains("private fun startWorkflowShellCommand("))
         assertFalse(source.contains("private fun buildShellCommand("))

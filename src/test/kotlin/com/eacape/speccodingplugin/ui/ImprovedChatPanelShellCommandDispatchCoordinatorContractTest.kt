@@ -17,8 +17,8 @@ class ImprovedChatPanelShellCommandDispatchCoordinatorContractTest {
         )
 
         assertTrue(source.contains("ImprovedChatPanelShellCommandDispatchCoordinator.buildDispatchRequest("))
-        assertTrue(source.contains("ImprovedChatPanelShellCommandDispatchCoordinator.buildTerminalLaunchPlan("))
-        assertTrue(source.contains("ImprovedChatPanelShellCommandDispatchCoordinator.shouldRestoreComposerAfterTerminalEcho("))
+        assertFalse(source.contains("ImprovedChatPanelShellCommandDispatchCoordinator.buildTerminalLaunchPlan("))
+        assertFalse(source.contains("ImprovedChatPanelShellCommandDispatchCoordinator.shouldRestoreComposerAfterTerminalEcho("))
         assertFalse(source.contains("private fun looksLikeTerminalCommandEcho("))
         assertFalse(source.contains("details = mapOf(\"command\" to normalizedCommand)"))
         assertFalse(source.contains("?: System.getProperty(\"user.home\")"))

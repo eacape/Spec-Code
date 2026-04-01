@@ -228,6 +228,27 @@ class ImprovedChatPanel(
     private val workflowCommandRunner = ImprovedChatPanelWorkflowCommandRunner(
         workingDirectory = project.basePath?.let(::File),
     )
+    private val workflowCommandExecutionCoordinator = ImprovedChatPanelWorkflowCommandExecutionCoordinator(
+        timeoutSeconds = workflowCommandRunner.timeoutSeconds,
+        outputLimitChars = workflowCommandRunner.outputLimitChars,
+        captureBeforeSnapshot = ::captureWorkspaceSnapshot,
+        executeCommand = workflowCommandRunner::execute,
+        sanitizeDisplayOutput = { output -> sanitizeDisplayText(output, dropGarbledLines = false) },
+        showRunningStatus = { statusMessage ->
+            taskCoordinator.invokeLater {
+                showStatus(statusMessage)
+            }
+        },
+    )
+    private val terminalCommandExecutionCoordinator = ImprovedChatPanelTerminalCommandExecutionCoordinator(
+        executeInIdeTerminal = { command, workingDirectory ->
+            IdeTerminalCommandExecutor.execute(
+                project = project,
+                command = command,
+                workingDirectory = workingDirectory,
+            )
+        },
+    )
     private val discoveryListener: () -> Unit = {
         llmRouter.refreshProviders()
         modelRegistry.refreshFromDiscovery()
@@ -6439,61 +6460,32 @@ class ImprovedChatPanel(
             return
         }
 
-        val terminalPlan = ImprovedChatPanelShellCommandDispatchCoordinator.buildTerminalLaunchPlan(
-            dispatchRequest = dispatchRequest,
-            projectBasePath = project.basePath,
-            userHome = System.getProperty("user.home"),
-            composerText = inputField.text.orEmpty(),
-            composerCaret = inputField.caretPosition,
+        val executionResult = terminalCommandExecutionCoordinator.execute(
+            request = ImprovedChatPanelTerminalCommandExecutionRequest(
+                dispatchRequest = dispatchRequest,
+                projectBasePath = project.basePath,
+                userHome = System.getProperty("user.home"),
+                composerText = inputField.text.orEmpty(),
+                composerCaret = inputField.caretPosition,
+            ),
+            currentComposerText = { inputField.text.orEmpty() },
         )
-            ?: run {
-                val feedback = ImprovedChatPanelWorkflowCommandFeedbackCoordinator.buildTerminalUnavailableFeedback(
-                    dispatchRequest.normalizedCommand,
-                )
-                renderWorkflowCommandFeedback(feedback)
-                persistWorkflowCommandFeedback(feedback, async = true)
-                return
-            }
-
-        runCatching {
-            IdeTerminalCommandExecutor.execute(
-                project = project,
-                command = terminalPlan.dispatchRequest.normalizedCommand,
-                workingDirectory = terminalPlan.workingDirectory,
-            )
-        }.fold(
-            onSuccess = {
-                restoreComposerIfTerminalCommandEchoed(terminalPlan)
-                val feedback = ImprovedChatPanelWorkflowCommandFeedbackCoordinator.buildTerminalStartedFeedback(
-                    terminalPlan.dispatchRequest.normalizedCommand,
-                )
-                feedback.operationRecordedSuccess?.let { success ->
-                    modeManager.recordOperation(terminalPlan.dispatchRequest.operationRequest, success = success)
-                }
-                renderWorkflowCommandFeedback(feedback)
-            },
-            onFailure = { error ->
-                restoreComposerIfTerminalCommandEchoed(terminalPlan)
-                logger.warn("Failed to open IDE terminal for workflow command", error)
-                val feedback = ImprovedChatPanelWorkflowCommandFeedbackCoordinator.buildTerminalUnavailableFeedback(
-                    terminalPlan.dispatchRequest.normalizedCommand,
-                )
-                renderWorkflowCommandFeedback(feedback)
-                persistWorkflowCommandFeedback(feedback, async = true)
-            },
+        executionResult.restorePlan?.let(::applyComposerRestorePlan)
+        executionResult.launchError?.let { error ->
+            logger.warn("Failed to open IDE terminal for workflow command", error)
+        }
+        applyWorkflowCommandFeedback(
+            feedback = executionResult.feedback,
+            persistAsync = executionResult.persistAsync,
+            operationRequest = executionResult.operationRequest,
         )
     }
 
-    private fun restoreComposerIfTerminalCommandEchoed(terminalPlan: ImprovedChatPanelTerminalCommandLaunchPlan) {
-        val currentText = inputField.text.orEmpty()
-        if (!ImprovedChatPanelShellCommandDispatchCoordinator.shouldRestoreComposerAfterTerminalEcho(terminalPlan, currentText)) {
-            return
-        }
-
+    private fun applyComposerRestorePlan(restorePlan: ImprovedChatPanelComposerRestorePlan) {
         suppressComposerAutoCollapse = true
         try {
-            inputField.text = terminalPlan.originalComposerText
-            inputField.caretPosition = terminalPlan.originalComposerCaret.coerceIn(0, inputField.text.length)
+            inputField.text = restorePlan.text
+            inputField.caretPosition = restorePlan.caret.coerceIn(0, inputField.text.length)
         } finally {
             suppressComposerAutoCollapse = false
         }
@@ -6601,39 +6593,23 @@ class ImprovedChatPanel(
     private fun runWorkflowShellCommandInBackground(
         dispatchRequest: ImprovedChatPanelShellCommandDispatchRequest,
     ) {
-        val command = dispatchRequest.normalizedCommand
-        val beforeSnapshot = captureWorkspaceSnapshot()
-        val outcome = workflowCommandRunner.execute(
-            command = command,
-            onStarted = {
-                ApplicationManager.getApplication().invokeLater {
-                    if (project.isDisposed || _isDisposed) {
-                        return@invokeLater
-                    }
-                    showStatus(
-                        ImprovedChatPanelWorkflowCommandFeedbackCoordinator.buildBackgroundRunningStatus(command),
-                    )
-                }
-            },
-        )
-        val outcomePlan = ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planExecutionOutcome(
-            command = command,
-            outcome = outcome,
-            timeoutSeconds = workflowCommandRunner.timeoutSeconds,
-            outputLimitChars = workflowCommandRunner.outputLimitChars,
-            displayOutput = sanitizeDisplayText(
-                (outcome as? ImprovedChatPanelWorkflowCommandRunOutcome.Completed)?.execution?.output.orEmpty(),
-                dropGarbledLines = false,
+        val backgroundResult = workflowCommandExecutionCoordinator.executeInBackground(
+            ImprovedChatPanelWorkflowCommandBackgroundRequest(
+                dispatchRequest = dispatchRequest,
+                shouldHideStatus = !isGenerating && !isRestoringSession,
             ),
-            shouldHideStatus = !isGenerating && !isRestoringSession,
         )
-        outcomePlan.execution?.takeIf { outcomePlan.shouldPersistChangeset }?.let { execution ->
-            persistWorkflowCommandChangeset(command, execution, beforeSnapshot)
+        backgroundResult.changesetPlan?.let { changesetPlan ->
+            persistWorkflowCommandChangeset(
+                command = changesetPlan.command,
+                execution = changesetPlan.execution,
+                beforeSnapshot = changesetPlan.beforeSnapshot,
+            )
         }
         applyWorkflowCommandFeedback(
-            feedback = outcomePlan.feedback,
-            persistAsync = outcomePlan.persistAsync,
-            operationRequest = dispatchRequest.operationRequest,
+            feedback = backgroundResult.feedback,
+            persistAsync = backgroundResult.persistAsync,
+            operationRequest = backgroundResult.operationRequest,
             renderOnUiThread = true,
         )
     }
