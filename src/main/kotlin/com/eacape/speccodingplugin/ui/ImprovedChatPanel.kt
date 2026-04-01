@@ -249,6 +249,15 @@ class ImprovedChatPanel(
             )
         },
     )
+    private val shellCommandExecutionCoordinator = ImprovedChatPanelShellCommandExecutionCoordinator(
+        authorizeCommandExecution = ::checkWorkflowCommandPermission,
+        isWorkflowCommandRunning = workflowCommandRunner::isRunning,
+        executeTerminalCommand = terminalCommandExecutionCoordinator::execute,
+    )
+    private val workflowCommandStopCoordinator = ImprovedChatPanelWorkflowCommandStopCoordinator(
+        isWorkflowCommandRunning = workflowCommandRunner::isRunning,
+        stopWorkflowCommand = workflowCommandRunner::stop,
+    )
     private val discoveryListener: () -> Unit = {
         llmRouter.refreshProviders()
         modelRegistry.refreshFromDiscovery()
@@ -6410,75 +6419,62 @@ class ImprovedChatPanel(
             return
         }
 
-        executeShellCommandInIdeTerminal(
+        executeShellCommand(
             command = normalizedCommand,
             requestDescription = "Workflow quick action command: $normalizedCommand",
-        )
-    }
-
-    private fun executeShellCommand(command: String, requestDescription: String) {
-        if (project.isDisposed || _isDisposed) {
-            return
-        }
-        val dispatchRequest = ImprovedChatPanelShellCommandDispatchCoordinator.buildDispatchRequest(
-            command = command,
-            requestDescription = requestDescription,
-        ) ?: return
-        if (!checkWorkflowCommandPermission(dispatchRequest.operationRequest, dispatchRequest.normalizedCommand)) {
-            return
-        }
-
-        when (
-            val dispatchPlan = ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planDispatch(
-                dispatchRequest = dispatchRequest,
-                alreadyRunning = workflowCommandRunner.isRunning(dispatchRequest.normalizedCommand),
-            )
-        ) {
-            is ImprovedChatPanelWorkflowCommandDispatchPlan.LaunchInBackground -> {
-                taskCoordinator.launchIo {
-                    runWorkflowShellCommandInBackground(dispatchPlan.dispatchRequest)
-                }
-            }
-
-            is ImprovedChatPanelWorkflowCommandDispatchPlan.RenderFeedback ->
-                applyWorkflowCommandFeedback(
-                    feedback = dispatchPlan.feedback,
-                    persistAsync = dispatchPlan.persistAsync,
-                )
-        }
-    }
-
-    private fun executeShellCommandInIdeTerminal(command: String, requestDescription: String) {
-        if (project.isDisposed || _isDisposed) {
-            return
-        }
-        val dispatchRequest = ImprovedChatPanelShellCommandDispatchCoordinator.buildDispatchRequest(
-            command = command,
-            requestDescription = requestDescription,
-        ) ?: return
-        if (!checkWorkflowCommandPermission(dispatchRequest.operationRequest, dispatchRequest.normalizedCommand)) {
-            return
-        }
-
-        val executionResult = terminalCommandExecutionCoordinator.execute(
-            request = ImprovedChatPanelTerminalCommandExecutionRequest(
-                dispatchRequest = dispatchRequest,
+            target = ImprovedChatPanelShellCommandExecutionTarget.IdeTerminal(
                 projectBasePath = project.basePath,
                 userHome = System.getProperty("user.home"),
                 composerText = inputField.text.orEmpty(),
                 composerCaret = inputField.caretPosition,
+                currentComposerText = { inputField.text.orEmpty() },
             ),
-            currentComposerText = { inputField.text.orEmpty() },
         )
-        executionResult.restorePlan?.let(::applyComposerRestorePlan)
-        executionResult.launchError?.let { error ->
-            logger.warn("Failed to open IDE terminal for workflow command", error)
+    }
+
+    private fun executeShellCommand(
+        command: String,
+        requestDescription: String,
+        target: ImprovedChatPanelShellCommandExecutionTarget = ImprovedChatPanelShellCommandExecutionTarget.Background,
+    ) {
+        if (project.isDisposed || _isDisposed) {
+            return
         }
-        applyWorkflowCommandFeedback(
-            feedback = executionResult.feedback,
-            persistAsync = executionResult.persistAsync,
-            operationRequest = executionResult.operationRequest,
+        applyShellCommandExecutionPlan(
+            shellCommandExecutionCoordinator.execute(
+                ImprovedChatPanelShellCommandExecutionRequest(
+                    command = command,
+                    requestDescription = requestDescription,
+                    target = target,
+                ),
+            ),
         )
+    }
+
+    private fun applyShellCommandExecutionPlan(
+        plan: ImprovedChatPanelShellCommandExecutionPlan,
+    ) {
+        when (plan) {
+            ImprovedChatPanelShellCommandExecutionPlan.NoOp -> Unit
+
+            is ImprovedChatPanelShellCommandExecutionPlan.LaunchInBackground -> {
+                taskCoordinator.launchIo {
+                    runWorkflowShellCommandInBackground(plan.dispatchRequest)
+                }
+            }
+
+            is ImprovedChatPanelShellCommandExecutionPlan.ApplyImmediateResult -> {
+                plan.restorePlan?.let(::applyComposerRestorePlan)
+                plan.launchError?.let { error ->
+                    logger.warn("Failed to open IDE terminal for workflow command", error)
+                }
+                applyWorkflowCommandFeedback(
+                    feedback = plan.feedback,
+                    persistAsync = plan.persistAsync,
+                    operationRequest = plan.operationRequest,
+                )
+            }
+        }
     }
 
     private fun applyComposerRestorePlan(restorePlan: ImprovedChatPanelComposerRestorePlan) {
@@ -6529,15 +6525,11 @@ class ImprovedChatPanel(
     }
 
     private fun handleWorkflowCommandStop(command: String) {
-        val normalizedCommand = command.trim()
-        if (normalizedCommand.isBlank() || project.isDisposed || _isDisposed) {
+        if (project.isDisposed || _isDisposed) {
             return
         }
 
-        val stopPlan = ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planStop(
-            command = normalizedCommand,
-            isRunning = workflowCommandRunner.isRunning(normalizedCommand),
-        )
+        val stopPlan = workflowCommandStopCoordinator.prepareStop(command) ?: return
         applyWorkflowCommandFeedback(
             feedback = stopPlan.immediateFeedback,
             persistAsync = stopPlan.persistAsync,
@@ -6547,10 +6539,7 @@ class ImprovedChatPanel(
         }
 
         taskCoordinator.launchIo {
-            val stopOutcomePlan = ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planStopOutcome(
-                command = normalizedCommand,
-                stopOutcome = workflowCommandRunner.stop(normalizedCommand),
-            )
+            val stopOutcomePlan = workflowCommandStopCoordinator.performStop(stopPlan)
             if (stopOutcomePlan != null) {
                 applyWorkflowCommandFeedback(
                     feedback = stopOutcomePlan.feedback,

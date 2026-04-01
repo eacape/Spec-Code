@@ -11,16 +11,21 @@ class ImprovedChatPanelShellCommandDispatchCoordinatorContractTest {
 
     @Test
     fun `improved chat panel should delegate shell command dispatch planning to coordinator`() {
-        val source = Files.readString(
+        val panelSource = Files.readString(
             Paths.get("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt"),
             StandardCharsets.UTF_8,
         )
+        val executionCoordinatorSource = Files.readString(
+            Paths.get("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanelShellCommandExecutionCoordinator.kt"),
+            StandardCharsets.UTF_8,
+        )
 
-        assertTrue(source.contains("ImprovedChatPanelShellCommandDispatchCoordinator.buildDispatchRequest("))
-        assertFalse(source.contains("ImprovedChatPanelShellCommandDispatchCoordinator.buildTerminalLaunchPlan("))
-        assertFalse(source.contains("ImprovedChatPanelShellCommandDispatchCoordinator.shouldRestoreComposerAfterTerminalEcho("))
-        assertFalse(source.contains("private fun looksLikeTerminalCommandEcho("))
-        assertFalse(source.contains("details = mapOf(\"command\" to normalizedCommand)"))
-        assertFalse(source.contains("?: System.getProperty(\"user.home\")"))
+        assertTrue(executionCoordinatorSource.contains("ImprovedChatPanelShellCommandDispatchCoordinator.buildDispatchRequest("))
+        assertFalse(panelSource.contains("ImprovedChatPanelShellCommandDispatchCoordinator.buildDispatchRequest("))
+        assertFalse(panelSource.contains("ImprovedChatPanelShellCommandDispatchCoordinator.buildTerminalLaunchPlan("))
+        assertFalse(panelSource.contains("ImprovedChatPanelShellCommandDispatchCoordinator.shouldRestoreComposerAfterTerminalEcho("))
+        assertFalse(panelSource.contains("private fun looksLikeTerminalCommandEcho("))
+        assertFalse(panelSource.contains("details = mapOf(\"command\" to normalizedCommand)"))
+        assertFalse(panelSource.contains("?: System.getProperty(\"user.home\")"))
     }
 }

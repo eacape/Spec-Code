@@ -11,16 +11,21 @@ class ImprovedChatPanelTerminalCommandExecutionCoordinatorContractTest {
 
     @Test
     fun `improved chat panel should delegate IDE terminal execution to coordinator`() {
-        val source = Files.readString(
+        val panelSource = Files.readString(
             Paths.get("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt"),
             StandardCharsets.UTF_8,
         )
+        val executionCoordinatorSource = Files.readString(
+            Paths.get("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanelShellCommandExecutionCoordinator.kt"),
+            StandardCharsets.UTF_8,
+        )
 
-        assertTrue(source.contains("private val terminalCommandExecutionCoordinator = ImprovedChatPanelTerminalCommandExecutionCoordinator("))
-        assertTrue(source.contains("terminalCommandExecutionCoordinator.execute("))
-        assertTrue(source.contains("executionResult.restorePlan?.let(::applyComposerRestorePlan)"))
-        assertFalse(source.contains("private fun restoreComposerIfTerminalCommandEchoed("))
-        assertFalse(source.contains("ImprovedChatPanelWorkflowCommandFeedbackCoordinator.buildTerminalStartedFeedback("))
-        assertFalse(source.contains("ImprovedChatPanelWorkflowCommandFeedbackCoordinator.buildTerminalUnavailableFeedback("))
+        assertTrue(panelSource.contains("private val terminalCommandExecutionCoordinator = ImprovedChatPanelTerminalCommandExecutionCoordinator("))
+        assertTrue(executionCoordinatorSource.contains("executeTerminalCommand("))
+        assertTrue(panelSource.contains("plan.restorePlan?.let(::applyComposerRestorePlan)"))
+        assertFalse(panelSource.contains("terminalCommandExecutionCoordinator.execute("))
+        assertFalse(panelSource.contains("private fun restoreComposerIfTerminalCommandEchoed("))
+        assertFalse(panelSource.contains("ImprovedChatPanelWorkflowCommandFeedbackCoordinator.buildTerminalStartedFeedback("))
+        assertFalse(panelSource.contains("ImprovedChatPanelWorkflowCommandFeedbackCoordinator.buildTerminalUnavailableFeedback("))
     }
 }

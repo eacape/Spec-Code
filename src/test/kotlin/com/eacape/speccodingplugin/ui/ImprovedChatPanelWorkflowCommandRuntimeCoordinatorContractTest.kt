@@ -15,16 +15,27 @@ class ImprovedChatPanelWorkflowCommandRuntimeCoordinatorContractTest {
             Paths.get("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt"),
             StandardCharsets.UTF_8,
         )
+        val shellExecutionCoordinatorSource = Files.readString(
+            Paths.get("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanelShellCommandExecutionCoordinator.kt"),
+            StandardCharsets.UTF_8,
+        )
+        val stopCoordinatorSource = Files.readString(
+            Paths.get("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanelWorkflowCommandStopCoordinator.kt"),
+            StandardCharsets.UTF_8,
+        )
         val executionCoordinatorSource = Files.readString(
             Paths.get("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanelWorkflowCommandExecutionCoordinator.kt"),
             StandardCharsets.UTF_8,
         )
 
-        assertTrue(panelSource.contains("ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planDispatch("))
-        assertTrue(panelSource.contains("ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planStop("))
-        assertTrue(panelSource.contains("ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planStopOutcome("))
+        assertTrue(shellExecutionCoordinatorSource.contains("ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planDispatch("))
+        assertTrue(stopCoordinatorSource.contains("ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planStop("))
+        assertTrue(stopCoordinatorSource.contains("ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planStopOutcome("))
         assertTrue(executionCoordinatorSource.contains("ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planExecutionOutcome("))
         assertTrue(panelSource.contains("applyWorkflowCommandFeedback("))
+        assertFalse(panelSource.contains("ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planDispatch("))
+        assertFalse(panelSource.contains("ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planStop("))
+        assertFalse(panelSource.contains("ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planStopOutcome("))
         assertFalse(panelSource.contains("ImprovedChatPanelWorkflowCommandRuntimeCoordinator.planExecutionOutcome("))
         assertFalse(panelSource.contains("ImprovedChatPanelWorkflowCommandRunOutcome.AlreadyRunning ->"))
         assertFalse(panelSource.contains("ImprovedChatPanelWorkflowCommandStopOutcome.Failed ->"))
