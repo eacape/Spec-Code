@@ -29,14 +29,12 @@ import com.eacape.speccodingplugin.llm.LlmRole
 import com.eacape.speccodingplugin.llm.MockLlmProvider
 import com.eacape.speccodingplugin.llm.ModelInfo
 import com.eacape.speccodingplugin.llm.ModelRegistry
+import com.eacape.speccodingplugin.persistence.ChatPersistenceCoordinator
 import com.eacape.speccodingplugin.prompt.PromptTemplate
-import com.eacape.speccodingplugin.rollback.Changeset
-import com.eacape.speccodingplugin.rollback.ChangesetStore
 import com.eacape.speccodingplugin.rollback.WorkspaceChangesetCollector
 import com.eacape.speccodingplugin.session.ConversationMessage
 import com.eacape.speccodingplugin.session.ConversationRole
 import com.eacape.speccodingplugin.session.ConversationSession
-import com.eacape.speccodingplugin.session.SessionManager
 import com.eacape.speccodingplugin.session.WorkflowChatActionRouter
 import com.eacape.speccodingplugin.session.WorkflowChatActionIntent
 import com.eacape.speccodingplugin.session.WorkflowChatBinding
@@ -44,7 +42,6 @@ import com.eacape.speccodingplugin.session.WorkflowChatContextAssembler
 import com.eacape.speccodingplugin.session.WorkflowChatEntrySource
 import com.eacape.speccodingplugin.session.WorkflowChatExecutionContext
 import com.eacape.speccodingplugin.session.WorkflowChatExecutionContextResolver
-import com.eacape.speccodingplugin.session.WORKFLOW_CHAT_COMMAND_PREFIX
 import com.eacape.speccodingplugin.session.WORKFLOW_CHAT_MODE_KEY
 import com.eacape.speccodingplugin.session.canonicalizeWorkflowChatCommand
 import com.eacape.speccodingplugin.session.canonicalizeWorkflowChatModeKey
@@ -212,7 +209,7 @@ class ImprovedChatPanel(
 
     private val logger = thisLogger()
     private val projectService: SpecCodingProjectService = project.getService(SpecCodingProjectService::class.java)
-    private val sessionManager = SessionManager.getInstance(project)
+    private val chatPersistenceCoordinator = ChatPersistenceCoordinator.getInstance(project)
     private val windowStateStore = WindowStateStore.getInstance(project)
     private val sessionIsolationService = WindowSessionIsolationService.getInstance(project)
     private val modeManager = OperationModeManager.getInstance(project)
@@ -228,7 +225,6 @@ class ImprovedChatPanel(
     private val operationModeSelector = OperationModeSelector(project)
     private val llmRouter = LlmRouter.getInstance()
     private val modelRegistry = ModelRegistry.getInstance()
-    private val changesetStore by lazy { ChangesetStore.getInstance(project) }
     private val taskCoordinator = SwingPanelTaskCoordinator(
         isDisposed = { project.isDisposed || _isDisposed },
     )
@@ -2156,7 +2152,7 @@ class ImprovedChatPanel(
                 workflowBinding = binding,
             )
             sessionId?.let { id ->
-                sessionManager.updateWorkflowChatBinding(id, binding)
+                chatPersistenceCoordinator.persistWorkflowChatBinding(id, binding)
                     .onFailure { error ->
                         logger.warn("Failed to persist workflow chat binding for session $id", error)
                     }
@@ -2504,36 +2500,45 @@ class ImprovedChatPanel(
             return
         }
 
-        // Check for slash commands
-        if (visibleRawInput.startsWith("/")) {
-            if (selectedImagePaths.isNotEmpty()) {
-                clearImageAttachments()
+        val interactionMode = currentInteractionMode()
+        val resolvedWorkflowIdForRouting = if (interactionMode == ChatInteractionMode.SPEC) {
+            resolveMostRecentSpecWorkflowIdOrNull()?.also { activeSpecWorkflowId = it }
+        } else {
+            null
+        }
+        val submissionPlan = ImprovedChatPanelComposerSubmissionCoordinator.resolve(
+            rawInput = rawInput,
+            visibleRawInput = visibleRawInput,
+            selectedImagePaths = selectedImagePaths,
+            specMode = interactionMode == ChatInteractionMode.SPEC,
+            hasActiveWorkflow = resolvedWorkflowIdForRouting != null,
+        )
+        if (submissionPlan.clearImageAttachments) {
+            clearImageAttachments()
+            submissionPlan.statusMessage?.let { message ->
                 showStatus(
-                    SpecCodingBundle.message("toolwindow.image.attach.ignored.command"),
+                    message,
                     autoHideMillis = STATUS_SHORT_HINT_AUTO_HIDE_MILLIS,
                 )
             }
-            handleSlashCommand(rawInput)
-            return
         }
-
-        val interactionMode = currentInteractionMode()
-        if (interactionMode == ChatInteractionMode.SPEC) {
-            val normalizedInput = rawInput.trim()
-            val workflowId = resolveMostRecentSpecWorkflowIdOrNull()?.also { activeSpecWorkflowId = it }
-            if (shouldRouteToWorkflowCommand(normalizedInput, hasActiveWorkflow = workflowId != null)) {
-                if (selectedImagePaths.isNotEmpty()) {
-                    clearImageAttachments()
-                    showStatus(
-                        SpecCodingBundle.message("toolwindow.workflow.attachment.boundary"),
-                        autoHideMillis = STATUS_SHORT_HINT_AUTO_HIDE_MILLIS,
-                    )
-                }
-                if (normalizedInput.isBlank()) {
-                    return
-                }
-                handleSpecCommand("$WORKFLOW_CHAT_COMMAND_PREFIX $normalizedInput", sessionTitleSeed = normalizedInput)
+        when (submissionPlan.kind) {
+            ImprovedChatPanelComposerSubmissionKind.IGNORE -> return
+            ImprovedChatPanelComposerSubmissionKind.SLASH_COMMAND -> {
+                handleSlashCommand(submissionPlan.command.orEmpty())
                 return
+            }
+
+            ImprovedChatPanelComposerSubmissionKind.WORKFLOW_COMMAND -> {
+                handleSpecCommand(
+                    submissionPlan.command.orEmpty(),
+                    sessionTitleSeed = submissionPlan.workflowCommandSessionTitleSeed.orEmpty(),
+                )
+                return
+            }
+
+            ImprovedChatPanelComposerSubmissionKind.CHAT_MESSAGE -> {
+                // Continue through the normal chat send path.
             }
         }
 
@@ -2545,14 +2550,20 @@ class ImprovedChatPanel(
             },
             referencedPrompts = promptReference.templates,
         )
-        val chatInput = appendImagePathsToPrompt(baseChatInput, selectedImagePaths)
-        val visibleInput = buildVisibleInput(visibleRawInput, selectedImagePaths)
+        val chatInput = ImprovedChatPanelComposerSubmissionCoordinator.appendImagePathsToPrompt(
+            prompt = baseChatInput,
+            imagePaths = selectedImagePaths,
+        )
+        val visibleInput = ImprovedChatPanelComposerSubmissionCoordinator.buildVisibleInput(
+            rawInput = visibleRawInput,
+            imagePaths = selectedImagePaths,
+        )
 
         val providerId = providerComboBox.selectedItem as? String
         val modelId = (modelComboBox.selectedItem as? ModelInfo)?.id
         val operationMode = modeManager.getCurrentMode()
         val resolvedWorkflowId = if (interactionMode == ChatInteractionMode.SPEC) {
-            resolveMostRecentSpecWorkflowIdOrNull()
+            resolvedWorkflowIdForRouting ?: resolveMostRecentSpecWorkflowIdOrNull()
         } else {
             null
         }
@@ -3357,30 +3368,6 @@ class ImprovedChatPanel(
         if (!file.isFile) return null
         if (!isSupportedImageExtension(file.name)) return null
         return file.path
-    }
-
-    private fun appendImagePathsToPrompt(prompt: String, imagePaths: List<String>): String {
-        if (imagePaths.isEmpty()) return prompt
-        val normalizedPrompt = prompt.ifBlank { SpecCodingBundle.message("toolwindow.image.default.prompt") }
-        val attachmentBlock = buildString {
-            appendLine(SpecCodingBundle.message("toolwindow.image.context.header"))
-            imagePaths.forEach { path ->
-                appendLine("- $path")
-            }
-        }.trimEnd()
-        return "$normalizedPrompt\n\n$attachmentBlock"
-    }
-
-    private fun buildVisibleInput(rawInput: String, imagePaths: List<String>): String {
-        if (imagePaths.isEmpty()) {
-            return rawInput.ifBlank { SpecCodingBundle.message("toolwindow.image.default.prompt") }
-        }
-        val names = imagePaths.indices.joinToString(", ") { index -> "image#${index + 1}" }
-        val attachmentLine = SpecCodingBundle.message("toolwindow.image.visible.entry", names)
-        if (rawInput.isBlank()) {
-            return attachmentLine
-        }
-        return "$rawInput\n$attachmentLine"
     }
 
     private fun buildChatInput(
@@ -4560,10 +4547,15 @@ class ImprovedChatPanel(
 
         taskCoordinator.launchIo {
             val loaded = runCatching {
-                val session = sessionManager.getSession(sessionId)
-                val messages = sessionManager
-                    .listMessages(sessionId, limit = SESSION_LOAD_FETCH_LIMIT)
-                    .takeLast(MAX_RESTORED_MESSAGES)
+                val restoreSnapshot = chatPersistenceCoordinator
+                    .loadSessionRestoreSnapshot(
+                        sessionId = sessionId,
+                        fetchLimit = SESSION_LOAD_FETCH_LIMIT,
+                        restoredMessageLimit = MAX_RESTORED_MESSAGES,
+                    )
+                    .getOrThrow()
+                val session = restoreSnapshot.session
+                val messages = restoreSnapshot.messages
                 val activeExecutionLaunchRunIds = resolveActiveExecutionLaunchRunIds(messages)
                 Triple(session, messages, activeExecutionLaunchRunIds)
             }
@@ -4720,10 +4712,10 @@ class ImprovedChatPanel(
                 }
 
             val created = withContext(Dispatchers.IO) {
-                sessionManager.createSession(
+                chatPersistenceCoordinator.createSession(
                     title = title,
+                    providerId = providerId,
                     specTaskId = normalizedSpecTaskId,
-                    modelProvider = providerId,
                     workflowChatBinding = effectiveBinding,
                 )
             }
@@ -4798,8 +4790,7 @@ class ImprovedChatPanel(
     private fun bindSessionToSpecTaskIfNeeded(sessionId: String?, workflowId: String?) {
         val normalizedSessionId = sessionId?.trim()?.ifBlank { null } ?: return
         val normalizedWorkflowId = workflowId?.trim()?.ifBlank { null } ?: return
-        val existingBinding = sessionManager.getSession(normalizedSessionId)
-            ?.resolvedWorkflowChatBinding()
+        val existingBinding = chatPersistenceCoordinator.resolveWorkflowChatBinding(normalizedSessionId)
         val desiredBinding = resolvedActiveWorkflowChatBinding()
             ?.takeIf { binding -> binding.workflowId == normalizedWorkflowId }
             ?: buildWorkflowChatBinding(
@@ -4811,7 +4802,7 @@ class ImprovedChatPanel(
         if (existingBinding == desiredBinding) {
             return
         }
-        sessionManager.updateWorkflowChatBinding(
+        chatPersistenceCoordinator.persistWorkflowChatBinding(
             normalizedSessionId,
             desiredBinding,
         )
@@ -4837,9 +4828,9 @@ class ImprovedChatPanel(
                 .take(80)
 
             val created = withContext(Dispatchers.IO) {
-                sessionManager.createSession(
+                chatPersistenceCoordinator.createSession(
                     title = title,
-                    modelProvider = providerId,
+                    providerId = providerId,
                 )
             }
 
@@ -4873,7 +4864,7 @@ class ImprovedChatPanel(
         content: String,
         metadataJson: String? = null,
     ) {
-        val result = sessionManager.addMessage(
+        val result = chatPersistenceCoordinator.persistMessage(
             sessionId = sessionId,
             role = role,
             content = content,
@@ -5072,8 +5063,11 @@ class ImprovedChatPanel(
         if (normalizedRunId == null && normalizedRequestId == null) {
             return
         }
-        val messages = sessionManager.listMessages(normalizedSessionId, limit = SESSION_LOAD_FETCH_LIMIT)
-            .takeLast(MAX_RESTORED_MESSAGES)
+        val messages = chatPersistenceCoordinator.loadRecentMessages(
+            sessionId = normalizedSessionId,
+            fetchLimit = SESSION_LOAD_FETCH_LIMIT,
+            restoredMessageLimit = MAX_RESTORED_MESSAGES,
+        )
         val candidates = messages.mapNotNull { message ->
             val executionMetadata = TaskExecutionSessionMetadataCodec.decode(message.metadataJson)
             if (!executionMetadata.matchesTaskExecutionMessage(normalizedRunId, normalizedRequestId)) {
@@ -6883,45 +6877,15 @@ class ImprovedChatPanel(
         execution: WorkflowCommandExecutionResult,
         beforeSnapshot: WorkspaceChangesetCollector.Snapshot?,
     ) {
-        val before = beforeSnapshot ?: return
-        val basePath = project.basePath ?: return
-        val root = runCatching { Paths.get(basePath).toAbsolutePath().normalize() }.getOrNull() ?: return
-
-        val after = runCatching {
-            WorkspaceChangesetCollector.capture(root)
-        }.onFailure {
-            logger.debug("Failed to capture workspace snapshot after command", it)
-        }.getOrNull() ?: return
-
-        val changes = WorkspaceChangesetCollector.diff(root, before, after)
-
-        val status = when {
-            execution.stoppedByUser -> "stopped"
-            execution.timedOut -> "timeout"
-            execution.success -> "success"
-            execution.error != null -> "error"
-            else -> "failed"
-        }
-        val metadata = linkedMapOf(
-            "source" to "workflow-command",
-            "command" to command.take(WORKFLOW_CHANGESET_COMMAND_MAX_LENGTH),
-            "status" to status,
-        )
-        execution.exitCode?.let { metadata["exitCode"] = it.toString() }
-        if (execution.timedOut) metadata["timedOut"] = "true"
-        if (execution.stoppedByUser) metadata["stoppedByUser"] = "true"
-        if (execution.outputTruncated) metadata["outputTruncated"] = "true"
-        if (changes.isEmpty()) metadata["noFileChange"] = "true"
-
-        val changeset = Changeset(
-            id = UUID.randomUUID().toString(),
-            description = "Command: ${command.take(WORKFLOW_CHANGESET_COMMAND_MAX_LENGTH)}",
-            changes = changes,
-            metadata = metadata,
-        )
-        runCatching {
-            changesetStore.save(changeset)
-        }.onFailure {
+        chatPersistenceCoordinator.persistWorkflowCommandChangeset(
+            command = command,
+            beforeSnapshot = beforeSnapshot,
+            success = execution.success,
+            exitCode = execution.exitCode,
+            timedOut = execution.timedOut,
+            stoppedByUser = execution.stoppedByUser,
+            outputTruncated = execution.outputTruncated,
+        ).onFailure {
             logger.warn("Failed to persist workflow command changeset", it)
         }
     }
@@ -6933,59 +6897,13 @@ class ImprovedChatPanel(
         beforeSnapshot: WorkspaceChangesetCollector.Snapshot?,
         hasExecutionTrace: Boolean,
     ) {
-        val before = beforeSnapshot ?: return
-        val basePath = project.basePath ?: return
-        val root = runCatching { Paths.get(basePath).toAbsolutePath().normalize() }.getOrNull() ?: return
-
-        val after = runCatching {
-            WorkspaceChangesetCollector.capture(root)
-        }.onFailure {
-            logger.debug("Failed to capture workspace snapshot after assistant response", it)
-        }.getOrNull() ?: return
-
-        val changes = WorkspaceChangesetCollector.diff(root, before, after)
-        if (changes.isEmpty() && !hasExecutionTrace) {
-            return
-        }
-
-        val requestSummary = requestText
-            .replace("\r\n", "\n")
-            .replace('\r', '\n')
-            .lineSequence()
-            .joinToString(" ") { it.trim() }
-            .replace(Regex("\\s+"), " ")
-            .trim()
-            .take(ASSISTANT_CHANGESET_REQUEST_MAX_LENGTH)
-            .ifBlank { SpecCodingBundle.message("common.unknown") }
-
-        val metadata = linkedMapOf(
-            "source" to "assistant-response",
-            "request" to requestSummary,
-        )
-        providerId
-            ?.trim()
-            ?.takeIf { it.isNotEmpty() }
-            ?.let { metadata["provider"] = it }
-        modelId
-            ?.trim()
-            ?.takeIf { it.isNotEmpty() }
-            ?.let { metadata["model"] = it }
-        if (hasExecutionTrace) {
-            metadata["trace"] = "true"
-        }
-        if (changes.isEmpty()) {
-            metadata["status"] = "no-file-change"
-        }
-
-        val changeset = Changeset(
-            id = UUID.randomUUID().toString(),
-            description = "Response: $requestSummary",
-            changes = changes,
-            metadata = metadata,
-        )
-        runCatching {
-            changesetStore.save(changeset)
-        }.onFailure {
+        chatPersistenceCoordinator.persistAssistantResponseChangeset(
+            requestText = requestText,
+            providerId = providerId,
+            modelId = modelId,
+            beforeSnapshot = beforeSnapshot,
+            hasExecutionTrace = hasExecutionTrace,
+        ).onFailure {
             logger.warn("Failed to persist assistant response changeset", it)
         }
     }
@@ -7856,23 +7774,6 @@ class ImprovedChatPanel(
             } ?: CHAT_COMPOSER_DEFAULT_DIVIDER_PROPORTION
         }
 
-        internal fun shouldRouteToWorkflowCommand(
-            normalizedInput: String,
-            hasActiveWorkflow: Boolean,
-        ): Boolean {
-            if (!hasActiveWorkflow) {
-                return true
-            }
-            val trimmed = normalizedInput.trim()
-            val token = trimmed.substringBefore(" ").trim().lowercase(Locale.ROOT)
-            val args = trimmed.substringAfter(" ", "").trim()
-            return when (token) {
-                "open", "generate" -> true
-                in BARE_WORKFLOW_CHAT_COMMAND_TOKENS -> args.isBlank()
-                else -> false
-            }
-        }
-
         internal fun shouldReplacePendingTaskExecutionLiveProgress(
             current: TaskExecutionLiveProgress?,
             incoming: TaskExecutionLiveProgress,
@@ -7931,14 +7832,6 @@ class ImprovedChatPanel(
             "model context protocol",
             "modelcontextprotocol",
         )
-        private val BARE_WORKFLOW_CHAT_COMMAND_TOKENS = setOf(
-            "status",
-            "next",
-            "back",
-            "complete",
-            "help",
-        )
-
         private const val HISTORY_CONTENT_KEY = "SpecCoding.HistoryContent"
         private val HISTORY_CONTENT_DATA_KEY = Key.create<String>(HISTORY_CONTENT_KEY)
         private val CHAT_COMPACT_ICON = IconLoader.getIcon("/icons/chat-compact.svg", ImprovedChatPanel::class.java)
@@ -7967,8 +7860,6 @@ class ImprovedChatPanel(
         private const val WORKFLOW_COMMAND_JOIN_TIMEOUT_MILLIS = 2000L
         private const val WORKFLOW_COMMAND_STOP_GRACE_SECONDS = 3L
         private const val WORKFLOW_COMMAND_OUTPUT_MAX_CHARS = 12_000
-        private const val WORKFLOW_CHANGESET_COMMAND_MAX_LENGTH = 120
-        private const val ASSISTANT_CHANGESET_REQUEST_MAX_LENGTH = 120
         private const val STREAM_BATCH_CHUNK_COUNT = 4
         private const val STREAM_BATCH_CHAR_COUNT = 240
         private const val STREAM_BATCH_INTERVAL_NANOS = 120_000_000L

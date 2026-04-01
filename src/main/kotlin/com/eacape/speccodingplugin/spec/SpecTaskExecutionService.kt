@@ -101,7 +101,7 @@ class SpecTaskExecutionService(private val project: Project) {
         }
     }
     private val projectService: SpecCodingProjectService by lazy { _projectServiceOverride ?: SpecCodingProjectService(project) }
-    private val sessionManager: SessionManager by lazy { _sessionManagerOverride ?: SessionManager(project) }
+    private val sessionManager: SessionManager by lazy { _sessionManagerOverride ?: SessionManager.getInstance(project) }
     private val chatExecutor: suspend (TaskExecutionChatRequest) -> LlmResponse by lazy {
         _chatExecutorOverride ?: { request ->
             projectService.chat(
