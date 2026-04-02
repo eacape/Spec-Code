@@ -14,9 +14,6 @@ import com.eacape.speccodingplugin.llm.MockLlmProvider
 import com.eacape.speccodingplugin.llm.ModelInfo
 import com.eacape.speccodingplugin.llm.ModelRegistry
 import com.eacape.speccodingplugin.session.SessionManager
-import com.eacape.speccodingplugin.session.WorkflowChatActionIntent
-import com.eacape.speccodingplugin.session.WorkflowChatBinding
-import com.eacape.speccodingplugin.session.WorkflowChatEntrySource
 import com.eacape.speccodingplugin.spec.*
 import com.eacape.speccodingplugin.ui.ChatToolWindowControlListener
 import com.eacape.speccodingplugin.ui.ChatToolWindowFactory
@@ -26,7 +23,6 @@ import com.eacape.speccodingplugin.ui.SwingPanelTaskCoordinator
 import com.eacape.speccodingplugin.ui.WorkflowChatRefreshEvent
 import com.eacape.speccodingplugin.ui.WorkflowChatRefreshListener
 import com.eacape.speccodingplugin.ui.history.HistorySessionOpenListener
-import com.eacape.speccodingplugin.ui.WorkflowChatOpenRequest
 import com.eacape.speccodingplugin.ui.actions.SpecWorkflowActionSupport
 import com.eacape.speccodingplugin.ui.settings.SpecCodingSettingsState
 import com.eacape.speccodingplugin.window.GlobalConfigChangedEvent
@@ -196,6 +192,26 @@ class SpecWorkflowPanel(
             reloadCurrentWorkflow()
         },
     )
+    private val taskChatCoordinator = SpecWorkflowTaskChatCoordinator(
+        activateChatToolWindow = ::activateChatToolWindow,
+        invokeLater = { action ->
+            invokeLaterSafe(action)
+        },
+        isDisposed = {
+            project.isDisposed || _isDisposed
+        },
+        openHistorySession = { sessionId ->
+            project.messageBus.syncPublisher(HistorySessionOpenListener.TOPIC)
+                .onSessionOpenRequested(sessionId)
+        },
+        publishWorkflowChatRefresh = { workflowId, taskId, reason ->
+            publishWorkflowChatRefresh(workflowId, taskId, reason)
+        },
+        openWorkflowChat = { request ->
+            project.messageBus.syncPublisher(ChatToolWindowControlListener.TOPIC)
+                .onOpenWorkflowChatRequested(request)
+        },
+    )
     private val taskExecutionCoordinator = SpecWorkflowTaskExecutionCoordinator(
         backgroundRunner = object : SpecWorkflowTaskExecutionBackgroundRunner {
             override fun <T> run(request: SpecWorkflowTaskExecutionBackgroundRequest<T>) {
@@ -262,7 +278,9 @@ class SpecWorkflowPanel(
                 taskId = taskId,
             )
         },
-        openWorkflowChatExecutionSession = ::openWorkflowChatExecutionSession,
+        openWorkflowChatExecutionSession = { sessionId, workflowId ->
+            taskChatCoordinator.openExecutionSession(sessionId, workflowId)
+        },
         setStatusText = ::setStatusText,
         setCancelRequestedStatusText = { text ->
             invokeLaterSafe {
@@ -319,7 +337,7 @@ class SpecWorkflowPanel(
         onTransitionStatus = ::onTaskStatusTransitionRequested,
         onCancelExecution = ::onTaskExecutionCancelRequested,
         onExecuteTask = ::onTaskExecutionRequested,
-        onOpenWorkflowChat = ::onTaskWorkflowChatRequested,
+        onOpenWorkflowChat = taskChatCoordinator::openTaskWorkflowChat,
         onUpdateDependsOn = ::onTaskDependsOnUpdateRequested,
         onCompleteWithRelatedFiles = ::onTaskCompleteRequested,
         onUpdateVerificationResult = ::onTaskVerificationResultUpdateRequested,
@@ -333,7 +351,7 @@ class SpecWorkflowPanel(
         onTransitionStatus = ::onTaskStatusTransitionRequested,
         onCancelExecution = ::onTaskExecutionCancelRequested,
         onExecuteTask = ::onTaskExecutionRequested,
-        onOpenWorkflowChat = ::onTaskWorkflowChatRequested,
+        onOpenWorkflowChat = taskChatCoordinator::openTaskWorkflowChat,
         onUpdateDependsOn = ::onTaskDependsOnUpdateRequested,
         onCompleteWithRelatedFiles = ::onTaskCompleteRequested,
         onUpdateVerificationResult = ::onTaskVerificationResultUpdateRequested,
@@ -364,7 +382,8 @@ class SpecWorkflowPanel(
 
             override fun cancelTaskExecution(taskId: String) = onTaskExecutionCancelRequested(taskId)
 
-            override fun openTaskChat(workflowId: String, taskId: String) = onTaskWorkflowChatRequested(workflowId, taskId)
+            override fun openTaskChat(workflowId: String, taskId: String) =
+                taskChatCoordinator.openTaskWorkflowChat(workflowId, taskId)
 
             override fun runVerify(workflowId: String) = onRunVerificationRequested(workflowId)
 
@@ -4306,27 +4325,6 @@ class SpecWorkflowPanel(
         )
     }
 
-    private fun openWorkflowChatExecutionSession(sessionId: String, workflowId: String) {
-        val normalizedSessionId = sessionId.trim().ifBlank { return }
-        val normalizedWorkflowId = workflowId.trim().ifBlank { return }
-        invokeLaterSafe {
-            val toolWindow = ToolWindowManager.getInstance(project)
-                .getToolWindow(ChatToolWindowFactory.TOOL_WINDOW_ID)
-                ?: return@invokeLaterSafe
-            ChatToolWindowFactory.ensurePrimaryContents(project, toolWindow)
-            if (!ChatToolWindowFactory.selectChatContent(toolWindow, project)) {
-                return@invokeLaterSafe
-            }
-            toolWindow.activate(null)
-            project.messageBus.syncPublisher(HistorySessionOpenListener.TOPIC)
-                .onSessionOpenRequested(normalizedSessionId)
-            publishWorkflowChatRefresh(
-                workflowId = normalizedWorkflowId,
-                reason = "spec_task_execution_session_opened",
-            )
-        }
-    }
-
     private fun onTaskExecutionCancelRequested(taskId: String) {
         val workflowId = selectedWorkflowId ?: return
         taskExecutionCoordinator.cancel(
@@ -4335,30 +4333,6 @@ class SpecWorkflowPanel(
                 taskId = taskId,
             ),
         )
-    }
-
-    private fun onTaskWorkflowChatRequested(workflowId: String, taskId: String) {
-        val toolWindow = ToolWindowManager.getInstance(project).getToolWindow(ChatToolWindowFactory.TOOL_WINDOW_ID) ?: return
-        val request = WorkflowChatOpenRequest(
-            binding = WorkflowChatBinding(
-                workflowId = workflowId,
-                focusedStage = StageId.IMPLEMENT,
-                source = WorkflowChatEntrySource.TASK_PANEL,
-                actionIntent = WorkflowChatActionIntent.DISCUSS,
-            ),
-        )
-        ChatToolWindowFactory.ensurePrimaryContents(project, toolWindow)
-        if (!ChatToolWindowFactory.selectChatContent(toolWindow, project)) {
-            return
-        }
-        toolWindow.activate(null)
-        invokeLaterSafe {
-            if (project.isDisposed || _isDisposed) {
-                return@invokeLaterSafe
-            }
-            project.messageBus.syncPublisher(ChatToolWindowControlListener.TOPIC)
-                .onOpenWorkflowChatRequested(request)
-        }
     }
 
     private fun onTaskVerificationResultUpdateRequested(taskId: String, verificationResult: TaskVerificationResult?) {
@@ -5604,6 +5578,18 @@ class SpecWorkflowPanel(
         }.onFailure { error ->
             logger.warn("Failed to publish workflow chat refresh event", error)
         }
+    }
+
+    private fun activateChatToolWindow(): Boolean {
+        val toolWindow = ToolWindowManager.getInstance(project)
+            .getToolWindow(ChatToolWindowFactory.TOOL_WINDOW_ID)
+            ?: return false
+        ChatToolWindowFactory.ensurePrimaryContents(project, toolWindow)
+        if (!ChatToolWindowFactory.selectChatContent(toolWindow, project)) {
+            return false
+        }
+        toolWindow.activate(null)
+        return true
     }
 
     private fun onOverviewStageSelected(stageId: StageId) {
