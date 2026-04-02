@@ -30,7 +30,6 @@ import com.eacape.speccodingplugin.window.GlobalConfigSyncListener
 import com.eacape.speccodingplugin.window.WindowSessionIsolationService
 import com.eacape.speccodingplugin.ui.worktree.NewWorktreeDialog
 import com.eacape.speccodingplugin.worktree.WorktreeManager
-import com.eacape.speccodingplugin.worktree.WorktreeStatus
 import com.intellij.CommonBundle
 import com.intellij.openapi.components.service
 import com.intellij.openapi.Disposable
@@ -313,6 +312,32 @@ class SpecWorkflowPanel(
         providerDisplayName = ::providerDisplayName,
         setStatusText = ::setStatusText,
         execute = taskExecutionCoordinator::execute,
+    )
+    private val worktreeCoordinator = SpecWorkflowWorktreeCoordinator(
+        runIo = { action ->
+            taskCoordinator.launchIo {
+                action()
+            }
+        },
+        invokeLater = { action ->
+            invokeLaterSafe(action)
+        },
+        createWorktree = { specTaskId, shortName, baseBranch ->
+            worktreeManager.createWorktree(specTaskId, shortName, baseBranch)
+        },
+        switchWorktree = { worktreeId ->
+            worktreeManager.switchWorktree(worktreeId)
+        },
+        listBindings = { includeInactive ->
+            worktreeManager.listBindings(includeInactive = includeInactive)
+        },
+        mergeWorktree = { worktreeId, targetBranch ->
+            worktreeManager.mergeWorktree(worktreeId, targetBranch)
+        },
+        renderFailureMessage = { error ->
+            compactErrorMessage(error, SpecCodingBundle.message("common.unknown"))
+        },
+        setStatusText = ::setStatusText,
     )
     private val discoveryListener: () -> Unit = {
         llmRouter.refreshProviders()
@@ -2437,31 +2462,13 @@ class SpecWorkflowPanel(
         val shortName = dialog.resultShortName ?: return
         val baseBranch = dialog.resultBaseBranch ?: "main"
 
-        taskCoordinator.launchIo {
-            val created = worktreeManager.createWorktree(specTaskId, shortName, baseBranch)
-            created.onSuccess { binding ->
-                val switched = worktreeManager.switchWorktree(binding.id)
-                invokeLaterSafe {
-                    if (switched.isSuccess) {
-                        setStatusText(SpecCodingBundle.message("spec.workflow.worktree.created", binding.branchName))
-                    } else {
-                        val message = compactErrorMessage(
-                            switched.exceptionOrNull(),
-                            SpecCodingBundle.message("common.unknown"),
-                        )
-                        setStatusText(SpecCodingBundle.message("spec.workflow.worktree.switchFailed", message))
-                    }
-                }
-            }.onFailure { error ->
-                invokeLaterSafe {
-                    val message = compactErrorMessage(error, SpecCodingBundle.message("common.unknown"))
-                    setStatusText(SpecCodingBundle.message(
-                        "spec.workflow.worktree.createFailed",
-                        message,
-                    ))
-                }
-            }
-        }
+        worktreeCoordinator.createAndSwitch(
+            SpecWorkflowWorktreeCreateRequest(
+                specTaskId = specTaskId,
+                shortName = shortName,
+                baseBranch = baseBranch,
+            ),
+        )
     }
 
     private fun onMergeWorktree() {
@@ -2471,32 +2478,9 @@ class SpecWorkflowPanel(
             return
         }
 
-        taskCoordinator.launchIo {
-            val binding = worktreeManager.listBindings(includeInactive = true)
-                .firstOrNull { it.specTaskId == workflow.id && it.status == WorktreeStatus.ACTIVE }
-                ?: worktreeManager.listBindings(includeInactive = true)
-                    .firstOrNull { it.specTaskId == workflow.id }
-
-            if (binding == null) {
-                invokeLaterSafe {
-                    setStatusText(SpecCodingBundle.message("spec.workflow.worktree.noBinding"))
-                }
-                return@launchIo
-            }
-
-            val mergeResult = worktreeManager.mergeWorktree(binding.id, binding.baseBranch)
-            invokeLaterSafe {
-                mergeResult.onSuccess {
-                    setStatusText(SpecCodingBundle.message("spec.workflow.worktree.merged", it.targetBranch))
-                }.onFailure { error ->
-                    val message = compactErrorMessage(error, SpecCodingBundle.message("common.unknown"))
-                    setStatusText(SpecCodingBundle.message(
-                        "spec.workflow.worktree.mergeFailed",
-                        message,
-                    ))
-                }
-            }
-        }
+        worktreeCoordinator.mergeIntoBaseBranch(
+            SpecWorkflowWorktreeMergeRequest(workflowId = workflow.id),
+        )
     }
 
     private fun canGenerateWithEmptyInput(): Boolean {
