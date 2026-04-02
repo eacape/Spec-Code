@@ -1,4 +1,4 @@
-package com.eacape.speccodingplugin.core
+package com.eacape.speccodingplugin.spec
 
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse

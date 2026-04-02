@@ -134,14 +134,6 @@ spec_code_use_first_compatible_java_home() {
 }
 
 if ! spec_code_use_java_home_if_compatible "${JAVA_HOME:-}" ; then
-    if [ -d "$APP_HOME/.gradle-user-home/caches" ] ; then
-        spec_code_cached_jbr=$(
-            find "$APP_HOME/.gradle-user-home/caches" -type d -name jbr \
-                -path '*/workspace/transformed/idea*/*' 2>/dev/null | head -n 1
-        )
-        spec_code_use_java_home_if_compatible "$spec_code_cached_jbr" || true
-    fi
-
     spec_code_use_first_compatible_java_home \
         "/c/Program Files/JetBrains"/*/jbr \
         "/c/Program Files/Java"/jdk* \
@@ -151,6 +143,14 @@ if ! spec_code_use_java_home_if_compatible "${JAVA_HOME:-}" ; then
         "/cygdrive/c/Program Files/Java"/jdk* \
         "/cygdrive/c/Program Files/Java/latest" \
         "/cygdrive/c/Program Files/Java/jbr" || true
+
+    if [ -z "${JAVA_HOME:-}" ] && [ -d "$APP_HOME/.gradle-user-home/caches" ] ; then
+        spec_code_cached_jbr=$(
+            find "$APP_HOME/.gradle-user-home/caches" -type d -name jbr \
+                -path '*/workspace/transformed/idea*/*' 2>/dev/null | head -n 1
+        )
+        spec_code_use_java_home_if_compatible "$spec_code_cached_jbr" || true
+    fi
 fi
 
 # Use the maximum available, or set MAX_FD != -1 to use that value.

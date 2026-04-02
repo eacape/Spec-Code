@@ -416,6 +416,11 @@ object SpecArchitectureContract {
             blockedImportPrefixes = infrastructureBlockedImportPrefixes,
         ),
         SourceRule(
+            fileName = "ManagedSplitOutputProcess.kt",
+            layer = Layer.INFRASTRUCTURE,
+            blockedImportPrefixes = infrastructureBlockedImportPrefixes,
+        ),
+        SourceRule(
             fileName = "SpecModels.kt",
             layer = Layer.DOMAIN,
             blockedImportPrefixes = domainBlockedImportPrefixes,

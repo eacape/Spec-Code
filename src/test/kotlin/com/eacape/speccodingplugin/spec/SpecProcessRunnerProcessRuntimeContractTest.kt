@@ -10,7 +10,7 @@ import java.nio.file.Paths
 class SpecProcessRunnerProcessRuntimeContractTest {
 
     @Test
-    fun `spec process runner should delegate split output process lifecycle to shared core runtime`() {
+    fun `spec process runner should delegate split output process lifecycle to spec runtime`() {
         val source = Files.readString(
             Paths.get("src/main/kotlin/com/eacape/speccodingplugin/spec/SpecProcessRunner.kt"),
             StandardCharsets.UTF_8,
@@ -18,6 +18,7 @@ class SpecProcessRunnerProcessRuntimeContractTest {
 
         assertTrue(source.contains("ManagedSplitOutputProcess.start("))
         assertTrue(source.contains("runtime.awaitCompletion("))
+        assertFalse(source.contains("com.eacape.speccodingplugin.core.ManagedSplitOutputProcess"))
         assertFalse(source.contains("private fun consumeStream("))
         assertFalse(source.contains("private fun joinCaptureThread("))
         assertFalse(source.contains("private data class OutputCapture("))

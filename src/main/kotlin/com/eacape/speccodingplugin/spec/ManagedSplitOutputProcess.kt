@@ -1,4 +1,4 @@
-package com.eacape.speccodingplugin.core
+package com.eacape.speccodingplugin.spec
 
 import java.io.InputStream
 import java.io.InputStreamReader

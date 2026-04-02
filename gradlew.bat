@@ -106,33 +106,26 @@ if defined JAVA_HOME (
     call :isSpecCodeJavaHomeCompatible "%JAVA_HOME%" && goto :eof
 )
 
-if exist "%APP_HOME%\.gradle-user-home\caches" (
-    for /d /r "%APP_HOME%\.gradle-user-home\caches" %%D in (jbr) do (
-        call :isSpecCodeJavaHomeCompatible "%%~fD" && (
-            set "JAVA_HOME=%%~fD"
-            goto :eof
-        )
-    )
-)
-
 if defined ProgramFiles if exist "%ProgramFiles%\JetBrains" (
-    for /d %%D in ("%ProgramFiles%\JetBrains\*\jbr") do (
-        call :isSpecCodeJavaHomeCompatible "%%~fD" && (
-            set "JAVA_HOME=%%~fD"
+    for /d %%D in ("%ProgramFiles%\JetBrains\*") do (
+        call :isSpecCodeJavaHomeCompatible "%%~fD\jbr" && (
+            set "JAVA_HOME=%%~fD\jbr"
             goto :eof
         )
     )
 )
 
 if defined ProgramFiles if exist "%ProgramFiles%\Java" (
-    for /d %%D in ("%ProgramFiles%\Java\jdk*") do (
+    for /d %%D in ("%ProgramFiles%\Java\*") do (
         call :isSpecCodeJavaHomeCompatible "%%~fD" && (
             set "JAVA_HOME=%%~fD"
             goto :eof
         )
     )
+)
 
-    for %%D in ("%ProgramFiles%\Java\latest" "%ProgramFiles%\Java\jbr") do (
+if exist "%APP_HOME%\.gradle-user-home\caches" (
+    for /d /r "%APP_HOME%\.gradle-user-home\caches" %%D in (jbr) do (
         call :isSpecCodeJavaHomeCompatible "%%~fD" && (
             set "JAVA_HOME=%%~fD"
             goto :eof

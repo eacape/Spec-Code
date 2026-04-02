@@ -1,6 +1,4 @@
 package com.eacape.speccodingplugin.spec
-
-import com.eacape.speccodingplugin.core.ManagedSplitOutputProcess
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.InvalidPathException

@@ -514,7 +514,7 @@ class McpServerDetailPanel(
         }
 
         override fun getListCellRendererComponent(
-            list: JList<out McpTool>,
+            list: JList<out McpTool>?,
             value: McpTool?,
             index: Int,
             isSelected: Boolean,
