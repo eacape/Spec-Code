@@ -77,7 +77,6 @@ import java.nio.file.Path
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
 import javax.swing.Box
 import javax.swing.BoxLayout
 import javax.swing.BorderFactory
@@ -135,6 +134,154 @@ class SpecWorkflowPanel(
         listWorkflowSources = { workflowId -> specEngine.listWorkflowSources(workflowId) },
         buildUiSnapshot = ::buildWorkflowUiSnapshot,
         buildTaskLiveProgressByTaskId = ::buildTaskLiveProgressByTaskId,
+    )
+    private val taskMutationCoordinator = SpecWorkflowTaskMutationCoordinator(
+        runBackground = { request ->
+            SpecWorkflowActionSupport.runBackground(
+                project = project,
+                title = request.title,
+                task = {
+                    request.task()
+                    Unit
+                },
+                onSuccess = {
+                    request.onSuccess()
+                },
+            )
+        },
+        applyStatusTransition = { workflowId, taskId, to, auditContext ->
+            specTasksService.transitionStatus(
+                workflowId = workflowId,
+                taskId = taskId,
+                to = to,
+                auditContext = auditContext,
+            )
+        },
+        persistDependsOn = { workflowId, taskId, dependsOn ->
+            specTasksService.updateDependsOn(
+                workflowId = workflowId,
+                taskId = taskId,
+                dependsOn = dependsOn,
+            )
+        },
+        applyTaskCompletion = { workflowId, taskId, relatedFiles, verificationResult, auditContext ->
+            specTaskCompletionService.completeTask(
+                workflowId = workflowId,
+                taskId = taskId,
+                relatedFiles = relatedFiles,
+                verificationResult = verificationResult,
+                auditContext = auditContext,
+                completionRunSummary = "Completed from spec workflow task action.",
+            )
+        },
+        storeVerificationResult = { workflowId, taskId, verificationResult, auditContext ->
+            specTasksService.updateVerificationResult(
+                workflowId = workflowId,
+                taskId = taskId,
+                verificationResult = verificationResult,
+                auditContext = auditContext,
+            )
+        },
+        removeVerificationResult = { workflowId, taskId, auditContext ->
+            specTasksService.clearVerificationResult(
+                workflowId = workflowId,
+                taskId = taskId,
+                auditContext = auditContext,
+            )
+        },
+        setStatusText = ::setStatusText,
+        publishWorkflowChatRefresh = { workflowId, taskId, reason ->
+            publishWorkflowChatRefresh(workflowId, taskId, reason)
+        },
+        reloadCurrentWorkflow = {
+            reloadCurrentWorkflow()
+        },
+    )
+    private val taskExecutionCoordinator = SpecWorkflowTaskExecutionCoordinator(
+        backgroundRunner = object : SpecWorkflowTaskExecutionBackgroundRunner {
+            override fun <T> run(request: SpecWorkflowTaskExecutionBackgroundRequest<T>) {
+                val onFailure = request.onFailure
+                if (onFailure != null) {
+                    SpecWorkflowActionSupport.runBackground(
+                        project = project,
+                        title = request.title,
+                        task = request.task,
+                        onSuccess = request.onSuccess,
+                        onCancelRequested = request.onCancelRequested,
+                        onCancelled = request.onCancelled,
+                        onFailure = onFailure,
+                    )
+                } else {
+                    SpecWorkflowActionSupport.runBackground(
+                        project = project,
+                        title = request.title,
+                        task = request.task,
+                        onSuccess = request.onSuccess,
+                        onCancelRequested = request.onCancelRequested,
+                        onCancelled = request.onCancelled,
+                    )
+                }
+            }
+        },
+        listRuns = { workflowId, taskId ->
+            specTaskExecutionService.listRuns(workflowId, taskId)
+        },
+        startExecution = { request, onRequestRegistered ->
+            specTaskExecutionService.startAiExecution(
+                workflowId = request.workflowId,
+                taskId = request.taskId,
+                providerId = request.providerId,
+                modelId = request.modelId,
+                operationMode = request.operationMode,
+                sessionId = request.sessionId,
+                auditContext = request.auditContext,
+                onRequestRegistered = onRequestRegistered,
+            )
+        },
+        retryExecution = { request, previousRunId, onRequestRegistered ->
+            specTaskExecutionService.retryAiExecution(
+                workflowId = request.workflowId,
+                taskId = request.taskId,
+                providerId = request.providerId,
+                modelId = request.modelId,
+                operationMode = request.operationMode,
+                previousRunId = previousRunId,
+                sessionId = request.sessionId,
+                auditContext = request.auditContext,
+                onRequestRegistered = onRequestRegistered,
+            )
+        },
+        cancelExecutionRun = { workflowId, runId ->
+            specTaskExecutionService.cancelExecutionRun(
+                workflowId = workflowId,
+                runId = runId,
+            )
+        },
+        cancelExecution = { workflowId, taskId ->
+            specTaskExecutionService.cancelExecution(
+                workflowId = workflowId,
+                taskId = taskId,
+            )
+        },
+        openWorkflowChatExecutionSession = ::openWorkflowChatExecutionSession,
+        setStatusText = ::setStatusText,
+        setCancelRequestedStatusText = { text ->
+            invokeLaterSafe {
+                setStatusText(text)
+            }
+        },
+        publishWorkflowChatRefresh = { workflowId, taskId, reason ->
+            publishWorkflowChatRefresh(workflowId, taskId, reason)
+        },
+        reloadCurrentWorkflow = {
+            reloadCurrentWorkflow()
+        },
+        renderFailureMessage = { error, fallback ->
+            compactErrorMessage(error, fallback)
+        },
+        showExecutionFailureDialog = { title, message ->
+            Messages.showErrorDialog(project, message, title)
+        },
     )
     private val discoveryListener: () -> Unit = {
         llmRouter.refreshProviders()
@@ -4102,42 +4249,20 @@ class SpecWorkflowPanel(
 
     private fun onTaskStatusTransitionRequested(taskId: String, to: TaskStatus) {
         val workflowId = selectedWorkflowId ?: return
-        val auditContext = buildTaskAuditContext(taskId, "STATUS_${to.name}")
-        SpecWorkflowActionSupport.runBackground(
-            project = project,
-            title = SpecCodingBundle.message("spec.toolwindow.tasks.status.progress"),
-            task = {
-                specTasksService.transitionStatus(
-                    workflowId = workflowId,
-                    taskId = taskId,
-                    to = to,
-                    auditContext = auditContext,
-                )
-            },
-            onSuccess = {
-                setStatusText(SpecCodingBundle.message("spec.toolwindow.tasks.status.updated", taskId, to.name))
-                publishWorkflowChatRefresh(workflowId, taskId, "spec_task_status_transition")
-                reloadCurrentWorkflow()
-            },
+        taskMutationCoordinator.transitionStatus(
+            workflowId = workflowId,
+            taskId = taskId,
+            to = to,
+            auditContext = buildTaskAuditContext(taskId, "STATUS_${to.name}"),
         )
     }
 
     private fun onTaskDependsOnUpdateRequested(taskId: String, dependsOn: List<String>) {
         val workflowId = selectedWorkflowId ?: return
-        SpecWorkflowActionSupport.runBackground(
-            project = project,
-            title = SpecCodingBundle.message("spec.toolwindow.tasks.dependsOn.progress"),
-            task = {
-                specTasksService.updateDependsOn(
-                    workflowId = workflowId,
-                    taskId = taskId,
-                    dependsOn = dependsOn,
-                )
-            },
-            onSuccess = {
-                setStatusText(SpecCodingBundle.message("spec.toolwindow.tasks.dependsOn.updated", taskId))
-                reloadCurrentWorkflow()
-            },
+        taskMutationCoordinator.updateDependsOn(
+            workflowId = workflowId,
+            taskId = taskId,
+            dependsOn = dependsOn,
         )
     }
 
@@ -4147,133 +4272,32 @@ class SpecWorkflowPanel(
         verificationResult: TaskVerificationResult?,
     ) {
         val workflowId = selectedWorkflowId ?: return
-        val auditContext = buildTaskAuditContext(taskId, "COMPLETE")
-        SpecWorkflowActionSupport.runBackground(
-            project = project,
-            title = SpecCodingBundle.message("spec.toolwindow.tasks.complete.progress"),
-            task = {
-                specTaskCompletionService.completeTask(
-                    workflowId = workflowId,
-                    taskId = taskId,
-                    relatedFiles = files,
-                    verificationResult = verificationResult,
-                    auditContext = auditContext,
-                    completionRunSummary = "Completed from spec workflow task action.",
-                )
-            },
-            onSuccess = {
-                setStatusText(SpecCodingBundle.message("spec.toolwindow.tasks.complete.updated", taskId))
-                publishWorkflowChatRefresh(workflowId, taskId, "spec_task_completed")
-                reloadCurrentWorkflow()
-            },
+        taskMutationCoordinator.completeTask(
+            workflowId = workflowId,
+            taskId = taskId,
+            files = files,
+            verificationResult = verificationResult,
+            auditContext = buildTaskAuditContext(taskId, "COMPLETE"),
         )
     }
 
     private fun onTaskExecutionRequested(taskId: String, retry: Boolean) {
         val workflowId = selectedWorkflowId ?: return
         val executionContext = resolveTaskExecutionContext() ?: return
-        val reusableSessionId = resolveReusableWorkflowChatSessionId(workflowId)
-        val actionName = if (retry) "RETRY_EXECUTION" else "EXECUTE_WITH_AI"
-        val auditContext = buildTaskAuditContext(taskId, actionName)
-        val progressKey = if (retry) {
-            "spec.toolwindow.tasks.retry.progress"
-        } else {
-            "spec.toolwindow.tasks.execute.progress"
-        }
-        val cancellationHandleRef =
-            AtomicReference<SpecTaskExecutionService.TaskExecutionCancellationHandle?>()
-        val cancelRequested = AtomicBoolean(false)
-        val chatSessionOpened = AtomicBoolean(false)
-        SpecWorkflowActionSupport.runBackground(
-            project = project,
-            title = SpecCodingBundle.message(progressKey, taskId),
-            task = {
-                val onRequestRegistered: (SpecTaskExecutionService.TaskExecutionCancellationHandle) -> Unit = { handle ->
-                    cancellationHandleRef.set(handle)
-                    if (chatSessionOpened.compareAndSet(false, true)) {
-                        openWorkflowChatExecutionSession(
-                            sessionId = handle.sessionId,
-                            workflowId = handle.workflowId,
-                        )
-                    }
-                    if (cancelRequested.get()) {
-                        specTaskExecutionService.cancelExecutionRun(
-                            workflowId = handle.workflowId,
-                            runId = handle.runId,
-                        )
-                    }
-                }
-                val previousRunId = if (retry) {
-                    specTaskExecutionService.listRuns(workflowId, taskId)
-                        .firstOrNull { run -> run.status.isTerminal() }
-                        ?.runId
-                } else {
-                    null
-                }
-                if (retry) {
-                    specTaskExecutionService.retryAiExecution(
-                        workflowId = workflowId,
-                        taskId = taskId,
-                        providerId = executionContext.providerId,
-                        modelId = executionContext.modelId,
-                        operationMode = executionContext.operationMode,
-                        previousRunId = previousRunId,
-                        sessionId = reusableSessionId,
-                        auditContext = auditContext,
-                        onRequestRegistered = onRequestRegistered,
-                    )
-                } else {
-                    specTaskExecutionService.startAiExecution(
-                        workflowId = workflowId,
-                        taskId = taskId,
-                        providerId = executionContext.providerId,
-                        modelId = executionContext.modelId,
-                        operationMode = executionContext.operationMode,
-                        sessionId = reusableSessionId,
-                        auditContext = auditContext,
-                        onRequestRegistered = onRequestRegistered,
-                    )
-                }
-            },
-            onSuccess = { result ->
-                val statusKey = if (retry) {
-                    "spec.toolwindow.tasks.retry.updated"
-                } else {
-                    "spec.toolwindow.tasks.execute.updated"
-                }
-                setStatusText(SpecCodingBundle.message(statusKey, taskId, result.sessionTitle))
-                publishWorkflowChatRefresh(workflowId, taskId, "spec_task_execution_updated")
-                reloadCurrentWorkflow()
-            },
-            onCancelRequested = {
-                if (cancelRequested.compareAndSet(false, true)) {
-                    cancellationHandleRef.get()?.let { handle ->
-                        specTaskExecutionService.cancelExecutionRun(
-                            workflowId = handle.workflowId,
-                            runId = handle.runId,
-                        )
-                    }
-                    invokeLaterSafe {
-                        setStatusText(SpecCodingBundle.message("spec.toolwindow.tasks.execution.cancel.requested", taskId))
-                    }
-                }
-            },
-            onCancelled = {
-                setStatusText(SpecCodingBundle.message("spec.toolwindow.tasks.execution.cancelled", taskId))
-                publishWorkflowChatRefresh(workflowId, taskId, "spec_task_execution_cancelled")
-                reloadCurrentWorkflow()
-            },
-            onFailure = { error ->
-                val message = compactErrorMessage(error, SpecCodingBundle.message("common.unknown"))
-                setStatusText(SpecCodingBundle.message("spec.workflow.error", message))
-                publishWorkflowChatRefresh(workflowId, taskId, "spec_task_execution_failed")
-                reloadCurrentWorkflow()
-                Messages.showErrorDialog(
-                    project,
-                    message,
-                    SpecCodingBundle.message(progressKey, taskId),
-                )
-            },
+        taskExecutionCoordinator.execute(
+            SpecWorkflowTaskExecutionRequest(
+                workflowId = workflowId,
+                taskId = taskId,
+                providerId = executionContext.providerId,
+                modelId = executionContext.modelId,
+                operationMode = executionContext.operationMode,
+                sessionId = resolveReusableWorkflowChatSessionId(workflowId),
+                retry = retry,
+                auditContext = buildTaskAuditContext(
+                    taskId,
+                    if (retry) "RETRY_EXECUTION" else "EXECUTE_WITH_AI",
+                ),
+            ),
         )
     }
 
@@ -4309,20 +4333,11 @@ class SpecWorkflowPanel(
 
     private fun onTaskExecutionCancelRequested(taskId: String) {
         val workflowId = selectedWorkflowId ?: return
-        SpecWorkflowActionSupport.runBackground(
-            project = project,
-            title = SpecCodingBundle.message("spec.toolwindow.tasks.execution.cancel.progress", taskId),
-            task = {
-                specTaskExecutionService.cancelExecution(
-                    workflowId = workflowId,
-                    taskId = taskId,
-                )
-            },
-            onSuccess = {
-                setStatusText(SpecCodingBundle.message("spec.toolwindow.tasks.execution.cancelled", taskId))
-                publishWorkflowChatRefresh(workflowId, taskId, "spec_task_execution_cancelled")
-                reloadCurrentWorkflow()
-            },
+        taskExecutionCoordinator.cancel(
+            SpecWorkflowTaskExecutionCancelRequest(
+                workflowId = workflowId,
+                taskId = taskId,
+            ),
         )
     }
 
@@ -4353,36 +4368,12 @@ class SpecWorkflowPanel(
     private fun onTaskVerificationResultUpdateRequested(taskId: String, verificationResult: TaskVerificationResult?) {
         val workflowId = selectedWorkflowId ?: return
         val existingTask = currentStructuredTasks.firstOrNull { task -> task.id == taskId }
-        val auditContext = buildTaskAuditContext(taskId, "UPDATE_VERIFICATION_RESULT")
-        SpecWorkflowActionSupport.runBackground(
-            project = project,
-            title = SpecCodingBundle.message("spec.toolwindow.tasks.verification.progress"),
-            task = {
-                when {
-                    verificationResult != null -> specTasksService.updateVerificationResult(
-                        workflowId = workflowId,
-                        taskId = taskId,
-                        verificationResult = verificationResult,
-                        auditContext = auditContext,
-                    )
-
-                    existingTask?.verificationResult != null -> specTasksService.clearVerificationResult(
-                        workflowId = workflowId,
-                        taskId = taskId,
-                        auditContext = auditContext,
-                    )
-                }
-            },
-            onSuccess = {
-                val statusKey = if (verificationResult == null) {
-                    "spec.toolwindow.tasks.verification.cleared"
-                } else {
-                    "spec.toolwindow.tasks.verification.updated"
-                }
-                setStatusText(SpecCodingBundle.message(statusKey, taskId))
-                publishWorkflowChatRefresh(workflowId, taskId, "spec_task_verification_updated")
-                reloadCurrentWorkflow()
-            },
+        taskMutationCoordinator.updateVerificationResult(
+            workflowId = workflowId,
+            taskId = taskId,
+            verificationResult = verificationResult,
+            existingVerificationResult = existingTask?.verificationResult,
+            auditContext = buildTaskAuditContext(taskId, "UPDATE_VERIFICATION_RESULT"),
         )
     }
 
