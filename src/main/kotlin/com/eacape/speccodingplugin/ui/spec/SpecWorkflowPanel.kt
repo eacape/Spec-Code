@@ -3,7 +3,6 @@ package com.eacape.speccodingplugin.ui.spec
 import com.eacape.speccodingplugin.SpecCodingBundle
 import com.eacape.speccodingplugin.context.CodeGraphRenderer
 import com.eacape.speccodingplugin.context.CodeGraphService
-import com.eacape.speccodingplugin.core.OperationMode
 import com.eacape.speccodingplugin.core.OperationModeManager
 import com.eacape.speccodingplugin.engine.CliDiscoveryService
 import com.eacape.speccodingplugin.i18n.LocaleChangedEvent
@@ -282,6 +281,20 @@ class SpecWorkflowPanel(
         showExecutionFailureDialog = { title, message ->
             Messages.showErrorDialog(project, message, title)
         },
+    )
+    private val taskExecutionEntryCoordinator = SpecWorkflowTaskExecutionEntryCoordinator(
+        activeSessionId = {
+            sessionIsolationService.activeSessionId()
+        },
+        findReusableWorkflowChatSessionId = { workflowId, preferredSessionId ->
+            sessionManager.findReusableWorkflowChatSession(
+                workflowId = workflowId,
+                preferredSessionId = preferredSessionId,
+            )?.id
+        },
+        providerDisplayName = ::providerDisplayName,
+        setStatusText = ::setStatusText,
+        execute = taskExecutionCoordinator::execute,
     )
     private val discoveryListener: () -> Unit = {
         llmRouter.refreshProviders()
@@ -3824,12 +3837,6 @@ class SpecWorkflowPanel(
         val options: GenerationOptions,
     )
 
-    private data class TaskExecutionContext(
-        val providerId: String,
-        val modelId: String,
-        val operationMode: OperationMode,
-    )
-
     private data class ClarificationRetryPayload(
         val input: String,
         val confirmedContext: String,
@@ -4283,15 +4290,13 @@ class SpecWorkflowPanel(
 
     private fun onTaskExecutionRequested(taskId: String, retry: Boolean) {
         val workflowId = selectedWorkflowId ?: return
-        val executionContext = resolveTaskExecutionContext() ?: return
-        taskExecutionCoordinator.execute(
-            SpecWorkflowTaskExecutionRequest(
+        taskExecutionEntryCoordinator.requestExecution(
+            SpecWorkflowTaskExecutionLaunchRequest(
                 workflowId = workflowId,
                 taskId = taskId,
-                providerId = executionContext.providerId,
-                modelId = executionContext.modelId,
-                operationMode = executionContext.operationMode,
-                sessionId = resolveReusableWorkflowChatSessionId(workflowId),
+                providerId = providerComboBox.selectedItem as? String,
+                modelId = (modelComboBox.selectedItem as? ModelInfo)?.id,
+                operationMode = modeManager.getCurrentMode(),
                 retry = retry,
                 auditContext = buildTaskAuditContext(
                     taskId,
@@ -4299,15 +4304,6 @@ class SpecWorkflowPanel(
                 ),
             ),
         )
-    }
-
-    private fun resolveReusableWorkflowChatSessionId(workflowId: String): String? {
-        val normalizedWorkflowId = workflowId.trim().ifBlank { return null }
-        val preferredSessionId = sessionIsolationService.activeSessionId()
-        return sessionManager.findReusableWorkflowChatSession(
-            workflowId = normalizedWorkflowId,
-            preferredSessionId = preferredSessionId,
-        )?.id
     }
 
     private fun openWorkflowChatExecutionSession(sessionId: String, workflowId: String) {
@@ -4401,29 +4397,6 @@ class SpecWorkflowPanel(
             put("taskExecutionRunStatus", task?.activeExecutionRun?.status?.name ?: "")
             put("dependsOn", task?.dependsOn?.joinToString(", ").orEmpty())
         }.filterValues { value -> value.isNotBlank() }
-    }
-
-    private fun resolveTaskExecutionContext(): TaskExecutionContext? {
-        val providerId = providerComboBox.selectedItem as? String
-        if (providerId.isNullOrBlank()) {
-            setStatusText(SpecCodingBundle.message("spec.toolwindow.tasks.execute.providerRequired"))
-            return null
-        }
-        val modelId = (modelComboBox.selectedItem as? ModelInfo)?.id?.trim().orEmpty()
-        if (modelId.isBlank()) {
-            setStatusText(
-                SpecCodingBundle.message(
-                    "spec.toolwindow.tasks.execute.modelRequired",
-                    providerDisplayName(providerId),
-                ),
-            )
-            return null
-        }
-        return TaskExecutionContext(
-            providerId = providerId,
-            modelId = modelId,
-            operationMode = modeManager.getCurrentMode(),
-        )
     }
 
     private fun onAdvanceStageRequested() {

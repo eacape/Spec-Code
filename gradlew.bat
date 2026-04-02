@@ -102,47 +102,61 @@ if "%OS%"=="Windows_NT" endlocal
 goto :eof
 
 :ensureSpecCodeJavaHome
+set "SPEC_CODE_JAVA_VERSION_FILE=%TEMP%\spec-code-java-version-check.tmp"
+
 if defined JAVA_HOME (
-    call :isSpecCodeJavaHomeCompatible "%JAVA_HOME%" && goto :eof
+    if exist "%JAVA_HOME%\bin\java.exe" (
+        call "%JAVA_HOME%\bin\java.exe" -version 1>"%SPEC_CODE_JAVA_VERSION_FILE%" 2>&1
+        findstr /C:%SPEC_CODE_REQUIRED_JAVA_MAJOR%. "%SPEC_CODE_JAVA_VERSION_FILE%" >nul 2>nul
+        if not errorlevel 1 (
+            if exist "%SPEC_CODE_JAVA_VERSION_FILE%" del /q "%SPEC_CODE_JAVA_VERSION_FILE%"
+            goto :eof
+        )
+    )
 )
 
 if defined ProgramFiles if exist "%ProgramFiles%\JetBrains" (
     for /d %%D in ("%ProgramFiles%\JetBrains\*") do (
-        call :isSpecCodeJavaHomeCompatible "%%~fD\jbr" && (
-            set "JAVA_HOME=%%~fD\jbr"
-            goto :eof
+        if exist "%%~fD\jbr\bin\java.exe" (
+            call "%%~fD\jbr\bin\java.exe" -version 1>"%SPEC_CODE_JAVA_VERSION_FILE%" 2>&1
+            findstr /C:%SPEC_CODE_REQUIRED_JAVA_MAJOR%. "%SPEC_CODE_JAVA_VERSION_FILE%" >nul 2>nul
+            if not errorlevel 1 (
+                if exist "%SPEC_CODE_JAVA_VERSION_FILE%" del /q "%SPEC_CODE_JAVA_VERSION_FILE%"
+                set "JAVA_HOME=%%~fD\jbr"
+                goto :eof
+            )
         )
     )
 )
 
 if defined ProgramFiles if exist "%ProgramFiles%\Java" (
     for /d %%D in ("%ProgramFiles%\Java\*") do (
-        call :isSpecCodeJavaHomeCompatible "%%~fD" && (
-            set "JAVA_HOME=%%~fD"
-            goto :eof
+        if exist "%%~fD\bin\java.exe" (
+            call "%%~fD\bin\java.exe" -version 1>"%SPEC_CODE_JAVA_VERSION_FILE%" 2>&1
+            findstr /C:%SPEC_CODE_REQUIRED_JAVA_MAJOR%. "%SPEC_CODE_JAVA_VERSION_FILE%" >nul 2>nul
+            if not errorlevel 1 (
+                if exist "%SPEC_CODE_JAVA_VERSION_FILE%" del /q "%SPEC_CODE_JAVA_VERSION_FILE%"
+                set "JAVA_HOME=%%~fD"
+                goto :eof
+            )
         )
     )
 )
 
 if exist "%APP_HOME%\.gradle-user-home\caches" (
     for /d /r "%APP_HOME%\.gradle-user-home\caches" %%D in (jbr) do (
-        call :isSpecCodeJavaHomeCompatible "%%~fD" && (
-            set "JAVA_HOME=%%~fD"
-            goto :eof
+        if exist "%%~fD\bin\java.exe" (
+            call "%%~fD\bin\java.exe" -version 1>"%SPEC_CODE_JAVA_VERSION_FILE%" 2>&1
+            findstr /C:%SPEC_CODE_REQUIRED_JAVA_MAJOR%. "%SPEC_CODE_JAVA_VERSION_FILE%" >nul 2>nul
+            if not errorlevel 1 (
+                if exist "%SPEC_CODE_JAVA_VERSION_FILE%" del /q "%SPEC_CODE_JAVA_VERSION_FILE%"
+                set "JAVA_HOME=%%~fD"
+                goto :eof
+            )
         )
     )
 )
 
-goto :eof
-
-:isSpecCodeJavaHomeCompatible
-set "SPEC_CODE_JAVA_VERSION_FILE=%TEMP%\spec-code-java-version-%RANDOM%.tmp"
-
-if not exist "%~1\bin\java.exe" exit /b 1
-
-call "%~1\bin\java.exe" -version 1>"%SPEC_CODE_JAVA_VERSION_FILE%" 2>&1
-findstr /C:%SPEC_CODE_REQUIRED_JAVA_MAJOR%. "%SPEC_CODE_JAVA_VERSION_FILE%" >nul 2>nul
-set "SPEC_CODE_JAVA_MATCHED=%ERRORLEVEL%"
 if exist "%SPEC_CODE_JAVA_VERSION_FILE%" del /q "%SPEC_CODE_JAVA_VERSION_FILE%"
-if "%SPEC_CODE_JAVA_MATCHED%"=="0" exit /b 0
-exit /b 1
+
+goto :eof
