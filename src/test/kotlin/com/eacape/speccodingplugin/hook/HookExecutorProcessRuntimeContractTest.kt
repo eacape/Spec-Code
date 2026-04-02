@@ -10,16 +10,17 @@ import java.nio.file.Paths
 class HookExecutorProcessRuntimeContractTest {
 
     @Test
-    fun `hook executor should delegate merged output process lifecycle to shared runtime`() {
+    fun `hook executor should delegate run command process lifecycle to hook runtime`() {
         val source = Files.readString(
             Paths.get("src/main/kotlin/com/eacape/speccodingplugin/hook/HookExecutor.kt"),
             StandardCharsets.UTF_8,
         )
 
-        assertTrue(source.contains("ManagedMergedOutputProcess.start("))
-        assertTrue(source.contains("runtime.awaitCompletion("))
-        assertFalse(source.contains("val outputReaderThread = Thread"))
-        assertFalse(source.contains("process.waitFor(action.timeoutMillis, TimeUnit.MILLISECONDS)"))
-        assertFalse(source.contains("outputReaderThread.join(2_000)"))
+        assertTrue(source.contains("commandRuntime: HookCommandRuntime = HookCommandRuntime()"))
+        assertTrue(source.contains("commandRuntime.execute("))
+        assertFalse(source.contains("ProcessBuilder("))
+        assertFalse(source.contains("ManagedMergedOutputProcess.start("))
+        assertFalse(source.contains("runtime.awaitCompletion("))
+        assertFalse(source.contains("redirectErrorStream(true)"))
     }
 }

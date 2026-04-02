@@ -1,6 +1,5 @@
 package com.eacape.speccodingplugin.hook
 
-import com.eacape.speccodingplugin.core.ManagedMergedOutputProcess
 import com.eacape.speccodingplugin.core.Operation
 import com.eacape.speccodingplugin.core.OperationModeManager
 import com.eacape.speccodingplugin.core.OperationRequest
@@ -12,8 +11,6 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.util.concurrent.TimeUnit
 
 @Service(Service.Level.PROJECT)
 class HookExecutor internal constructor(
@@ -113,63 +110,45 @@ class HookExecutor internal constructor(
             action: HookAction,
             triggerContext: HookTriggerContext,
             project: Project,
+            commandRuntime: HookCommandRuntime = HookCommandRuntime(),
         ): HookActionExecutionResult = withContext(Dispatchers.IO) {
             val commandText = action.command ?: return@withContext HookActionExecutionResult(
                 success = false,
                 message = "RUN_COMMAND action missing command",
             )
 
-            try {
-                val renderedCommand = renderTemplate(commandText, triggerContext)
-                val renderedArgs = action.args.map { renderTemplate(it, triggerContext) }
-                val process = ProcessBuilder(listOf(renderedCommand) + renderedArgs)
-                    .directory(project.basePath?.let(::File))
-                    .redirectErrorStream(true)
-                    .start()
-                val runtime = ManagedMergedOutputProcess.start(
-                    process = process,
-                    outputLimitChars = MAX_COMMAND_OUTPUT_CHARS,
-                    threadName = "hook-command-output-${renderedCommand.hashCode()}",
-                )
-                val completion = runtime.awaitCompletion(
-                    timeout = action.timeoutMillis,
-                    timeoutUnit = TimeUnit.MILLISECONDS,
-                    joinTimeoutMillis = COMMAND_OUTPUT_JOIN_TIMEOUT_MILLIS,
-                    timeoutDestroyWait = COMMAND_FORCE_DESTROY_WAIT_SECONDS,
-                    timeoutDestroyWaitUnit = TimeUnit.SECONDS,
-                )
-                if (completion.timedOut) {
-                    return@withContext HookActionExecutionResult(
-                        success = false,
-                        message = "Command timed out after ${action.timeoutMillis}ms: $renderedCommand",
-                    )
-                }
+            val renderedCommand = renderTemplate(commandText, triggerContext)
+            val renderedArgs = action.args.map { renderTemplate(it, triggerContext) }
+            val execution = commandRuntime.execute(
+                basePath = project.basePath,
+                executable = renderedCommand,
+                args = renderedArgs,
+                timeoutMs = action.timeoutMillis,
+            )
 
-                val output = completion.output
-                val exitCode = completion.exitCode ?: -1
-                if (exitCode != 0) {
-                    return@withContext HookActionExecutionResult(
-                        success = false,
-                        message = if (output.isBlank()) {
-                            "Command failed (exit=$exitCode): $renderedCommand"
-                        } else {
-                            "Command failed (exit=$exitCode): $output"
-                        },
-                    )
-                }
-
-                HookActionExecutionResult(
-                    success = true,
-                    message = if (output.isBlank()) {
-                        "Command succeeded: $renderedCommand"
-                    } else {
-                        "Command succeeded: $output"
-                    },
-                )
-            } catch (e: Exception) {
-                HookActionExecutionResult(
+            when {
+                execution.startupErrorMessage != null -> HookActionExecutionResult(
                     success = false,
-                    message = "Command execution error: ${e.message}",
+                    message = "Command execution error: ${execution.startupErrorMessage}",
+                )
+
+                execution.timedOut -> HookActionExecutionResult(
+                    success = false,
+                    message = "Command timed out after ${action.timeoutMillis}ms: $renderedCommand",
+                )
+
+                (execution.exitCode ?: -1) != 0 -> HookActionExecutionResult(
+                    success = false,
+                    message = execution.output?.let { output ->
+                        "Command failed (exit=${execution.exitCode ?: -1}): $output"
+                    } ?: "Command failed (exit=${execution.exitCode ?: -1}): $renderedCommand",
+                )
+
+                else -> HookActionExecutionResult(
+                    success = true,
+                    message = execution.output?.let { output ->
+                        "Command succeeded: $output"
+                    } ?: "Command succeeded: $renderedCommand",
                 )
             }
         }
@@ -200,10 +179,6 @@ class HookExecutor internal constructor(
             }
             return rendered
         }
-
-        private const val MAX_COMMAND_OUTPUT_CHARS = 8_192
-        private const val COMMAND_OUTPUT_JOIN_TIMEOUT_MILLIS = 2_000L
-        private const val COMMAND_FORCE_DESTROY_WAIT_SECONDS = 2L
     }
 }
 

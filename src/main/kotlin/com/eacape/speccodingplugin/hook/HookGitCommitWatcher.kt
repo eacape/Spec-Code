@@ -30,6 +30,7 @@ class HookGitCommitWatcher(
     private val logger = thisLogger()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val telemetryTracker = HookWatcherTelemetryTracker(configuredPollIntervalMs = POLL_INTERVAL_MS)
+    private val gitCommandRuntime = HookGitCommandRuntime()
 
     @Volatile
     private var started = false
@@ -166,26 +167,12 @@ class HookGitCommitWatcher(
         return pollResult(HookWatcherPollOutcome.UNCHANGED)
     }
 
-    private fun runGit(basePath: String, vararg args: String): GitCommandResult {
-        return runCatching {
-            val process = ProcessBuilder(listOf("git") + args)
-                .directory(File(basePath))
-                .redirectErrorStream(true)
-                .start()
-            val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
-            val finished = process.waitFor(GIT_COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            if (!finished) {
-                process.destroyForcibly()
-                process.waitFor(1, TimeUnit.SECONDS)
-                return GitCommandResult(output = null, failed = true, timedOut = true)
-            }
-            if (process.exitValue() != 0) {
-                return GitCommandResult(output = null, failed = true, timedOut = false)
-            }
-            GitCommandResult(output = output.ifBlank { null }, failed = false, timedOut = false)
-        }.getOrElse {
-            GitCommandResult(output = null, failed = true, timedOut = false)
-        }
+    private fun runGit(basePath: String, vararg args: String): HookGitCommandExecutionResult {
+        return gitCommandRuntime.execute(
+            basePath,
+            GIT_COMMAND_TIMEOUT_MILLIS,
+            *args,
+        )
     }
 
     private fun emitTelemetry(event: HookWatcherTelemetryEvent) {
@@ -219,15 +206,9 @@ class HookGitCommitWatcher(
         val timedOutGitCommandCount: Int = 0,
     )
 
-    private data class GitCommandResult(
-        val output: String?,
-        val failed: Boolean,
-        val timedOut: Boolean,
-    )
-
     companion object {
         private const val POLL_INTERVAL_MS = 3_000L
-        private const val GIT_COMMAND_TIMEOUT_SECONDS = 2L
+        private const val GIT_COMMAND_TIMEOUT_MILLIS = 2_000L
 
         fun getInstance(project: Project): HookGitCommitWatcher = project.service()
     }

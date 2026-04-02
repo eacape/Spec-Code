@@ -1,14 +1,12 @@
 package com.eacape.speccodingplugin.spec
 
-import java.io.InputStream
-import java.io.InputStreamReader
+import com.eacape.speccodingplugin.core.ManagedSplitOutputProcess
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
-import kotlin.concurrent.thread
 
 class SpecProcessRunner {
 
@@ -63,13 +61,17 @@ class SpecProcessRunner {
     fun execute(request: VerifyCommandExecutionRequest): VerifyCommandExecutionResult {
         validateRequest(request)
         val redactionRules = compileRedactionRules(request.commandId, request.redactionPatterns)
-        val stdoutCapture = OutputCapture(request.outputLimitChars)
-        val stderrCapture = OutputCapture(request.outputLimitChars)
-        val process = try {
-            ProcessBuilder(request.command)
+        val runtime = try {
+            val process = ProcessBuilder(request.command)
                 .directory(request.workingDirectory.toFile())
                 .redirectErrorStream(false)
                 .start()
+            ManagedSplitOutputProcess.start(
+                process = process,
+                outputLimitChars = request.outputLimitChars,
+                stdoutThreadName = "${request.commandId}-stdout",
+                stderrThreadName = "${request.commandId}-stderr",
+            )
         } catch (error: Exception) {
             throw InvalidVerifyCommandError(
                 request.commandId,
@@ -77,36 +79,29 @@ class SpecProcessRunner {
             )
         }
 
-        val stdoutThread = consumeStream(process.inputStream, stdoutCapture, "${request.commandId}-stdout")
-        val stderrThread = consumeStream(process.errorStream, stderrCapture, "${request.commandId}-stderr")
         val startedAt = System.nanoTime()
-        val finishedWithinTimeout = process.waitFor(request.timeoutMs.toLong(), TimeUnit.MILLISECONDS)
-        val timedOut = !finishedWithinTimeout
-        val exitCode = if (finishedWithinTimeout) {
-            process.exitValue()
-        } else {
-            process.destroy()
-            if (!process.waitFor(250, TimeUnit.MILLISECONDS)) {
-                process.destroyForcibly()
-                process.waitFor(500, TimeUnit.MILLISECONDS)
-            }
-            null
-        }
-        joinCaptureThread(stdoutThread)
-        joinCaptureThread(stderrThread)
+        val completion = runtime.awaitCompletion(
+            timeout = request.timeoutMs.toLong(),
+            timeoutUnit = TimeUnit.MILLISECONDS,
+            joinTimeoutMillis = OUTPUT_JOIN_TIMEOUT_MILLIS,
+            timeoutDestroyGraceWait = TIMEOUT_DESTROY_GRACE_WAIT_MILLIS,
+            timeoutDestroyGraceWaitUnit = TimeUnit.MILLISECONDS,
+            timeoutDestroyForceWait = TIMEOUT_DESTROY_FORCE_WAIT_MILLIS,
+            timeoutDestroyForceWaitUnit = TimeUnit.MILLISECONDS,
+        )
         val durationMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
 
-        val redactedStdout = redact(stdoutCapture.finish(), redactionRules)
-        val redactedStderr = redact(stderrCapture.finish(), redactionRules)
+        val redactedStdout = redact(completion.stdout, redactionRules)
+        val redactedStderr = redact(completion.stderr, redactionRules)
         return VerifyCommandExecutionResult(
             commandId = request.commandId,
-            exitCode = exitCode,
+            exitCode = completion.exitCode,
             stdout = redactedStdout.text,
             stderr = redactedStderr.text,
             durationMs = durationMs,
-            timedOut = timedOut,
-            stdoutTruncated = stdoutCapture.truncated,
-            stderrTruncated = stderrCapture.truncated,
+            timedOut = completion.timedOut,
+            stdoutTruncated = completion.stdoutTruncated,
+            stderrTruncated = completion.stderrTruncated,
             redacted = redactedStdout.redacted || redactedStderr.redacted,
         )
     }
@@ -254,34 +249,6 @@ class SpecProcessRunner {
         }
     }
 
-    private fun consumeStream(
-        inputStream: InputStream,
-        capture: OutputCapture,
-        threadName: String,
-    ): Thread {
-        return thread(name = threadName, isDaemon = true) {
-            InputStreamReader(inputStream, StandardCharsets.UTF_8).use { reader ->
-                val buffer = CharArray(1024)
-                while (true) {
-                    val read = reader.read(buffer)
-                    if (read < 0) {
-                        break
-                    }
-                    capture.append(buffer, read)
-                }
-            }
-        }
-    }
-
-    private fun joinCaptureThread(thread: Thread) {
-        repeat(4) {
-            thread.join(250)
-            if (!thread.isAlive) {
-                return
-            }
-        }
-    }
-
     private fun redact(text: String, rules: List<RedactionRule>): RedactionResult {
         var updatedText = text
         var redacted = false
@@ -306,47 +273,6 @@ class SpecProcessRunner {
         }
     }
 
-    private data class OutputCapture(
-        private val maxChars: Int,
-    ) {
-        private val lock = Any()
-        private val buffer = StringBuilder()
-        private var omittedChars: Int = 0
-
-        var truncated: Boolean = false
-            private set
-
-        fun append(chunk: CharArray, length: Int) {
-            synchronized(lock) {
-                val remainingCapacity = (maxChars - buffer.length).coerceAtLeast(0)
-                val charsToAppend = minOf(remainingCapacity, length)
-                if (charsToAppend > 0) {
-                    buffer.append(chunk, 0, charsToAppend)
-                }
-                if (charsToAppend < length) {
-                    truncated = true
-                    omittedChars += length - charsToAppend
-                }
-            }
-        }
-
-        fun finish(): String {
-            synchronized(lock) {
-                if (!truncated) {
-                    return buffer.toString()
-                }
-                val suffix = "...[truncated $omittedChars chars]"
-                return buildString {
-                    append(buffer)
-                    if (isNotEmpty() && this[length - 1] != '\n') {
-                        append('\n')
-                    }
-                    append(suffix)
-                }
-            }
-        }
-    }
-
     private data class RedactionRule(
         val pattern: Regex,
         val replacement: String,
@@ -358,6 +284,9 @@ class SpecProcessRunner {
     )
 
     companion object {
+        private const val OUTPUT_JOIN_TIMEOUT_MILLIS = 1_000L
+        private const val TIMEOUT_DESTROY_GRACE_WAIT_MILLIS = 250L
+        private const val TIMEOUT_DESTROY_FORCE_WAIT_MILLIS = 500L
         private const val REDACTED_VALUE = "<redacted>"
 
         private val DEFAULT_REDACTION_RULES = listOf(

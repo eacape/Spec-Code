@@ -124,6 +124,22 @@ if defined ProgramFiles if exist "%ProgramFiles%\JetBrains" (
     )
 )
 
+if defined ProgramFiles if exist "%ProgramFiles%\Java" (
+    for /d %%D in ("%ProgramFiles%\Java\jdk*") do (
+        call :isSpecCodeJavaHomeCompatible "%%~fD" && (
+            set "JAVA_HOME=%%~fD"
+            goto :eof
+        )
+    )
+
+    for %%D in ("%ProgramFiles%\Java\latest" "%ProgramFiles%\Java\jbr") do (
+        call :isSpecCodeJavaHomeCompatible "%%~fD" && (
+            set "JAVA_HOME=%%~fD"
+            goto :eof
+        )
+    )
+)
+
 goto :eof
 
 :isSpecCodeJavaHomeCompatible
@@ -132,7 +148,7 @@ set "SPEC_CODE_JAVA_VERSION_FILE=%TEMP%\spec-code-java-version-%RANDOM%.tmp"
 if not exist "%~1\bin\java.exe" exit /b 1
 
 call "%~1\bin\java.exe" -version 1>"%SPEC_CODE_JAVA_VERSION_FILE%" 2>&1
-findstr /C:21. "%SPEC_CODE_JAVA_VERSION_FILE%" >nul 2>nul
+findstr /C:%SPEC_CODE_REQUIRED_JAVA_MAJOR%. "%SPEC_CODE_JAVA_VERSION_FILE%" >nul 2>nul
 set "SPEC_CODE_JAVA_MATCHED=%ERRORLEVEL%"
 if exist "%SPEC_CODE_JAVA_VERSION_FILE%" del /q "%SPEC_CODE_JAVA_VERSION_FILE%"
 if "%SPEC_CODE_JAVA_MATCHED%"=="0" exit /b 0
