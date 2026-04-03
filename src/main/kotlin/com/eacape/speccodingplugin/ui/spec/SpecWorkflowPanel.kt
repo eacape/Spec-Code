@@ -376,6 +376,18 @@ class SpecWorkflowPanel(
             compactErrorMessage(error, fallback)
         },
     )
+    private val clarificationRetryStore = SpecWorkflowClarificationRetryStore(
+        persistState = { workflowId, state ->
+            taskCoordinator.launchIo {
+                specEngine.saveClarificationRetryState(
+                    workflowId = workflowId,
+                    state = state,
+                ).onFailure { error ->
+                    logger.warn("Failed to persist clarification retry state for workflow=$workflowId", error)
+                }
+            }
+        },
+    )
     private val gateRequirementsRepairCoordinator = SpecWorkflowGateRequirementsRepairCoordinator(
         aiUnavailableReason = { providerHint ->
             RequirementsSectionAiSupport.unavailableReason(providerHint = providerHint)
@@ -633,7 +645,6 @@ class SpecWorkflowPanel(
     private var currentTaskLiveProgressByTaskId: Map<String, TaskExecutionLiveProgress> = emptyMap()
     private var currentWorkflowSources: List<WorkflowSourceAsset> = emptyList()
     private val composerSelectedSourceIdsByWorkflowId = mutableMapOf<String, LinkedHashSet<String>>()
-    private val pendingClarificationRetryByWorkflowId = mutableMapOf<String, ClarificationRetryPayload>()
     private var activeGenerationJob: Job? = null
     private var activeGenerationRequest: SpecWorkflowActiveGenerationRequest? = null
     private var pendingDocumentReloadJob: Job? = null
@@ -2623,10 +2634,7 @@ class SpecWorkflowPanel(
     }
 
     private fun canGenerateWithEmptyInput(): Boolean {
-        val workflowId = selectedWorkflowId ?: return false
-        return pendingClarificationRetryByWorkflowId[workflowId]
-            ?.input
-            ?.isNotBlank() == true
+        return clarificationRetryStore.hasInput(selectedWorkflowId)
     }
 
     private fun applyAutoCodeContextToDetailPanel(
@@ -2851,7 +2859,7 @@ class SpecWorkflowPanel(
 
     private fun onGenerate(input: String) {
         val workflow = resolveSelectedWorkflowForClarification() ?: return
-        val pendingRetry = pendingClarificationRetryByWorkflowId[workflow.id]
+        val pendingRetry = clarificationRetryStore.current(workflow.id)
         if (pendingRetry?.followUp == ClarificationFollowUp.REQUIREMENTS_SECTION_REPAIR) {
             val resumePlan = gateRequirementsRepairCoordinator.buildResumePlan(
                 input = input,
@@ -2895,7 +2903,7 @@ class SpecWorkflowPanel(
                 workflow = workflow,
                 input = resumePlan.input,
                 suggestedDetails = resumePlan.suggestedDetails,
-                pendingRetry = pendingClarificationRetryByWorkflowId[workflow.id],
+                pendingRetry = clarificationRetryStore.current(workflow.id),
                 clarificationRound = resumePlan.clarificationRound,
             )
             return
@@ -2972,7 +2980,7 @@ class SpecWorkflowPanel(
             detailPanel.unlockClarificationChecklistInteractions()
             return
         }
-        val pendingRetry = pendingClarificationRetryByWorkflowId[workflow.id]
+        val pendingRetry = clarificationRetryStore.current(workflow.id)
         detailPanel.lockClarificationChecklistInteractions()
         detailPanel.appendProcessTimelineEntry(
             text = SpecCodingBundle.message("spec.workflow.process.clarify.confirmed"),
@@ -2987,7 +2995,7 @@ class SpecWorkflowPanel(
             followUp = pendingRetry?.followUp,
             requirementsRepairSections = pendingRetry?.requirementsRepairSections.orEmpty(),
         )
-        val refreshedRetry = pendingClarificationRetryByWorkflowId[workflow.id]
+        val refreshedRetry = clarificationRetryStore.current(workflow.id)
         if (refreshedRetry?.followUp == ClarificationFollowUp.REQUIREMENTS_SECTION_REPAIR) {
             continueRequirementsRepairAfterClarification(
                 workflowId = workflow.id,
@@ -3017,7 +3025,7 @@ class SpecWorkflowPanel(
         currentDraft: String,
     ) {
         val workflow = resolveSelectedWorkflowForClarification() ?: return
-        val pendingRetry = pendingClarificationRetryByWorkflowId[workflow.id]
+        val pendingRetry = clarificationRetryStore.current(workflow.id)
         val clarificationRound = (pendingRetry?.clarificationRound ?: 0) + 1
         detailPanel.appendProcessTimelineEntry(
             text = SpecCodingBundle.message("spec.workflow.process.clarify.regenerate", clarificationRound),
@@ -3047,7 +3055,7 @@ class SpecWorkflowPanel(
 
     private fun onClarificationSkip(input: String) {
         val workflow = resolveSelectedWorkflowForClarification() ?: return
-        val pendingRetry = pendingClarificationRetryByWorkflowId[workflow.id]
+        val pendingRetry = clarificationRetryStore.current(workflow.id)
         if (pendingRetry?.followUp == ClarificationFollowUp.REQUIREMENTS_SECTION_REPAIR) {
             rememberClarificationRetry(
                 workflowId = workflow.id,
@@ -3069,7 +3077,7 @@ class SpecWorkflowPanel(
             )
             continueRequirementsRepairAfterClarification(
                 workflowId = workflow.id,
-                pendingRetry = pendingClarificationRetryByWorkflowId[workflow.id] ?: pendingRetry,
+                pendingRetry = clarificationRetryStore.current(workflow.id) ?: pendingRetry,
                 input = input,
                 confirmedContext = "",
             )
@@ -3127,9 +3135,9 @@ class SpecWorkflowPanel(
             confirmedContext = confirmedContext,
             questionsMarkdown = questionsMarkdown,
             structuredQuestions = structuredQuestions,
-            clarificationRound = pendingClarificationRetryByWorkflowId[workflowId]?.clarificationRound,
-            followUp = pendingClarificationRetryByWorkflowId[workflowId]?.followUp,
-            requirementsRepairSections = pendingClarificationRetryByWorkflowId[workflowId]?.requirementsRepairSections.orEmpty(),
+            clarificationRound = clarificationRetryStore.current(workflowId)?.clarificationRound,
+            followUp = clarificationRetryStore.current(workflowId)?.followUp,
+            requirementsRepairSections = clarificationRetryStore.current(workflowId)?.requirementsRepairSections.orEmpty(),
             persist = false,
         )
     }
@@ -3158,7 +3166,7 @@ class SpecWorkflowPanel(
         missingSections: List<RequirementsSectionId>,
     ): Boolean {
         val workflow = currentWorkflow?.takeIf { it.id == workflowId } ?: return false
-        val previous = pendingClarificationRetryByWorkflowId[workflowId]
+        val previous = clarificationRetryStore.current(workflowId)
         val plan = gateRequirementsRepairCoordinator.buildClarifyThenFillPlan(
             missingSections = missingSections,
             previousRetry = previous,
@@ -3195,7 +3203,7 @@ class SpecWorkflowPanel(
             workflow = workflow,
             input = plan.input,
             suggestedDetails = plan.suggestedDetails,
-            pendingRetry = pendingClarificationRetryByWorkflowId[workflowId],
+            pendingRetry = clarificationRetryStore.current(workflowId),
             clarificationRound = plan.clarificationRound,
         )
         return true
@@ -3247,7 +3255,7 @@ class SpecWorkflowPanel(
                     lastError = launch.reason,
                     confirmed = false,
                     followUp = ClarificationFollowUp.REQUIREMENTS_SECTION_REPAIR,
-                    requirementsRepairSections = pendingClarificationRetryByWorkflowId[launch.workflowId]?.requirementsRepairSections.orEmpty(),
+                    requirementsRepairSections = clarificationRetryStore.current(launch.workflowId)?.requirementsRepairSections.orEmpty(),
                 )
                 detailPanel.showClarificationDraft(
                     phase = launch.phase,
@@ -3551,7 +3559,7 @@ class SpecWorkflowPanel(
                 workflowId = workflowId,
                 input = input,
                 confirmedContext = update.retryConfirmedContext,
-                clarificationRound = pendingClarificationRetryByWorkflowId[workflowId]?.clarificationRound,
+                clarificationRound = clarificationRetryStore.current(workflowId)?.clarificationRound,
                 lastError = update.retryLastError,
             )
         }
@@ -3618,7 +3626,7 @@ class SpecWorkflowPanel(
                 workflowId = workflowId,
                 input = input,
                 confirmedContext = options.confirmedContext,
-                clarificationRound = pendingClarificationRetryByWorkflowId[workflowId]?.clarificationRound,
+                clarificationRound = clarificationRetryStore.current(workflowId)?.clarificationRound,
                 lastError = interruptedMessage,
             )
             detailPanel.showGenerationFailed()
@@ -3713,138 +3721,33 @@ class SpecWorkflowPanel(
         requirementsRepairSections: List<RequirementsSectionId>? = null,
         persist: Boolean = true,
     ) {
-        val previous = pendingClarificationRetryByWorkflowId[workflowId]
-        val normalizedInput = normalizeRetryText(input)
-        val normalizedContext = confirmedContext?.let { normalizeRetryText(it) }
-        val normalizedQuestions = questionsMarkdown?.let { normalizeRetryText(it) }
-        val normalizedError = lastError
-            ?.replace("\r\n", "\n")
-            ?.replace('\r', '\n')
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-        val mergedInput = normalizedInput.ifBlank { previous?.input.orEmpty() }
-        val mergedContext = when {
-            normalizedContext != null -> normalizedContext
-            else -> previous?.confirmedContext.orEmpty()
-        }
-        val mergedQuestions = normalizedQuestions
-            ?: previous?.questionsMarkdown
-            .orEmpty()
-        val mergedStructuredQuestions = structuredQuestions
-            ?.map { normalizeRetryText(it) }
-            ?.filter { it.isNotBlank() }
-            ?.distinct()
-            ?: previous?.structuredQuestions
-            .orEmpty()
-        val mergedRound = clarificationRound
-            ?: previous?.clarificationRound
-            ?: 1
-        val mergedError = normalizedError ?: previous?.lastError
-        val mergedConfirmed = confirmed ?: previous?.confirmed ?: false
-        val mergedFollowUp = followUp ?: previous?.followUp ?: ClarificationFollowUp.GENERATION
-        val mergedRequirementsRepairSections = requirementsRepairSections
-            ?.distinct()
-            ?: previous?.requirementsRepairSections
-            .orEmpty()
-        if (mergedInput.isBlank() && mergedContext.isBlank() && mergedQuestions.isBlank() && mergedStructuredQuestions.isEmpty()) {
-            pendingClarificationRetryByWorkflowId.remove(workflowId)
-            if (persist) {
-                persistClarificationRetryState(workflowId, null)
-            }
-            return
-        }
-        val payload = ClarificationRetryPayload(
-            input = mergedInput,
-            confirmedContext = mergedContext,
-            questionsMarkdown = mergedQuestions,
-            structuredQuestions = mergedStructuredQuestions,
-            clarificationRound = mergedRound,
-            lastError = mergedError,
-            confirmed = mergedConfirmed,
-            followUp = if (
-                mergedFollowUp == ClarificationFollowUp.REQUIREMENTS_SECTION_REPAIR &&
-                mergedRequirementsRepairSections.isNotEmpty()
-            ) {
-                ClarificationFollowUp.REQUIREMENTS_SECTION_REPAIR
-            } else {
-                ClarificationFollowUp.GENERATION
-            },
-            requirementsRepairSections = if (
-                mergedFollowUp == ClarificationFollowUp.REQUIREMENTS_SECTION_REPAIR &&
-                mergedRequirementsRepairSections.isNotEmpty()
-            ) {
-                mergedRequirementsRepairSections
-            } else {
-                emptyList()
-            },
+        clarificationRetryStore.remember(
+            SpecWorkflowClarificationRetryRememberRequest(
+                workflowId = workflowId,
+                input = input,
+                confirmedContext = confirmedContext,
+                questionsMarkdown = questionsMarkdown,
+                structuredQuestions = structuredQuestions,
+                clarificationRound = clarificationRound,
+                lastError = lastError,
+                confirmed = confirmed,
+                followUp = followUp,
+                requirementsRepairSections = requirementsRepairSections,
+                persist = persist,
+            ),
         )
-        pendingClarificationRetryByWorkflowId[workflowId] = payload
-        if (persist) {
-            persistClarificationRetryState(workflowId, payload)
-        }
     }
 
     private fun clearClarificationRetry(workflowId: String, persist: Boolean = true) {
-        pendingClarificationRetryByWorkflowId.remove(workflowId)
-        if (persist) {
-            persistClarificationRetryState(workflowId, null)
-        }
+        clarificationRetryStore.clear(workflowId, persist)
     }
 
     private fun syncClarificationRetryFromWorkflow(workflow: SpecWorkflow) {
-        val workflowId = workflow.id
-        val state = workflow.clarificationRetryState
-        if (state == null) {
-            pendingClarificationRetryByWorkflowId.remove(workflowId)
-            return
-        }
-        pendingClarificationRetryByWorkflowId[workflowId] = state.toPayload()
-    }
-
-    private fun persistClarificationRetryState(
-        workflowId: String,
-        payload: ClarificationRetryPayload?,
-    ) {
-        taskCoordinator.launchIo {
-            specEngine.saveClarificationRetryState(
-                workflowId = workflowId,
-                state = payload?.toState(),
-            ).onFailure { error ->
-                logger.warn("Failed to persist clarification retry state for workflow=$workflowId", error)
-            }
-        }
-    }
-
-    private fun ClarificationRetryPayload.toState(): ClarificationRetryState {
-        return ClarificationRetryState(
-            input = input,
-            confirmedContext = confirmedContext,
-            questionsMarkdown = questionsMarkdown,
-            structuredQuestions = structuredQuestions,
-            clarificationRound = clarificationRound,
-            lastError = lastError,
-            confirmed = confirmed,
-            followUp = followUp,
-            requirementsRepairSections = requirementsRepairSections,
-        )
-    }
-
-    private fun ClarificationRetryState.toPayload(): ClarificationRetryPayload {
-        return ClarificationRetryPayload(
-            input = input,
-            confirmedContext = confirmedContext,
-            questionsMarkdown = questionsMarkdown,
-            structuredQuestions = structuredQuestions,
-            clarificationRound = clarificationRound,
-            lastError = lastError,
-            confirmed = confirmed,
-            followUp = followUp,
-            requirementsRepairSections = requirementsRepairSections,
-        )
+        clarificationRetryStore.syncFromWorkflow(workflow)
     }
 
     private fun restorePendingClarificationState(workflowId: String) {
-        val payload = pendingClarificationRetryByWorkflowId[workflowId] ?: return
+        val payload = clarificationRetryStore.current(workflowId) ?: return
         detailPanel.appendProcessTimelineEntry(
             text = SpecCodingBundle.message(
                 "spec.workflow.process.retryRestored",

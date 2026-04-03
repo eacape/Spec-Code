@@ -2,6 +2,7 @@ package com.eacape.speccodingplugin.ui.spec
 
 import com.eacape.speccodingplugin.spec.ConfirmedClarificationPayload
 import com.eacape.speccodingplugin.spec.ClarificationFollowUp
+import com.eacape.speccodingplugin.spec.ClarificationRetryState
 import com.eacape.speccodingplugin.spec.RequirementsSectionId
 
 internal data class ClarificationRetryPayload(
@@ -35,5 +36,33 @@ internal fun ClarificationRetryPayload?.toWritebackPayload(
         questionsMarkdown = this?.questionsMarkdown.orEmpty(),
         structuredQuestions = this?.structuredQuestions.orEmpty(),
         clarificationRound = this?.clarificationRound ?: 1,
+    )
+}
+
+internal fun ClarificationRetryPayload.toState(): ClarificationRetryState {
+    return ClarificationRetryState(
+        input = input,
+        confirmedContext = confirmedContext,
+        questionsMarkdown = questionsMarkdown,
+        structuredQuestions = structuredQuestions,
+        clarificationRound = clarificationRound,
+        lastError = lastError,
+        confirmed = confirmed,
+        followUp = followUp,
+        requirementsRepairSections = requirementsRepairSections,
+    )
+}
+
+internal fun ClarificationRetryState.toPayload(): ClarificationRetryPayload {
+    return ClarificationRetryPayload(
+        input = input,
+        confirmedContext = confirmedContext,
+        questionsMarkdown = questionsMarkdown,
+        structuredQuestions = structuredQuestions,
+        clarificationRound = clarificationRound,
+        lastError = lastError,
+        confirmed = confirmed,
+        followUp = followUp,
+        requirementsRepairSections = requirementsRepairSections,
     )
 }
