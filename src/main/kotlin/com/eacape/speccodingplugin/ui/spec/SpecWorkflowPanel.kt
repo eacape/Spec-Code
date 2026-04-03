@@ -370,6 +370,12 @@ class SpecWorkflowPanel(
             compactErrorMessage(error, SpecCodingBundle.message("common.unknown"))
         },
     )
+    private val generationCoordinator = SpecWorkflowGenerationCoordinator(
+        providerDisplayName = ::providerDisplayName,
+        renderFailureMessage = { error, fallback ->
+            compactErrorMessage(error, fallback)
+        },
+    )
     private val gateRequirementsRepairCoordinator = SpecWorkflowGateRequirementsRepairCoordinator(
         aiUnavailableReason = { providerHint ->
             RequirementsSectionAiSupport.unavailableReason(providerHint = providerHint)
@@ -378,7 +384,7 @@ class SpecWorkflowPanel(
             artifactService.locateArtifact(workflowId, StageId.REQUIREMENTS)
         },
         renderClarificationFailureMarkdown = { error ->
-            buildClarificationMarkdown(
+            generationCoordinator.buildClarificationMarkdown(
                 draft = null,
                 error = error,
             )
