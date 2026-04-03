@@ -388,6 +388,56 @@ class SpecWorkflowPanel(
             }
         },
     )
+    private val clarificationActionCoordinator = SpecWorkflowClarificationActionCoordinator(
+        retryStore = clarificationRetryStore,
+        resolveSelectedWorkflow = ::resolveSelectedWorkflowForClarification,
+        resolveGenerationContext = ::resolveGenerationContext,
+        selectedWorkflowId = { selectedWorkflowId },
+        currentWorkflow = { currentWorkflow },
+        appendTimelineEntry = { entry ->
+            appendProcessTimelineEntries(listOf(entry))
+        },
+        setStatusText = ::setStatusText,
+        unlockClarificationChecklistInteractions = {
+            detailPanel.unlockClarificationChecklistInteractions()
+        },
+        cancelActiveGenerationRequest = ::cancelActiveGenerationRequest,
+        requestClarificationDraft = { request ->
+            requestClarificationDraft(
+                context = request.context,
+                input = request.input,
+                options = request.options,
+                suggestedDetails = request.suggestedDetails,
+                seedQuestionsMarkdown = request.seedQuestionsMarkdown,
+                seedStructuredQuestions = request.seedStructuredQuestions,
+                clarificationRound = request.clarificationRound,
+            )
+        },
+        runGeneration = { request ->
+            runGeneration(
+                workflowId = request.workflowId,
+                input = request.input,
+                options = request.options,
+            )
+        },
+        launchRequirementsRepairClarification = { request ->
+            launchRequirementsRepairClarification(
+                workflow = request.workflow,
+                input = request.input,
+                suggestedDetails = request.suggestedDetails,
+                pendingRetry = request.pendingRetry,
+                clarificationRound = request.clarificationRound,
+            )
+        },
+        continueRequirementsRepairAfterClarification = { request ->
+            continueRequirementsRepairAfterClarification(
+                workflowId = request.workflowId,
+                pendingRetry = request.pendingRetry,
+                input = request.input,
+                confirmedContext = request.confirmedContext,
+            )
+        },
+    )
     private val gateRequirementsRepairCoordinator = SpecWorkflowGateRequirementsRepairCoordinator(
         aiUnavailableReason = { providerHint ->
             RequirementsSectionAiSupport.unavailableReason(providerHint = providerHint)
@@ -733,10 +783,10 @@ class SpecWorkflowPanel(
             onAddWorkflowSourcesRequested = ::onAddWorkflowSourcesRequested,
             onRemoveWorkflowSourceRequested = ::onRemoveWorkflowSourceRequested,
             onRestoreWorkflowSourcesRequested = ::onRestoreWorkflowSourcesRequested,
-            onClarificationConfirm = ::onClarificationConfirm,
-            onClarificationRegenerate = ::onClarificationRegenerate,
-            onClarificationSkip = ::onClarificationSkip,
-            onClarificationCancel = ::onClarificationCancel,
+            onClarificationConfirm = clarificationActionCoordinator::confirm,
+            onClarificationRegenerate = clarificationActionCoordinator::regenerate,
+            onClarificationSkip = clarificationActionCoordinator::skip,
+            onClarificationCancel = clarificationActionCoordinator::cancel,
             onNextPhase = ::onNextPhase,
             onGoBack = ::onGoBack,
             onComplete = ::onComplete,
@@ -745,7 +795,7 @@ class SpecWorkflowPanel(
             onOpenArtifactInEditor = ::onOpenArtifactInEditor,
             onShowHistoryDiff = ::onShowHistoryDiff,
             onSaveDocument = ::onSaveDocument,
-            onClarificationDraftAutosave = ::onClarificationDraftAutosave,
+            onClarificationDraftAutosave = clarificationActionCoordinator::autosave,
         )
 
         setupUI()
@@ -2969,177 +3019,6 @@ class SpecWorkflowPanel(
                 )
             }
         }
-    }
-
-    private fun onClarificationConfirm(
-        input: String,
-        confirmedContext: String,
-    ) {
-        val workflow = resolveSelectedWorkflowForClarification()
-        if (workflow == null) {
-            detailPanel.unlockClarificationChecklistInteractions()
-            return
-        }
-        val pendingRetry = clarificationRetryStore.current(workflow.id)
-        detailPanel.lockClarificationChecklistInteractions()
-        detailPanel.appendProcessTimelineEntry(
-            text = SpecCodingBundle.message("spec.workflow.process.clarify.confirmed"),
-            state = SpecDetailPanel.ProcessTimelineState.DONE,
-        )
-        rememberClarificationRetry(
-            workflowId = workflow.id,
-            input = input,
-            confirmedContext = confirmedContext,
-            clarificationRound = pendingRetry?.clarificationRound,
-            confirmed = true,
-            followUp = pendingRetry?.followUp,
-            requirementsRepairSections = pendingRetry?.requirementsRepairSections.orEmpty(),
-        )
-        val refreshedRetry = clarificationRetryStore.current(workflow.id)
-        if (refreshedRetry?.followUp == ClarificationFollowUp.REQUIREMENTS_SECTION_REPAIR) {
-            continueRequirementsRepairAfterClarification(
-                workflowId = workflow.id,
-                pendingRetry = refreshedRetry,
-                input = input,
-                confirmedContext = confirmedContext,
-            )
-            return
-        }
-        val context = resolveGenerationContext()
-        if (context == null) {
-            detailPanel.unlockClarificationChecklistInteractions()
-            return
-        }
-        runGeneration(
-            workflowId = context.workflowId,
-            input = input,
-            options = context.options.copy(
-                confirmedContext = confirmedContext,
-                clarificationWriteback = refreshedRetry.toWritebackPayload(confirmedContext = confirmedContext),
-            ),
-        )
-    }
-
-    private fun onClarificationRegenerate(
-        input: String,
-        currentDraft: String,
-    ) {
-        val workflow = resolveSelectedWorkflowForClarification() ?: return
-        val pendingRetry = clarificationRetryStore.current(workflow.id)
-        val clarificationRound = (pendingRetry?.clarificationRound ?: 0) + 1
-        detailPanel.appendProcessTimelineEntry(
-            text = SpecCodingBundle.message("spec.workflow.process.clarify.regenerate", clarificationRound),
-            state = SpecDetailPanel.ProcessTimelineState.ACTIVE,
-        )
-        if (pendingRetry?.followUp == ClarificationFollowUp.REQUIREMENTS_SECTION_REPAIR) {
-            launchRequirementsRepairClarification(
-                workflow = workflow,
-                input = input,
-                suggestedDetails = currentDraft,
-                pendingRetry = pendingRetry,
-                clarificationRound = clarificationRound,
-            )
-            return
-        }
-        val context = resolveGenerationContext() ?: return
-        requestClarificationDraft(
-            context = context,
-            input = input,
-            options = context.options.copy(confirmedContext = currentDraft),
-            suggestedDetails = currentDraft,
-            seedQuestionsMarkdown = pendingRetry?.questionsMarkdown,
-            seedStructuredQuestions = pendingRetry?.structuredQuestions.orEmpty(),
-            clarificationRound = clarificationRound,
-        )
-    }
-
-    private fun onClarificationSkip(input: String) {
-        val workflow = resolveSelectedWorkflowForClarification() ?: return
-        val pendingRetry = clarificationRetryStore.current(workflow.id)
-        if (pendingRetry?.followUp == ClarificationFollowUp.REQUIREMENTS_SECTION_REPAIR) {
-            rememberClarificationRetry(
-                workflowId = workflow.id,
-                input = input,
-                confirmedContext = "",
-                clarificationRound = pendingRetry.clarificationRound,
-                confirmed = false,
-                followUp = ClarificationFollowUp.REQUIREMENTS_SECTION_REPAIR,
-                requirementsRepairSections = pendingRetry.requirementsRepairSections,
-            )
-            detailPanel.appendProcessTimelineEntry(
-                text = SpecCodingBundle.message("spec.workflow.process.clarify.skipped"),
-                state = SpecDetailPanel.ProcessTimelineState.INFO,
-            )
-            setStatusText(
-                ArtifactComposeActionUiText.clarificationSkippedProceed(
-                    workflow.resolveComposeActionMode(workflow.currentPhase),
-                ),
-            )
-            continueRequirementsRepairAfterClarification(
-                workflowId = workflow.id,
-                pendingRetry = clarificationRetryStore.current(workflow.id) ?: pendingRetry,
-                input = input,
-                confirmedContext = "",
-            )
-            return
-        }
-        val context = resolveGenerationContext() ?: return
-        clearClarificationRetry(context.workflowId)
-        detailPanel.appendProcessTimelineEntry(
-            text = SpecCodingBundle.message("spec.workflow.process.clarify.skipped"),
-            state = SpecDetailPanel.ProcessTimelineState.INFO,
-        )
-        setStatusText(
-            ArtifactComposeActionUiText.clarificationSkippedProceed(
-                context.options.composeActionMode ?: ArtifactComposeActionMode.GENERATE,
-            ),
-        )
-        runGeneration(
-            workflowId = context.workflowId,
-            input = input,
-            options = context.options,
-        )
-    }
-
-    private fun onClarificationCancel() {
-        cancelActiveGenerationRequest("Clarification cancelled by user")
-        selectedWorkflowId?.let { workflowId ->
-            clearClarificationRetry(workflowId)
-        }
-        detailPanel.appendProcessTimelineEntry(
-            text = SpecCodingBundle.message("spec.workflow.process.clarify.cancelled"),
-            state = SpecDetailPanel.ProcessTimelineState.INFO,
-        )
-        setStatusText(
-            ArtifactComposeActionUiText.clarificationCancelled(
-                currentWorkflow?.resolveComposeActionMode(currentWorkflow?.currentPhase ?: SpecPhase.SPECIFY)
-                    ?: ArtifactComposeActionMode.GENERATE,
-            ),
-        )
-    }
-
-    private fun onClarificationDraftAutosave(
-        input: String,
-        confirmedContext: String,
-        questionsMarkdown: String,
-        structuredQuestions: List<String>,
-    ) {
-        val workflowId = selectedWorkflowId ?: return
-        val activeWorkflowId = currentWorkflow?.id
-        if (activeWorkflowId != null && activeWorkflowId != workflowId) {
-            return
-        }
-        rememberClarificationRetry(
-            workflowId = workflowId,
-            input = input,
-            confirmedContext = confirmedContext,
-            questionsMarkdown = questionsMarkdown,
-            structuredQuestions = structuredQuestions,
-            clarificationRound = clarificationRetryStore.current(workflowId)?.clarificationRound,
-            followUp = clarificationRetryStore.current(workflowId)?.followUp,
-            requirementsRepairSections = clarificationRetryStore.current(workflowId)?.requirementsRepairSections.orEmpty(),
-            persist = false,
-        )
     }
 
     private fun resolveSelectedWorkflowForClarification(): SpecWorkflow? {

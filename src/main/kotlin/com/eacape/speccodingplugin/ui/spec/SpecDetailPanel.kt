@@ -2216,20 +2216,42 @@ class SpecDetailPanel(
             return
         }
         val state = clarificationState ?: return
-        if (state.structuredQuestions.isEmpty() || index !in state.structuredQuestions.indices) {
-            return
+        when (
+            val plan = SpecDetailClarificationChecklistCoordinator.planRowClick(
+                state = state,
+                activeDetailIndex = activeChecklistDetailIndex,
+                index = index,
+                fallbackDecision = fallbackDecision,
+                text = clarificationText(),
+            )
+        ) {
+            is SpecDetailClarificationChecklistRowClickPlan.Apply -> {
+                applyChecklistQuestionMutation(
+                    phase = state.phase,
+                    result = plan.result,
+                )
+            }
+
+            is SpecDetailClarificationChecklistRowClickPlan.RequestConfirmDetail -> {
+                val confirmedDetail = requestClarificationConfirmDetail(
+                    question = plan.request.question,
+                    initialDetail = plan.request.initialDetail,
+                ) ?: return
+                val result = SpecDetailClarificationChecklistCoordinator.applyConfirmedDetail(
+                    state = state,
+                    activeDetailIndex = activeChecklistDetailIndex,
+                    index = index,
+                    detail = confirmedDetail,
+                    text = clarificationText(),
+                ) ?: return
+                applyChecklistQuestionMutation(
+                    phase = state.phase,
+                    result = result,
+                )
+            }
+
+            null -> return
         }
-        val currentDecision = state.questionDecisions[index] ?: fallbackDecision
-        val nextDecision = when (currentDecision) {
-            SpecDetailClarificationQuestionDecision.UNDECIDED -> SpecDetailClarificationQuestionDecision.CONFIRMED
-            SpecDetailClarificationQuestionDecision.CONFIRMED -> SpecDetailClarificationQuestionDecision.UNDECIDED
-            SpecDetailClarificationQuestionDecision.NOT_APPLICABLE -> SpecDetailClarificationQuestionDecision.CONFIRMED
-        }
-        if (nextDecision == SpecDetailClarificationQuestionDecision.CONFIRMED) {
-            onChecklistQuestionConfirmRequested(index)
-            return
-        }
-        onChecklistQuestionDecisionChanged(index, nextDecision)
     }
 
     private fun renderChecklistQuestionText(target: JTextPane, question: String) {
@@ -2388,23 +2410,17 @@ class SpecDetailPanel(
             return
         }
         val state = clarificationState ?: return
-        val nextMutation = state.withDecision(index, decision, activeChecklistDetailIndex) ?: return
-        clarificationState = nextMutation.state
-        activeChecklistDetailIndex = nextMutation.activeDetailIndex
-        renderClarificationQuestions(
-            markdown = nextMutation.state.questionsMarkdown,
-            structuredQuestions = nextMutation.state.structuredQuestions,
-            questionDecisions = nextMutation.state.questionDecisions,
-            questionDetails = nextMutation.state.questionDetails,
+        val result = SpecDetailClarificationChecklistCoordinator.applyDecision(
+            state = state,
+            activeDetailIndex = activeChecklistDetailIndex,
+            index = index,
+            decision = decision,
+            text = clarificationText(),
+        ) ?: return
+        applyChecklistQuestionMutation(
+            phase = state.phase,
+            result = result,
         )
-        syncClarificationInputFromSelection(nextMutation.state)
-        updateClarificationPreview()
-        persistClarificationDraftSnapshot(nextMutation.state)
-        setValidationMessage(
-            ArtifactComposeActionUiText.clarificationHint(currentComposeActionMode(state.phase)),
-            TREE_TEXT,
-        )
-        currentWorkflow?.let { updateButtonStates(it) }
     }
 
     private fun onChecklistQuestionConfirmRequested(index: Int) {
@@ -2412,28 +2428,25 @@ class SpecDetailPanel(
             return
         }
         val state = clarificationState ?: return
-        if (state.structuredQuestions.isEmpty() || index !in state.structuredQuestions.indices) {
-            return
-        }
-        val currentDecision = state.questionDecisions[index] ?: SpecDetailClarificationQuestionDecision.UNDECIDED
-        if (currentDecision == SpecDetailClarificationQuestionDecision.CONFIRMED) {
-            val updatedDetail = requestClarificationConfirmDetail(
-                question = state.structuredQuestions[index],
-                initialDetail = state.questionDetails[index].orEmpty(),
-            ) ?: return
-            onChecklistQuestionDetailChanged(index, updatedDetail)
-            return
-        }
-
-        val question = state.structuredQuestions[index]
-        val existingDetail = state.questionDetails[index].orEmpty()
-        val confirmedDetail = requestClarificationConfirmDetail(
-            question = question,
-            initialDetail = existingDetail,
+        val request = SpecDetailClarificationChecklistCoordinator.prepareConfirmDetail(
+            state = state,
+            index = index,
         ) ?: return
-
-        onChecklistQuestionDecisionChanged(index, SpecDetailClarificationQuestionDecision.CONFIRMED)
-        onChecklistQuestionDetailChanged(index, confirmedDetail)
+        val confirmedDetail = requestClarificationConfirmDetail(
+            question = request.question,
+            initialDetail = request.initialDetail,
+        ) ?: return
+        val result = SpecDetailClarificationChecklistCoordinator.applyConfirmedDetail(
+            state = state,
+            activeDetailIndex = activeChecklistDetailIndex,
+            index = index,
+            detail = confirmedDetail,
+            text = clarificationText(),
+        ) ?: return
+        applyChecklistQuestionMutation(
+            phase = state.phase,
+            result = result,
+        )
     }
 
     private fun requestClarificationConfirmDetail(question: String, initialDetail: String): String? {
@@ -2456,20 +2469,42 @@ class SpecDetailPanel(
             return
         }
         val state = clarificationState ?: return
-        if (state.structuredQuestions.isEmpty() || index !in state.structuredQuestions.indices) {
-            return
+        val result = SpecDetailClarificationChecklistCoordinator.applyConfirmedDetail(
+            state = state,
+            activeDetailIndex = activeChecklistDetailIndex,
+            index = index,
+            detail = detail,
+            text = clarificationText(),
+        ) ?: return
+        applyChecklistQuestionMutation(
+            phase = state.phase,
+            result = result,
+        )
+    }
+
+    private fun applyChecklistQuestionMutation(
+        phase: SpecPhase,
+        result: SpecDetailClarificationChecklistMutationResult,
+    ) {
+        clarificationState = result.state
+        activeChecklistDetailIndex = result.activeDetailIndex
+        if (result.questionListChanged) {
+            renderClarificationQuestions(
+                markdown = result.state.questionsMarkdown,
+                structuredQuestions = result.state.structuredQuestions,
+                questionDecisions = result.state.questionDecisions,
+                questionDetails = result.state.questionDetails,
+            )
         }
-        val nextMutation = state.withConfirmedDetail(index, detail, activeChecklistDetailIndex) ?: return
-        clarificationState = nextMutation.state
-        activeChecklistDetailIndex = nextMutation.activeDetailIndex
-        syncClarificationInputFromSelection(nextMutation.state)
+        inputArea.text = result.confirmedContext
+        inputArea.caretPosition = 0
         updateClarificationPreview()
-        persistClarificationDraftSnapshot(nextMutation.state)
+        persistClarificationDraftSnapshot(result.state)
         setValidationMessage(
-            ArtifactComposeActionUiText.clarificationHint(currentComposeActionMode(state.phase)),
+            ArtifactComposeActionUiText.clarificationHint(currentComposeActionMode(phase)),
             TREE_TEXT,
         )
-        currentWorkflow?.let { updateButtonStates(it) }
+        currentWorkflow?.let(::updateButtonStates)
     }
 
     private fun resolveClarificationConfirmedContext(state: SpecDetailClarificationFormState): String {
