@@ -1281,61 +1281,6 @@ class SpecDetailPanelTest {
     }
 
     @Test
-    fun `checklist markdown bold markers should be parsed into bold segments`() {
-        val panel = createPanel()
-
-        val segments = panel.parseChecklistQuestionSegmentsForTest("**VIBE 你好** 和 **SPEC** 需要确认")
-
-        assertEquals(
-            listOf(
-                "VIBE 你好" to true,
-                " 和 " to false,
-                "SPEC" to true,
-                " 需要确认" to false,
-            ),
-            segments,
-        )
-    }
-
-    @Test
-    fun `checklist markdown inline code markers should be parsed into code segments`() {
-        val panel = createPanel()
-
-        val segments = panel.parseChecklistQuestionSegmentsWithStyleForTest(
-            "执行 `gradle test` 或 ``./gradlew.bat buildPlugin``",
-        )
-
-        assertEquals(
-            listOf(
-                Triple("执行 ", false, false),
-                Triple("gradle test", false, true),
-                Triple(" 或 ", false, false),
-                Triple("./gradlew.bat buildPlugin", false, true),
-            ),
-            segments,
-        )
-    }
-
-    @Test
-    fun `checklist question text should normalize multiline whitespace`() {
-        val panel = createPanel()
-
-        val segments = panel.parseChecklistQuestionSegmentsWithStyleForTest(
-            "  第一行 \n   **重点**   \n  ``foo`bar``   ",
-        )
-
-        assertEquals(
-            listOf(
-                Triple("第一行 ", false, false),
-                Triple("重点", true, false),
-                Triple(" ", false, false),
-                Triple("foo`bar", false, true),
-            ),
-            segments,
-        )
-    }
-
-    @Test
     fun `process timeline should show entries and clear properly`() {
         val panel = createPanel()
         val workflow = SpecWorkflow(
