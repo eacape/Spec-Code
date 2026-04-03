@@ -293,7 +293,10 @@ internal class SpecWorkflowGenerationCoordinator(
             },
             timelineEntry = if (draft == null) {
                 SpecWorkflowTimelineEntry(
-                    text = SpecCodingBundle.message("spec.workflow.process.clarify.failed", errorText),
+                    text = SpecCodingBundle.message(
+                        "spec.workflow.process.clarify.failed",
+                        errorText ?: SpecCodingBundle.message("common.unknown"),
+                    ),
                     state = SpecWorkflowTimelineEntryState.FAILED,
                 )
             } else {
