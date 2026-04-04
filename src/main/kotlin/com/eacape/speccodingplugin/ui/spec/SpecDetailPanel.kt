@@ -2594,7 +2594,11 @@ class SpecDetailPanel(
         )
         when (plan) {
             is SpecDetailClarificationPreviewPlan.Markdown -> renderClarificationPreviewMarkdown(plan.content)
-            is SpecDetailClarificationPreviewPlan.Checklist -> renderChecklistPreview(plan)
+            is SpecDetailClarificationPreviewPlan.Checklist -> {
+                renderChecklistPreview(
+                    SpecDetailClarificationPreviewRenderCoordinator.buildPlan(plan),
+                )
+            }
         }
     }
 
@@ -2608,95 +2612,32 @@ class SpecDetailPanel(
         }
     }
 
-    private fun renderChecklistPreview(plan: SpecDetailClarificationPreviewPlan.Checklist) {
-        val doc = clarificationPreviewPane.styledDocument
-
+    private fun renderChecklistPreview(plan: SpecDetailClarificationPreviewRenderPlan) {
         runCatching {
-            doc.remove(0, doc.length)
-            fun appendNewline() {
-                doc.insertString(doc.length, "\n", SimpleAttributeSet())
-            }
-            val baseFont = JBUI.Fonts.smallFont()
-            val bodyAttrs = SimpleAttributeSet().apply {
-                StyleConstants.setFontFamily(this, baseFont.family)
-                StyleConstants.setFontSize(this, baseFont.size)
-                StyleConstants.setForeground(this, TREE_TEXT)
-            }
-            val titleAttrs = SimpleAttributeSet(bodyAttrs).apply {
-                StyleConstants.setBold(this, true)
-                StyleConstants.setForeground(this, SECTION_TITLE_FG)
-            }
-            val questionBoldAttrs = SimpleAttributeSet(bodyAttrs).apply {
-                StyleConstants.setBold(this, true)
-            }
-            val questionCodeAttrs = SimpleAttributeSet(bodyAttrs).apply {
-                StyleConstants.setFontFamily(this, "JetBrains Mono")
-                StyleConstants.setBackground(this, CLARIFY_PREVIEW_QUESTION_CODE_BG)
-                StyleConstants.setForeground(this, CLARIFY_PREVIEW_QUESTION_CODE_FG)
-            }
-            val detailChipAttrs = SimpleAttributeSet(bodyAttrs).apply {
-                StyleConstants.setBold(this, true)
-                StyleConstants.setBackground(this, CLARIFY_PREVIEW_DETAIL_BG)
-                StyleConstants.setForeground(this, CLARIFY_PREVIEW_DETAIL_FG)
-            }
-            val mutedAttrs = SimpleAttributeSet(bodyAttrs).apply {
-                StyleConstants.setForeground(this, TREE_FILE_TEXT)
-            }
-
-            if (plan.sections.isEmpty()) {
-                doc.insertString(doc.length, plan.emptyText, mutedAttrs)
-                clarificationPreviewPane.caretPosition = 0
-                return
-            }
-
-            plan.sections.forEachIndexed { sectionIndex, section ->
-                if (sectionIndex > 0) {
-                    appendNewline()
-                    appendNewline()
-                }
-                doc.insertString(doc.length, section.title, titleAttrs)
-                appendNewline()
-                section.entries.forEachIndexed { idx, entry ->
-                    if (idx > 0) {
-                        appendNewline()
-                    }
-                    doc.insertString(doc.length, "• ", bodyAttrs)
-                    appendInlinePreviewSegments(
-                        doc = doc,
-                        segments = entry.segments,
-                        plainAttrs = bodyAttrs,
-                        boldAttrs = questionBoldAttrs,
-                        codeAttrs = questionCodeAttrs,
-                    )
-                    entry.detailChipText?.takeIf(String::isNotBlank)?.let { detailChipText ->
-                        doc.insertString(doc.length, "  ", bodyAttrs)
-                        doc.insertString(doc.length, " $detailChipText ", detailChipAttrs)
-                    }
-                }
-            }
+            SpecDetailClarificationPreviewDocumentWriter.write(
+                doc = clarificationPreviewPane.styledDocument,
+                plan = plan,
+                palette = clarificationPreviewDocumentPalette(),
+            )
             clarificationPreviewPane.caretPosition = 0
         }.onFailure {
             renderClarificationPreviewMarkdown(plan.fallbackMarkdown)
         }
     }
 
-    private fun appendInlinePreviewSegments(
-        doc: javax.swing.text.StyledDocument,
-        segments: List<SpecDetailClarificationInlineSegment>,
-        plainAttrs: SimpleAttributeSet,
-        boldAttrs: SimpleAttributeSet,
-        codeAttrs: SimpleAttributeSet,
-    ) {
-        segments.forEach { segment ->
-            val attrs = when {
-                segment.inlineCode -> codeAttrs
-                segment.bold -> boldAttrs
-                else -> plainAttrs
-            }
-            if (segment.text.isNotEmpty()) {
-                doc.insertString(doc.length, segment.text, attrs)
-            }
-        }
+    private fun clarificationPreviewDocumentPalette(): SpecDetailClarificationPreviewDocumentPalette {
+        val baseFont = JBUI.Fonts.smallFont()
+        return SpecDetailClarificationPreviewDocumentPalette(
+            bodyForeground = TREE_TEXT,
+            titleForeground = SECTION_TITLE_FG,
+            mutedForeground = TREE_FILE_TEXT,
+            questionCodeBackground = CLARIFY_PREVIEW_QUESTION_CODE_BG,
+            questionCodeForeground = CLARIFY_PREVIEW_QUESTION_CODE_FG,
+            detailChipBackground = CLARIFY_PREVIEW_DETAIL_BG,
+            detailChipForeground = CLARIFY_PREVIEW_DETAIL_FG,
+            baseFontFamily = baseFont.family,
+            baseFontSize = baseFont.size,
+        )
     }
 
     private fun persistClarificationDraftSnapshot(state: SpecDetailClarificationFormState? = clarificationState) {
@@ -3280,6 +3221,10 @@ class SpecDetailPanel(
 
     internal fun currentPreviewTextForTest(): String {
         return previewSourceText
+    }
+
+    internal fun currentClarificationPreviewTextForTest(): String {
+        return clarificationPreviewPane.text
     }
 
     internal fun currentValidationTextForTest(): String {

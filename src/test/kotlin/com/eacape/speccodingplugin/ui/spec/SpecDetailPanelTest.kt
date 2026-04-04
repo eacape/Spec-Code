@@ -1194,6 +1194,53 @@ class SpecDetailPanelTest {
     }
 
     @Test
+    fun `clarification checklist preview should render confirmed and not applicable entries`() {
+        val panel = createPanel()
+        val workflow = SpecWorkflow(
+            id = "wf-checklist-preview-render",
+            currentPhase = SpecPhase.SPECIFY,
+            documents = mapOf(
+                SpecPhase.SPECIFY to document(
+                    phase = SpecPhase.SPECIFY,
+                    content = "requirements",
+                    valid = true,
+                ),
+            ),
+            status = WorkflowStatus.IN_PROGRESS,
+            title = "Checklist Preview Render",
+            description = "clarification preview render",
+            createdAt = 1L,
+            updatedAt = 2L,
+        )
+        panel.updateWorkflow(workflow)
+        panel.showClarificationDraft(
+            phase = SpecPhase.SPECIFY,
+            input = "clarify preview",
+            questionsMarkdown = "1. ???",
+            suggestedDetails = "",
+            structuredQuestions = listOf(
+                "Need multi-region failover?",
+                "Need cloud-only workers?",
+            ),
+        )
+
+        panel.toggleClarificationQuestionForTest(0)
+        panel.setClarificationQuestionDetailForTest(0, "At least two regions")
+        panel.markClarificationQuestionNotApplicableForTest(1)
+
+        val preview = panel.currentClarificationPreviewTextForTest()
+        assertTrue(preview.contains(SpecCodingBundle.message("spec.detail.clarify.confirmed.title")))
+        assertTrue(preview.contains("Need multi-region failover?"))
+        assertTrue(
+            preview.contains(
+                "${SpecCodingBundle.message("spec.detail.clarify.checklist.detail.exportPrefix")}: At least two regions",
+            ),
+        )
+        assertTrue(preview.contains(SpecCodingBundle.message("spec.detail.clarify.notApplicable.title")))
+        assertTrue(preview.contains("Need cloud-only workers?"))
+    }
+
+    @Test
     fun `clarification checklist should lock edits after confirm generate`() {
         var confirmCalls = 0
         val panel = createPanel(
