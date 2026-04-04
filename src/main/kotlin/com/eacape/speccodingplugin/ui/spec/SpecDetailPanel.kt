@@ -164,7 +164,7 @@ class SpecDetailPanel(
     private var workbenchArtifactBinding: SpecWorkflowStageArtifactBinding? = null
     private var composerSourceState = ComposerSourceState()
     private var composerCodeContextState = ComposerCodeContextState()
-    private var activePreviewCard: String = CARD_PREVIEW
+    private var activePreviewCard: SpecDetailPreviewSurfaceCard = SpecDetailPreviewSurfaceCard.PREVIEW
     private var clarificationState: SpecDetailClarificationFormState? = null
     private var activeChecklistDetailIndex: Int? = null
     private var isClarificationChecklistReadOnly: Boolean = false
@@ -273,7 +273,7 @@ class SpecDetailPanel(
         )
         previewCardPanel.add(createClarificationCard(), CARD_CLARIFY)
         applyDocumentViewportSizing(previewCardPanel)
-        switchPreviewCard(CARD_PREVIEW)
+        switchPreviewCard(SpecDetailPreviewSurfaceCard.PREVIEW)
         processTimelineSection = createProcessTimelineSection()
         setProcessTimelineVisible(false)
         previewPanel.add(processTimelineSection, BorderLayout.NORTH)
@@ -1321,10 +1321,33 @@ class SpecDetailPanel(
         label.border = JBUI.Borders.empty(0, 2, 2, 2)
     }
 
-    private fun switchPreviewCard(card: String) {
+    private fun previewSurfacePlan(
+        card: SpecDetailPreviewSurfaceCard = activePreviewCard,
+    ): SpecDetailPreviewSurfacePlan {
+        return SpecDetailPreviewSurfaceCoordinator.preserveCurrent(
+            currentCard = card,
+            hasClarificationState = clarificationState != null,
+            isClarificationGenerating = isClarificationGenerating,
+        )
+    }
+
+    private fun applyPreviewSurfacePlan(plan: SpecDetailPreviewSurfacePlan) {
+        setClarificationPreviewVisible(plan.clarificationPreviewVisible)
+        switchPreviewCard(plan.card)
+    }
+
+    private fun switchPreviewCard(card: SpecDetailPreviewSurfaceCard) {
         activePreviewCard = card
-        previewCardLayout.show(previewCardPanel, card)
+        previewCardLayout.show(previewCardPanel, card.cardKey())
         refreshActionButtonCursors()
+    }
+
+    private fun SpecDetailPreviewSurfaceCard.cardKey(): String {
+        return when (this) {
+            SpecDetailPreviewSurfaceCard.PREVIEW -> CARD_PREVIEW
+            SpecDetailPreviewSurfaceCard.EDIT -> CARD_EDIT
+            SpecDetailPreviewSurfaceCard.CLARIFY -> CARD_CLARIFY
+        }
     }
 
     private fun showInputRequiredHint(phase: SpecPhase?) {
@@ -1482,8 +1505,7 @@ class SpecDetailPanel(
                 )
             }
         }
-        refreshClarificationSectionsLayout()
-        setClarificationPreviewVisible(!isClarificationGenerating)
+        applyPreviewSurfacePlan(previewSurfacePlan())
         updateClarificationPreview()
         refreshInputAreaMode()
         if (currentWorkflow == null) {
@@ -1538,14 +1560,16 @@ class SpecDetailPanel(
         refreshComposerCodeContextPanelState()
         refreshInputAreaMode()
         syncComposerSectionState(forceReset = previousWorkflowId != workflow.id || followCurrentPhase)
+        applyPreviewSurfacePlan(
+            SpecDetailPreviewSurfaceCoordinator.forWorkflow(
+                hasClarificationState = clarificationState != null,
+                isClarificationGenerating = isClarificationGenerating,
+            ),
+        )
         if (clarificationState == null) {
-            setClarificationPreviewVisible(true)
-            switchPreviewCard(CARD_PREVIEW)
             showActivePreview(keepGeneratingIndicator = false)
         } else {
-            setClarificationPreviewVisible(!isClarificationGenerating)
             updateClarificationPreview()
-            switchPreviewCard(CARD_CLARIFY)
         }
     }
 
@@ -1569,8 +1593,7 @@ class SpecDetailPanel(
         treeModel.reload()
         setPhaseStepperEnabled(false)
         updateTreeSelection(null)
-        setClarificationPreviewVisible(true)
-        switchPreviewCard(CARD_PREVIEW)
+        applyPreviewSurfacePlan(SpecDetailPreviewSurfaceCoordinator.forPreview())
         documentTree.isEnabled = true
         previewSourceText = ""
         previewChecklistInteraction = null
@@ -1759,7 +1782,7 @@ class SpecDetailPanel(
         editingPhase = phase
         editorArea.text = document?.content.orEmpty()
         editorArea.caretPosition = 0
-        switchPreviewCard(CARD_EDIT)
+        applyPreviewSurfacePlan(SpecDetailPreviewSurfaceCoordinator.forEdit())
         documentTree.isEnabled = false
         setPhaseStepperEnabled(false)
         refreshInputAreaMode()
@@ -1777,7 +1800,7 @@ class SpecDetailPanel(
         if (completedRevisionPhase != null && explicitRevisionPhase == completedRevisionPhase) {
             explicitRevisionPhase = null
         }
-        switchPreviewCard(CARD_PREVIEW)
+        applyPreviewSurfacePlan(SpecDetailPreviewSurfaceCoordinator.forPreview())
         documentTree.isEnabled = true
         setPhaseStepperEnabled(true)
         refreshInputAreaMode()
@@ -1841,8 +1864,7 @@ class SpecDetailPanel(
         inputArea.caretPosition = 0
         updateInputPlaceholder(phase)
         refreshInputAreaMode()
-        setClarificationPreviewVisible(false)
-        switchPreviewCard(CARD_CLARIFY)
+        applyPreviewSurfacePlan(SpecDetailPreviewSurfaceCoordinator.forClarification(isGenerating = true))
         updateClarificationPreview()
         persistClarificationDraftSnapshot()
 
@@ -1889,8 +1911,7 @@ class SpecDetailPanel(
         }
         updateInputPlaceholder(phase)
         refreshInputAreaMode()
-        setClarificationPreviewVisible(true)
-        switchPreviewCard(CARD_CLARIFY)
+        applyPreviewSurfacePlan(SpecDetailPreviewSurfaceCoordinator.forClarification(isGenerating = false))
         updateClarificationPreview()
         persistClarificationDraftSnapshot()
         setValidationMessage(
@@ -1957,16 +1978,17 @@ class SpecDetailPanel(
         isClarificationChecklistReadOnly = false
         clarificationQuestionsPane.text = ""
         clarificationPreviewPane.text = ""
-        setClarificationPreviewVisible(true)
         updateInputPlaceholder(currentWorkflow?.currentPhase)
         if (clearInput) {
             inputArea.text = ""
         }
-        if (isEditing) {
-            switchPreviewCard(CARD_EDIT)
-        } else {
-            switchPreviewCard(CARD_PREVIEW)
-        }
+        applyPreviewSurfacePlan(
+            if (isEditing) {
+                SpecDetailPreviewSurfaceCoordinator.forEdit()
+            } else {
+                SpecDetailPreviewSurfaceCoordinator.forPreview()
+            },
+        )
         refreshInputAreaMode()
         currentWorkflow?.let { updateButtonStates(it) } ?: disableAllButtons()
     }
@@ -2650,65 +2672,69 @@ class SpecDetailPanel(
         )
     }
 
+    private fun clarificationSectionsLayoutPlan(
+        splitPaneHeight: Int = clarificationSplitPane.height,
+    ): SpecDetailClarificationSectionsLayoutPlan {
+        return SpecDetailClarificationSectionsLayoutCoordinator.buildPlan(
+            questionsExpanded = isClarificationQuestionsExpanded,
+            previewExpanded = isClarificationPreviewExpanded,
+            previewContentVisible = isClarificationPreviewContentVisible,
+            splitPaneHeight = splitPaneHeight,
+            expandedResizeWeight = 0.58,
+            expandedDividerSize = JBUI.scale(4),
+            collapsedSectionHeight = JBUI.scale(36),
+        )
+    }
+
     private fun refreshClarificationSectionsLayout() {
         if (!::clarificationSplitPane.isInitialized) {
             return
         }
+        val layoutPlan = clarificationSectionsLayoutPlan()
         if (::clarificationQuestionsBodyContainer.isInitialized) {
-            clarificationQuestionsBodyContainer.isVisible = isClarificationQuestionsExpanded
+            clarificationQuestionsBodyContainer.isVisible = layoutPlan.questionsBodyVisible
         }
-        val previewBodyVisible = isClarificationPreviewContentVisible && isClarificationPreviewExpanded
         if (::clarificationPreviewBodyContainer.isInitialized) {
-            clarificationPreviewBodyContainer.isVisible = previewBodyVisible
+            clarificationPreviewBodyContainer.isVisible = layoutPlan.previewBodyVisible
         }
         if (::clarificationQuestionsToggleButton.isInitialized) {
             updateCollapseToggleButton(
                 clarificationQuestionsToggleButton,
-                expanded = isClarificationQuestionsExpanded,
-                enabled = true,
+                expanded = layoutPlan.questionsToggle.expanded,
+                enabled = layoutPlan.questionsToggle.enabled,
             )
         }
         if (::clarificationPreviewToggleButton.isInitialized) {
             updateCollapseToggleButton(
                 clarificationPreviewToggleButton,
-                expanded = isClarificationPreviewExpanded,
-                enabled = isClarificationPreviewContentVisible,
+                expanded = layoutPlan.previewToggle.expanded,
+                enabled = layoutPlan.previewToggle.enabled,
             )
         }
-        if (isClarificationPreviewContentVisible) {
+        if (layoutPlan.previewSectionVisible) {
             clarificationPreviewSection.isVisible = true
-            if (clarificationSplitPane.bottomComponent == null) {
+            if (layoutPlan.attachPreviewSection && clarificationSplitPane.bottomComponent == null) {
                 clarificationSplitPane.bottomComponent = clarificationPreviewSection
             }
-            clarificationSplitPane.resizeWeight = 0.58
-            clarificationSplitPane.dividerSize = JBUI.scale(4)
+            clarificationSplitPane.resizeWeight = layoutPlan.resizeWeight
+            clarificationSplitPane.dividerSize = layoutPlan.dividerSize
             SwingUtilities.invokeLater {
                 if (!::clarificationSplitPane.isInitialized) {
                     return@invokeLater
                 }
-                val total = clarificationSplitPane.height - clarificationSplitPane.dividerSize
-                if (total <= 0) {
-                    return@invokeLater
+                clarificationSectionsLayoutPlan(
+                    splitPaneHeight = clarificationSplitPane.height,
+                ).dividerLocation?.let { target ->
+                    clarificationSplitPane.dividerLocation = target
+                    clarificationSplitPane.revalidate()
+                    clarificationSplitPane.repaint()
                 }
-                val collapsedSectionHeight = JBUI.scale(36)
-                val minTop = collapsedSectionHeight
-                val minBottom = collapsedSectionHeight
-                val maxTop = (total - minBottom).coerceAtLeast(minTop)
-                val target = when {
-                    !isClarificationQuestionsExpanded && isClarificationPreviewExpanded -> minTop
-                    isClarificationQuestionsExpanded && !isClarificationPreviewExpanded -> maxTop
-                    !isClarificationQuestionsExpanded && !isClarificationPreviewExpanded -> minTop
-                    else -> (total * 0.58).toInt()
-                }.coerceIn(minTop, maxTop)
-                clarificationSplitPane.dividerLocation = target
-                clarificationSplitPane.revalidate()
-                clarificationSplitPane.repaint()
             }
         } else {
             clarificationPreviewSection.isVisible = false
             clarificationSplitPane.bottomComponent = null
-            clarificationSplitPane.resizeWeight = 1.0
-            clarificationSplitPane.dividerSize = 0
+            clarificationSplitPane.resizeWeight = layoutPlan.resizeWeight
+            clarificationSplitPane.dividerSize = layoutPlan.dividerSize
         }
         clarificationSplitPane.revalidate()
         clarificationSplitPane.repaint()
@@ -2786,8 +2812,7 @@ class SpecDetailPanel(
         }
         updateButtonStates(workflow)
         if (clarificationState != null) {
-            setClarificationPreviewVisible(!isClarificationGenerating)
-            switchPreviewCard(CARD_CLARIFY)
+            applyPreviewSurfacePlan(SpecDetailPreviewSurfaceCoordinator.forClarification(isGenerating = false))
             updateClarificationPreview()
         } else {
             val phase = selectedPhase ?: workflow.currentPhase
@@ -2804,7 +2829,12 @@ class SpecDetailPanel(
         stopGeneratingAnimation()
         setClarificationChecklistReadOnly(false)
         renderPreviewMarkdown(buildValidationPreviewMarkdown(phase, validation))
-        switchPreviewCard(CARD_PREVIEW)
+        applyPreviewSurfacePlan(
+            SpecDetailPreviewSurfaceCoordinator.forPreview(
+                hasClarificationState = clarificationState != null,
+                isClarificationGenerating = isClarificationGenerating,
+            ),
+        )
         setValidationMessage(
             buildValidationFailureLabel(validation),
             JBColor(java.awt.Color(244, 67, 54), java.awt.Color(239, 83, 80)),
@@ -3482,6 +3512,8 @@ class SpecDetailPanel(
     internal fun isClarificationPreviewVisibleForTest(): Boolean {
         return isClarificationPreviewContentVisible
     }
+
+    internal fun currentPreviewCardForTest(): String = activePreviewCard.name
 
     internal fun isClarifyingForTest(): Boolean = clarificationState != null
 

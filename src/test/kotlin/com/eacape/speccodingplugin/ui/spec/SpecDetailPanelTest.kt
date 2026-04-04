@@ -27,6 +27,7 @@ class SpecDetailPanelTest {
         panel.showEmpty()
 
         assertEquals("", panel.currentPreviewTextForTest())
+        assertEquals("PREVIEW", panel.currentPreviewCardForTest())
         assertEquals(SpecCodingBundle.message("spec.detail.noWorkflow"), panel.currentValidationTextForTest())
 
         val states = panel.buttonStatesForTest()
@@ -990,6 +991,7 @@ class SpecDetailPanelTest {
                 SpecCodingBundle.message("spec.workflow.clarify.generating"),
             ),
         )
+        assertEquals("CLARIFY", panel.currentPreviewCardForTest())
         assertFalse(panel.isClarificationPreviewVisibleForTest())
         val generatingStates = panel.buttonStatesForTest()
         assertFalse(generatingStates["confirmGenerateEnabled"] as Boolean)
@@ -1008,6 +1010,7 @@ class SpecDetailPanelTest {
         assertTrue(readyStatus.contains(SpecCodingBundle.message("spec.workflow.clarify.hint")))
         assertFalse(readyStatus.contains("◐"))
         assertTrue(panel.isClarificationPreviewVisibleForTest())
+        assertEquals("CLARIFY", panel.currentPreviewCardForTest())
         assertTrue(panel.isInputSectionVisibleForTest())
         assertFalse(panel.isBottomCollapsedForChecklistForTest())
         val readyStates = panel.buttonStatesForTest()
@@ -1740,6 +1743,7 @@ class SpecDetailPanelTest {
             ),
         )
 
+        assertEquals("PREVIEW", panel.currentPreviewCardForTest())
         val states = panel.buttonStatesForTest()
         assertTrue(states["confirmGenerateEnabled"] as Boolean)
         assertTrue(states["regenerateClarificationEnabled"] as Boolean)
