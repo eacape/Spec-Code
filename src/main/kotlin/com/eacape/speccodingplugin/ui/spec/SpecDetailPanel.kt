@@ -1373,6 +1373,40 @@ class SpecDetailPanel(
         setValidationMessage("", JBColor.GRAY)
     }
 
+    private fun applyPreviewContentPlan(plan: SpecDetailPreviewContentPlan) {
+        renderPreviewMarkdown(
+            content = plan.markdownContent,
+            interactivePhase = plan.interactivePhase,
+        )
+        if (plan.keepGeneratingLabel) {
+            updateGeneratingLabel()
+        } else {
+            val validationPlan = plan.validationMessage
+            if (validationPlan == null) {
+                clearValidationMessage()
+            } else {
+                setValidationMessage(
+                    validationPlan.text,
+                    previewValidationForeground(validationPlan.tone),
+                )
+            }
+        }
+    }
+
+    private fun previewValidationForeground(tone: SpecDetailPreviewValidationTone): Color {
+        return when (tone) {
+            SpecDetailPreviewValidationTone.MUTED -> JBColor.GRAY
+            SpecDetailPreviewValidationTone.SUCCESS -> JBColor(
+                java.awt.Color(76, 175, 80),
+                java.awt.Color(76, 175, 80),
+            )
+            SpecDetailPreviewValidationTone.ERROR -> JBColor(
+                java.awt.Color(244, 67, 54),
+                java.awt.Color(239, 83, 80),
+            )
+        }
+    }
+
     private fun createSectionContainer(
         content: java.awt.Component,
         backgroundColor: Color = PANEL_BG,
@@ -1710,42 +1744,19 @@ class SpecDetailPanel(
 
     private fun showActivePreview(keepGeneratingIndicator: Boolean = true) {
         val workflow = currentWorkflow ?: return
-        if (isWorkbenchArtifactOnlyView()) {
-            showWorkbenchArtifactPreview(keepGeneratingIndicator = keepGeneratingIndicator)
-        } else {
-            showDocumentPreview(selectedPhase ?: workflow.currentPhase, keepGeneratingIndicator = keepGeneratingIndicator)
-        }
-    }
-
-    private fun showWorkbenchArtifactPreview(keepGeneratingIndicator: Boolean = true) {
         if (!keepGeneratingIndicator || !isGeneratingActive) {
             stopGeneratingAnimation()
         }
-        val binding = workbenchArtifactBinding ?: return
-        val artifactName = binding.fileName ?: binding.title
-        val previewContent = binding.previewContent
-        if (!previewContent.isNullOrBlank()) {
-            renderPreviewMarkdown(previewContent)
-        } else {
-            renderPreviewMarkdown(
-                binding.emptyStateMessage ?: SpecCodingBundle.message("spec.detail.workbench.missing", artifactName),
-            )
-        }
-        if (isGeneratingActive && keepGeneratingIndicator) {
-            updateGeneratingLabel()
-            return
-        }
-        setValidationMessage(
-            if (binding.available) {
-                SpecCodingBundle.message("spec.detail.workbench.readOnly", artifactName)
-            } else {
-                binding.unavailableMessage ?: SpecCodingBundle.message("spec.detail.workbench.unavailable", artifactName)
-            },
-            if (binding.available) {
-                JBColor.GRAY
-            } else {
-                JBColor(Color(213, 52, 52), Color(255, 140, 140))
-            },
+        applyPreviewContentPlan(
+            SpecDetailPreviewContentCoordinator.forActivePreview(
+                workflow = workflow,
+                selectedPhase = selectedPhase,
+                workbenchArtifactBinding = workbenchArtifactBinding,
+                isGeneratingActive = isGeneratingActive,
+                keepGeneratingIndicator = keepGeneratingIndicator,
+                revisionLockedPhase = currentReadOnlyRevisionLockedPhase(workflow),
+                isEditing = isEditing,
+            ),
         )
     }
 
@@ -1755,10 +1766,6 @@ class SpecDetailPanel(
 
     private fun currentReadOnlyRevisionLockedPhase(workflow: SpecWorkflow): SpecPhase? {
         return resolveDetailViewState(workflow).revisionLockedPhase
-    }
-
-    private fun revisionLockedHint(phase: SpecPhase): String {
-        return SpecCodingBundle.message("spec.detail.revision.locked.banner", phaseStepperTitle(phase))
     }
 
     private fun revisionLockedDisabledReason(phase: SpecPhase): String {
@@ -2828,16 +2835,17 @@ class SpecDetailPanel(
         isClarificationGenerating = false
         stopGeneratingAnimation()
         setClarificationChecklistReadOnly(false)
-        renderPreviewMarkdown(buildValidationPreviewMarkdown(phase, validation))
+        applyPreviewContentPlan(
+            SpecDetailPreviewContentCoordinator.forValidationFailure(
+                markdownContent = buildValidationPreviewMarkdown(phase, validation),
+                validationMessage = buildValidationFailureLabel(validation),
+            ),
+        )
         applyPreviewSurfacePlan(
             SpecDetailPreviewSurfaceCoordinator.forPreview(
                 hasClarificationState = clarificationState != null,
                 isClarificationGenerating = isClarificationGenerating,
             ),
-        )
-        setValidationMessage(
-            buildValidationFailureLabel(validation),
-            JBColor(java.awt.Color(244, 67, 54), java.awt.Color(239, 83, 80)),
         )
         if (inputArea.text.isBlank()) {
             inputArea.text = buildValidationRepairTemplate(validation)
@@ -2858,56 +2866,21 @@ class SpecDetailPanel(
     }
 
     private fun showDocumentPreview(phase: SpecPhase, keepGeneratingIndicator: Boolean = true) {
+        val workflow = currentWorkflow ?: return
         if (!keepGeneratingIndicator || !isGeneratingActive) {
             stopGeneratingAnimation()
         }
-        val doc = currentWorkflow?.documents?.get(phase)
-        val workbenchBinding = workbenchArtifactBinding?.takeIf { it.documentPhase == phase }
-        if (doc != null) {
-            if (doc.content.isBlank() && !workbenchBinding?.emptyStateMessage.isNullOrBlank()) {
-                renderPreviewMarkdown(workbenchBinding?.emptyStateMessage.orEmpty())
-            } else {
-                renderPreviewMarkdown(doc.content, interactivePhase = phase)
-            }
-            val vr = doc.validationResult
-            if (isGeneratingActive && keepGeneratingIndicator) {
-                updateGeneratingLabel()
-            } else {
-                if (vr != null) {
-                    setValidationMessage(
-                        if (vr.valid) {
-                            SpecCodingBundle.message("spec.detail.validation.passed")
-                        } else {
-                            SpecCodingBundle.message("spec.detail.validation.failed")
-                        },
-                        if (vr.valid) {
-                            JBColor(java.awt.Color(76, 175, 80), java.awt.Color(76, 175, 80))
-                        } else {
-                            JBColor(java.awt.Color(244, 67, 54), java.awt.Color(239, 83, 80))
-                        },
-                    )
-                } else {
-                    clearValidationMessage()
-                }
-            }
-        } else {
-            renderPreviewMarkdown(
-                workbenchBinding?.emptyStateMessage
-                    ?: SpecCodingBundle.message("spec.detail.noDocumentForPhase", phaseDisplayText(phase)),
-            )
-            if (isGeneratingActive && keepGeneratingIndicator) {
-                updateGeneratingLabel()
-            } else {
-                setValidationMessage(workbenchBinding?.unavailableMessage, JBColor.GRAY)
-            }
-        }
-        currentWorkflow
-            ?.takeIf { !isGeneratingActive && !isEditing }
-            ?.let { workflow ->
-                if (currentReadOnlyRevisionLockedPhase(workflow) == phase) {
-                    setValidationMessage(revisionLockedHint(phase), JBColor.GRAY)
-                }
-            }
+        applyPreviewContentPlan(
+            SpecDetailPreviewContentCoordinator.forDocumentPreview(
+                workflow = workflow,
+                phase = phase,
+                workbenchArtifactBinding = workbenchArtifactBinding,
+                isGeneratingActive = isGeneratingActive,
+                keepGeneratingIndicator = keepGeneratingIndicator,
+                revisionLockedPhase = currentReadOnlyRevisionLockedPhase(workflow),
+                isEditing = isEditing,
+            ),
+        )
     }
 
     private fun renderPreviewMarkdown(content: String, interactivePhase: SpecPhase? = null) {
@@ -3802,8 +3775,6 @@ class SpecDetailPanel(
             PhaseDocStatus.PENDING -> if (selected) TREE_STATUS_PENDING_TEXT_SELECTED else TREE_STATUS_PENDING_TEXT
         }
     }
-
-    private fun phaseDisplayText(phase: SpecPhase): String = phase.displayName.lowercase()
 
     companion object {
         private val GENERATING_FRAMES = listOf("◐", "◓", "◑", "◒")
