@@ -35,10 +35,10 @@ set APP_HOME=%DIRNAME%
 @rem Resolve any "." and ".." in APP_HOME to make it shorter.
 for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi
 
-@rem Default to a repo-local Gradle user home so wrapper runs do not depend on
-@rem machine-level caches that may be shared, mutable, or externally managed.
+@rem Default to the repo-local .gradle directory so wrapper runs reuse the
+@rem project's existing Gradle user home instead of creating a sibling directory.
 @rem Set SPEC_CODE_PRESERVE_GRADLE_USER_HOME=true to keep an inherited value.
-if /I not "%SPEC_CODE_PRESERVE_GRADLE_USER_HOME%"=="true" set "GRADLE_USER_HOME=%APP_HOME%\.gradle-user-home"
+if /I not "%SPEC_CODE_PRESERVE_GRADLE_USER_HOME%"=="true" set "GRADLE_USER_HOME=%APP_HOME%\.gradle"
 
 set "SPEC_CODE_REQUIRED_JAVA_MAJOR=21"
 call :ensureSpecCodeJavaHome
@@ -78,6 +78,9 @@ goto fail
 :execute
 @rem Setup the command line
 
+call :tryUseInstalledGradle %*
+if not "%ERRORLEVEL%"=="255" goto end
+
 
 
 @rem Execute Gradle
@@ -100,6 +103,21 @@ if "%OS%"=="Windows_NT" endlocal
 
 :omega
 goto :eof
+
+:tryUseInstalledGradle
+if /I "%SPEC_CODE_PREFER_WRAPPER_DOWNLOAD%"=="true" exit /b 255
+
+set "SPEC_CODE_LOCAL_GRADLE="
+
+@rem Keep this in sync with gradle/wrapper/gradle-wrapper.properties.
+if defined ProgramFiles if exist "%ProgramFiles%\gradle-9.3.1\bin\gradle.bat" (
+    set "SPEC_CODE_LOCAL_GRADLE=%ProgramFiles%\gradle-9.3.1\bin\gradle.bat"
+)
+
+if not defined SPEC_CODE_LOCAL_GRADLE exit /b 255
+
+cmd /d /c ""%SPEC_CODE_LOCAL_GRADLE%" %*"
+exit /b %ERRORLEVEL%
 
 :ensureSpecCodeJavaHome
 set "SPEC_CODE_JAVA_VERSION_FILE=%TEMP%\spec-code-java-version-check.tmp"
@@ -143,8 +161,8 @@ if defined ProgramFiles if exist "%ProgramFiles%\Java" (
     )
 )
 
-if exist "%APP_HOME%\.gradle-user-home\caches" (
-    for /d /r "%APP_HOME%\.gradle-user-home\caches" %%D in (jbr) do (
+if defined GRADLE_USER_HOME if exist "%GRADLE_USER_HOME%\caches" (
+    for /d /r "%GRADLE_USER_HOME%\caches" %%D in (jbr) do (
         if exist "%%~fD\bin\java.exe" (
             call "%%~fD\bin\java.exe" -version 1>"%SPEC_CODE_JAVA_VERSION_FILE%" 2>&1
             findstr /C:%SPEC_CODE_REQUIRED_JAVA_MAJOR%. "%SPEC_CODE_JAVA_VERSION_FILE%" >nul 2>nul

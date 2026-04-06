@@ -149,7 +149,7 @@ class SpecDetailPanel(
     private var currentWorkflow: SpecWorkflow? = null
     private var selectedPhase: SpecPhase? = null
     private var previewSourceText: String = ""
-    private var previewChecklistInteraction: PreviewChecklistInteraction? = null
+    private var previewChecklistInteraction: SpecDetailPreviewChecklistInteractionPlan? = null
     private var isPreviewChecklistSaving: Boolean = false
     private var generatingPercent: Int = 0
     private var generatingFrameIndex: Int = 0
@@ -183,11 +183,6 @@ class SpecDetailPanel(
     init {
         setupUI()
     }
-
-    private data class PreviewChecklistInteraction(
-        val phase: SpecPhase,
-        val content: String,
-    )
 
     private data class ComposerSourceState(
         val workflowId: String? = null,
@@ -2884,78 +2879,79 @@ class SpecDetailPanel(
     }
 
     private fun renderPreviewMarkdown(content: String, interactivePhase: SpecPhase? = null) {
-        val normalizedRaw = content
-            .replace("\r\n", "\n")
-            .replace('\r', '\n')
-            .trim()
-        val sanitized = SpecMarkdownSanitizer.sanitize(normalizedRaw)
-        val displayContent = choosePreviewContent(rawContent = normalizedRaw, sanitizedContent = sanitized)
-        previewSourceText = displayContent
-        val workflow = currentWorkflow
-        previewChecklistInteraction = if (
-            interactivePhase != null &&
-            displayContent == normalizedRaw &&
-            (workflow == null || resolveDetailViewState(workflow).revisionLockedPhase != interactivePhase)
-        ) {
-            PreviewChecklistInteraction(
-                phase = interactivePhase,
-                content = normalizedRaw,
-            )
-        } else {
-            null
-        }
+        val plan = SpecDetailPreviewMarkdownCoordinator.buildPlan(
+            content = content,
+            interactivePhase = interactivePhase,
+            revisionLockedPhase = currentWorkflow?.let(::currentReadOnlyRevisionLockedPhase),
+        )
+        previewSourceText = plan.displayContent
+        previewChecklistInteraction = plan.checklistInteraction
         refreshPreviewChecklistCursor(null)
         runCatching {
-            MarkdownRenderer.render(previewPane, displayContent)
+            MarkdownRenderer.render(previewPane, plan.displayContent)
             previewPane.caretPosition = 0
         }.onFailure {
-            previewPane.text = displayContent
+            previewPane.text = plan.displayContent
             previewPane.caretPosition = 0
         }
         refreshPreviewChecklistCursor(null)
     }
 
     private fun togglePreviewChecklistAt(event: MouseEvent) {
-        if (isEditing || clarificationState != null || isPreviewChecklistSaving) {
-            return
-        }
-        val lineIndex = resolvePreviewChecklistLineIndex(event) ?: return
-        togglePreviewChecklistLine(lineIndex)
+        togglePreviewChecklistLine(resolvePreviewChecklistLineIndex(event))
     }
 
-    private fun togglePreviewChecklistLine(lineIndex: Int) {
-        val interaction = previewChecklistInteraction ?: return
-        val updatedContent = toggleChecklistLine(interaction.content, lineIndex) ?: return
-        if (updatedContent == interaction.content) {
-            return
-        }
+    private fun togglePreviewChecklistLine(lineIndex: Int?) {
+        val plan = SpecDetailPreviewChecklistInteractionCoordinator.buildTogglePlan(
+            interaction = previewChecklistInteraction,
+            lineIndex,
+            isEditing = isEditing,
+            hasClarificationState = clarificationState != null,
+            isSaving = isPreviewChecklistSaving,
+        )
+        if (plan !is SpecDetailPreviewChecklistTogglePlan.Save) return
 
         isPreviewChecklistSaving = true
         refreshPreviewChecklistCursor(null)
-        onSaveDocument(interaction.phase, updatedContent) { result ->
+        onSaveDocument(plan.phase, plan.updatedContent) { result ->
             isPreviewChecklistSaving = false
-            result.onSuccess { updated ->
-                currentWorkflow = updated
-                updateWorkflow(updated)
-            }.onFailure {
-                currentWorkflow?.let(::updateButtonStates)
-            }
+            applyPreviewChecklistSaveCompletion(
+                SpecDetailPreviewChecklistInteractionCoordinator.buildSaveCompletionPlan(
+                    result = result,
+                    hasCurrentWorkflow = currentWorkflow != null,
+                ),
+            )
             refreshPreviewChecklistCursor(null)
         }
     }
 
     private fun refreshPreviewChecklistCursor(event: MouseEvent?) {
-        val cursor = when {
-            isPreviewChecklistSaving -> Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR)
-            previewChecklistInteraction != null &&
-                !isEditing &&
-                clarificationState == null &&
-                event != null &&
-                resolvePreviewChecklistLineIndex(event) != null -> Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            else -> Cursor.getDefaultCursor()
+        val cursor = when (
+            SpecDetailPreviewChecklistInteractionCoordinator.cursorKind(
+                interaction = previewChecklistInteraction,
+                hoveredLineIndex = event?.let(::resolvePreviewChecklistLineIndex),
+                isEditing = isEditing,
+                hasClarificationState = clarificationState != null,
+                isSaving = isPreviewChecklistSaving,
+            )
+        ) {
+            SpecDetailPreviewChecklistCursorKind.WAIT -> Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR)
+            SpecDetailPreviewChecklistCursorKind.HAND -> Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            SpecDetailPreviewChecklistCursorKind.DEFAULT -> Cursor.getDefaultCursor()
         }
         if (previewPane.cursor != cursor) {
             previewPane.cursor = cursor
+        }
+    }
+
+    private fun applyPreviewChecklistSaveCompletion(plan: SpecDetailPreviewChecklistSaveCompletionPlan) {
+        plan.updatedWorkflow?.let { updated ->
+            currentWorkflow = updated
+            updateWorkflow(updated)
+            return
+        }
+        if (plan.refreshButtonStates) {
+            currentWorkflow?.let(::updateButtonStates)
         }
     }
 
@@ -2971,72 +2967,6 @@ class SpecDetailPanel(
         val safePosition = position.coerceIn(0, documentLength - 1)
         val paragraph = previewPane.styledDocument.getParagraphElement(safePosition)
         return MarkdownRenderer.extractChecklistLineIndex(paragraph.attributes)
-    }
-
-    private fun toggleChecklistLine(content: String, lineIndex: Int): String? {
-        val lines = content.lines().toMutableList()
-        if (lineIndex !in lines.indices) {
-            return null
-        }
-        val match = PREVIEW_CHECKLIST_LINE_REGEX.matchEntire(lines[lineIndex]) ?: return null
-        val toggledMarker = if (match.groupValues[2].equals("x", ignoreCase = true)) " " else "x"
-        lines[lineIndex] = buildString {
-            append(match.groupValues[1])
-            append('[')
-            append(toggledMarker)
-            append(']')
-            append(match.groupValues[3])
-        }
-        return lines.joinToString("\n")
-    }
-
-    private fun choosePreviewContent(rawContent: String, sanitizedContent: String): String {
-        val raw = rawContent.trim()
-        val sanitized = sanitizedContent.trim()
-        if (raw.isBlank()) return sanitized
-        if (sanitized.isBlank()) return raw
-
-        if (shouldUseSanitizedPreview(raw)) {
-            return sanitized
-        }
-        if (shouldPreferRawPreview(raw, sanitized)) {
-            return raw
-        }
-        return sanitized
-    }
-
-    private fun shouldUseSanitizedPreview(rawContent: String): Boolean {
-        if (TOOL_NOISE_MARKER_REGEX.containsMatchIn(rawContent)) return true
-        val trimmed = rawContent.trimStart()
-        if (trimmed.startsWith("{") && trimmed.contains("\"content\"")) return true
-        val escapedNewlineCount = ESCAPED_NEWLINE_REGEX.findAll(rawContent).count()
-        val realNewlineCount = rawContent.count { it == '\n' }
-        return escapedNewlineCount >= 2 && escapedNewlineCount > realNewlineCount
-    }
-
-    private fun shouldPreferRawPreview(rawContent: String, sanitizedContent: String): Boolean {
-        if (!CODE_FENCE_MARKER_REGEX.containsMatchIn(rawContent)) return false
-
-        val rawLooksDocument = rawContent
-            .lineSequence()
-            .take(MAX_PREVIEW_DOC_SCAN_LINES)
-            .any { line ->
-                val trimmed = line.trim()
-                HEADING_LINE_REGEX.matches(trimmed) || LIST_OR_CHECKBOX_LINE_REGEX.matches(trimmed)
-            }
-        if (!rawLooksDocument) return false
-
-        val sanitizedLooksDocument = sanitizedContent
-            .lineSequence()
-            .take(MAX_PREVIEW_DOC_SCAN_LINES)
-            .any { line ->
-                val trimmed = line.trim()
-                HEADING_LINE_REGEX.matches(trimmed) || LIST_OR_CHECKBOX_LINE_REGEX.matches(trimmed)
-            }
-        if (sanitizedLooksDocument) return false
-
-        val ratio = sanitizedContent.length.toDouble() / rawContent.length.toDouble()
-        return ratio <= PREVIEW_SANITIZE_COLLAPSE_RATIO
     }
 
     private fun buildValidationIssuesMarkdown(
@@ -3888,16 +3818,5 @@ class SpecDetailPanel(
         private const val CARD_CLARIFY = "clarify"
         private const val CLARIFY_QUESTIONS_CARD_MARKDOWN = "clarify.questions.markdown"
         private const val CLARIFY_QUESTIONS_CARD_CHECKLIST = "clarify.questions.checklist"
-        private val CODE_FENCE_MARKER_REGEX = Regex("```")
-        private val HEADING_LINE_REGEX = Regex("""^\s{0,3}#{1,6}\s+\S+""")
-        private val LIST_OR_CHECKBOX_LINE_REGEX = Regex("""^\s*(?:[-*]\s+\S+|\d+\.\s+\S+|-?\s*\[[ xX]\]\s+\S+)""")
-        private val PREVIEW_CHECKLIST_LINE_REGEX = Regex("""^(\s*(?:[-*]|\d+[.)])\s*)\[( |x|X)](\s+.*)$""")
-        private val TOOL_NOISE_MARKER_REGEX = Regex(
-            pattern = """<tool_|"tool_(?:calls?|name|input)"|plan_file_path""",
-            options = setOf(RegexOption.IGNORE_CASE),
-        )
-        private val ESCAPED_NEWLINE_REGEX = Regex("""\\n|\\r\\n""")
-        private const val MAX_PREVIEW_DOC_SCAN_LINES = 60
-        private const val PREVIEW_SANITIZE_COLLAPSE_RATIO = 0.85
     }
 }

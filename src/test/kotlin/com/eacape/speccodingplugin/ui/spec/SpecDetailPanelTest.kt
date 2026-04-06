@@ -507,6 +507,52 @@ class SpecDetailPanelTest {
     }
 
     @Test
+    fun `preview checklist toggle should ignore additional clicks while saving and recover after failure`() {
+        var saveCalls = 0
+        var pendingSave: ((Result<SpecWorkflow>) -> Unit)? = null
+        val tasksContent = """
+            ### T-002: rollout
+            - [ ] Ship fix
+            - [x] Verify smoke
+        """.trimIndent()
+        val panel = createPanel(
+            onSaveDocument = { _, _, onDone ->
+                saveCalls += 1
+                pendingSave = onDone
+            },
+        )
+        val workflow = SpecWorkflow(
+            id = "wf-checklist-preview-failure",
+            currentPhase = SpecPhase.IMPLEMENT,
+            documents = mapOf(
+                SpecPhase.IMPLEMENT to document(
+                    phase = SpecPhase.IMPLEMENT,
+                    content = tasksContent,
+                    valid = true,
+                ),
+            ),
+            status = WorkflowStatus.IN_PROGRESS,
+            title = "Checklist Preview Failure",
+            description = "toggle markdown checklist in preview",
+            createdAt = 1L,
+            updatedAt = 2L,
+        )
+
+        panel.updateWorkflow(workflow)
+        panel.togglePreviewChecklistForTest(1)
+        panel.togglePreviewChecklistForTest(2)
+
+        assertEquals(1, saveCalls)
+        assertEquals(tasksContent, panel.currentPreviewTextForTest())
+
+        pendingSave?.invoke(Result.failure(IllegalStateException("save failed")))
+        panel.togglePreviewChecklistForTest(2)
+
+        assertEquals(2, saveCalls)
+        assertEquals(tasksContent, panel.currentPreviewTextForTest())
+    }
+
+    @Test
     fun `composer should auto collapse for non current documents and reopen for current stage`() {
         val panel = createPanel()
         val workflow = SpecWorkflow(
