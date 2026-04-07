@@ -148,9 +148,6 @@ class SpecDetailPanel(
 
     private var currentWorkflow: SpecWorkflow? = null
     private var selectedPhase: SpecPhase? = null
-    private var previewSourceText: String = ""
-    private var previewChecklistInteraction: SpecDetailPreviewChecklistInteractionPlan? = null
-    private var isPreviewChecklistSaving: Boolean = false
     private var generatingPercent: Int = 0
     private var generatingFrameIndex: Int = 0
     private var isGeneratingActive: Boolean = false
@@ -179,6 +176,28 @@ class SpecDetailPanel(
     private var hasAppliedInitialBottomHeight: Boolean = false
     private var processTimelineModel = SpecDetailProcessTimelineRenderModel()
     private val composerTitleLabel = JBLabel()
+    private val validationBannerPresenter = SpecDetailValidationBannerPresenter(
+        label = validationLabel,
+        bannerPanel = { if (::validationBannerPanel.isInitialized) validationBannerPanel else null },
+    )
+    private val previewPanePresenter = SpecDetailPreviewPanePresenter(
+        pane = previewPane,
+        isEditing = { isEditing },
+        hasClarificationState = { clarificationState != null },
+        currentWorkflow = { currentWorkflow },
+        resolveRevisionLockedPhase = ::currentReadOnlyRevisionLockedPhase,
+        onSaveDocument = onSaveDocument,
+        onWorkflowUpdated = { updated ->
+            currentWorkflow = updated
+            updateWorkflow(updated)
+        },
+        onRefreshButtonStates = ::updateButtonStates,
+    )
+    private val previewContentPresenter = SpecDetailPreviewContentPresenter(
+        previewPanePresenter = previewPanePresenter,
+        validationBannerPresenter = validationBannerPresenter,
+        onKeepGeneratingLabel = ::updateGeneratingLabel,
+    )
 
     init {
         setupUI()
@@ -218,25 +237,10 @@ class SpecDetailPanel(
         previewPane.isEditable = false
         previewPane.isOpaque = false
         previewPane.border = JBUI.Borders.empty(2, 2)
-        previewPane.addMouseListener(
-            object : MouseAdapter() {
-                override fun mouseClicked(e: MouseEvent) {
-                    if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 1) {
-                        togglePreviewChecklistAt(e)
-                    }
-                }
-
-                override fun mouseExited(e: MouseEvent?) {
-                    refreshPreviewChecklistCursor(null)
-                }
-            },
-        )
-        previewPane.addMouseMotionListener(
-            object : MouseMotionAdapter() {
-                override fun mouseMoved(e: MouseEvent) {
-                    refreshPreviewChecklistCursor(e)
-                }
-            },
+        SpecDetailPreviewChecklistInteractionBinder.bind(
+            pane = previewPane,
+            onToggleRequested = previewPanePresenter::handleToggleRequested,
+            onCursorRefreshRequested = previewPanePresenter::refreshCursor,
         )
 
         previewCardPanel.isOpaque = false
@@ -1347,59 +1351,10 @@ class SpecDetailPanel(
 
     private fun showInputRequiredHint(phase: SpecPhase?) {
         if (phase != SpecPhase.SPECIFY) return
-        setValidationMessage(
+        validationBannerPresenter.show(
             ArtifactComposeActionUiText.inputRequired(currentComposeActionMode(phase)),
             JBColor(Color(213, 52, 52), Color(255, 140, 140)),
         )
-    }
-
-    private fun setValidationMessage(text: String?, foreground: Color = JBColor.GRAY) {
-        val message = text.orEmpty()
-        validationLabel.text = message
-        validationLabel.foreground = foreground
-        if (::validationBannerPanel.isInitialized) {
-            validationBannerPanel.isVisible = message.isNotBlank()
-            validationBannerPanel.parent?.revalidate()
-            validationBannerPanel.parent?.repaint()
-        }
-    }
-
-    private fun clearValidationMessage() {
-        setValidationMessage("", JBColor.GRAY)
-    }
-
-    private fun applyPreviewContentPlan(plan: SpecDetailPreviewContentPlan) {
-        renderPreviewMarkdown(
-            content = plan.markdownContent,
-            interactivePhase = plan.interactivePhase,
-        )
-        if (plan.keepGeneratingLabel) {
-            updateGeneratingLabel()
-        } else {
-            val validationPlan = plan.validationMessage
-            if (validationPlan == null) {
-                clearValidationMessage()
-            } else {
-                setValidationMessage(
-                    validationPlan.text,
-                    previewValidationForeground(validationPlan.tone),
-                )
-            }
-        }
-    }
-
-    private fun previewValidationForeground(tone: SpecDetailPreviewValidationTone): Color {
-        return when (tone) {
-            SpecDetailPreviewValidationTone.MUTED -> JBColor.GRAY
-            SpecDetailPreviewValidationTone.SUCCESS -> JBColor(
-                java.awt.Color(76, 175, 80),
-                java.awt.Color(76, 175, 80),
-            )
-            SpecDetailPreviewValidationTone.ERROR -> JBColor(
-                java.awt.Color(244, 67, 54),
-                java.awt.Color(239, 83, 80),
-            )
-        }
     }
 
     private fun createSectionContainer(
@@ -1624,11 +1579,7 @@ class SpecDetailPanel(
         updateTreeSelection(null)
         applyPreviewSurfacePlan(SpecDetailPreviewSurfaceCoordinator.forPreview())
         documentTree.isEnabled = true
-        previewSourceText = ""
-        previewChecklistInteraction = null
-        isPreviewChecklistSaving = false
-        previewPane.text = ""
-        refreshPreviewChecklistCursor(null)
+        previewPanePresenter.reset()
         clarificationQuestionsPane.text = ""
         clarificationChecklistPanel.removeAll()
         clarificationChecklistHintLabel.text = SpecCodingBundle.message("spec.detail.clarify.checklist.hint")
@@ -2884,90 +2835,7 @@ class SpecDetailPanel(
             interactivePhase = interactivePhase,
             revisionLockedPhase = currentWorkflow?.let(::currentReadOnlyRevisionLockedPhase),
         )
-        previewSourceText = plan.displayContent
-        previewChecklistInteraction = plan.checklistInteraction
-        refreshPreviewChecklistCursor(null)
-        runCatching {
-            MarkdownRenderer.render(previewPane, plan.displayContent)
-            previewPane.caretPosition = 0
-        }.onFailure {
-            previewPane.text = plan.displayContent
-            previewPane.caretPosition = 0
-        }
-        refreshPreviewChecklistCursor(null)
-    }
-
-    private fun togglePreviewChecklistAt(event: MouseEvent) {
-        applyPreviewChecklistTogglePlan(
-            SpecDetailPreviewChecklistInteractionFacade.buildTogglePlan(
-                pane = previewPane,
-                event = event,
-                interaction = previewChecklistInteraction,
-                isEditing = isEditing,
-                hasClarificationState = clarificationState != null,
-                isSaving = isPreviewChecklistSaving,
-            ),
-        )
-    }
-
-    private fun togglePreviewChecklistLine(lineIndex: Int?) {
-        applyPreviewChecklistTogglePlan(
-            SpecDetailPreviewChecklistInteractionCoordinator.buildTogglePlan(
-                interaction = previewChecklistInteraction,
-                lineIndex = lineIndex,
-                isEditing = isEditing,
-                hasClarificationState = clarificationState != null,
-                isSaving = isPreviewChecklistSaving,
-            ),
-        )
-    }
-
-    private fun applyPreviewChecklistTogglePlan(plan: SpecDetailPreviewChecklistTogglePlan) {
-        if (plan !is SpecDetailPreviewChecklistTogglePlan.Save) return
-
-        isPreviewChecklistSaving = true
-        refreshPreviewChecklistCursor(null)
-        onSaveDocument(plan.phase, plan.updatedContent) { result ->
-            isPreviewChecklistSaving = false
-            applyPreviewChecklistSaveCompletion(
-                SpecDetailPreviewChecklistInteractionCoordinator.buildSaveCompletionPlan(
-                    result = result,
-                    hasCurrentWorkflow = currentWorkflow != null,
-                ),
-            )
-            refreshPreviewChecklistCursor(null)
-        }
-    }
-
-    private fun refreshPreviewChecklistCursor(event: MouseEvent?) {
-        val cursor = when (
-            SpecDetailPreviewChecklistInteractionFacade.cursorKind(
-                pane = previewPane,
-                event = event,
-                interaction = previewChecklistInteraction,
-                isEditing = isEditing,
-                hasClarificationState = clarificationState != null,
-                isSaving = isPreviewChecklistSaving,
-            )
-        ) {
-            SpecDetailPreviewChecklistCursorKind.WAIT -> Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR)
-            SpecDetailPreviewChecklistCursorKind.HAND -> Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            SpecDetailPreviewChecklistCursorKind.DEFAULT -> Cursor.getDefaultCursor()
-        }
-        if (previewPane.cursor != cursor) {
-            previewPane.cursor = cursor
-        }
-    }
-
-    private fun applyPreviewChecklistSaveCompletion(plan: SpecDetailPreviewChecklistSaveCompletionPlan) {
-        plan.updatedWorkflow?.let { updated ->
-            currentWorkflow = updated
-            updateWorkflow(updated)
-            return
-        }
-        if (plan.refreshButtonStates) {
-            currentWorkflow?.let(::updateButtonStates)
-        }
+        previewPanePresenter.render(plan)
     }
 
     private fun buildValidationIssuesMarkdown(
@@ -3154,7 +3022,7 @@ class SpecDetailPanel(
     }
 
     internal fun currentPreviewTextForTest(): String {
-        return previewSourceText
+        return previewPanePresenter.currentSourceText()
     }
 
     internal fun currentClarificationPreviewTextForTest(): String {
@@ -3218,7 +3086,7 @@ class SpecDetailPanel(
     internal fun selectedPhaseNameForTest(): String? = selectedPhase?.name
 
     internal fun togglePreviewChecklistForTest(lineIndex: Int) {
-        togglePreviewChecklistLine(lineIndex)
+        previewPanePresenter.toggleLine(lineIndex)
     }
 
     internal fun areDocumentTabsVisibleForTest(): Boolean = false

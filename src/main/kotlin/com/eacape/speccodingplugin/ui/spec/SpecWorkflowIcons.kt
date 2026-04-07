@@ -21,7 +21,10 @@ internal enum class SpecWorkflowActionIcon(
         IconLoader.getIcon("/icons/spec-task-execute-lightning.svg", SpecWorkflowActionIcon::class.java),
     ),
     RETRY("refresh", AllIcons.General.InlineRefresh),
-    COMPLETE("complete", AllIcons.General.GreenCheckmark),
+    COMPLETE(
+        "complete",
+        IconLoader.getIcon("/icons/spec-task-complete.svg", SpecWorkflowActionIcon::class.java),
+    ),
     WAITING_COMPLETE(
         "waitingComplete",
         IconLoader.getIcon("/icons/spec-task-complete-waiting.svg", SpecWorkflowActionIcon::class.java),
