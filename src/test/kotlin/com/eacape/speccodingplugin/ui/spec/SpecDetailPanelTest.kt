@@ -40,6 +40,14 @@ class SpecDetailPanelTest {
         assertFalse(states["pauseResumeVisible"] as Boolean)
         assertFalse(states["openEditorEnabled"] as Boolean)
         assertFalse(states["historyDiffEnabled"] as Boolean)
+        assertTrue(states["generateVisible"] as Boolean)
+        assertTrue(states["openEditorVisible"] as Boolean)
+        assertTrue(states["historyDiffVisible"] as Boolean)
+        assertFalse(states["confirmGenerateVisible"] as Boolean)
+        assertEquals(
+            listOf("generate", "openEditor", "historyDiff", "edit"),
+            panel.visibleComposerActionOrderForTest(),
+        )
     }
 
     @Test
