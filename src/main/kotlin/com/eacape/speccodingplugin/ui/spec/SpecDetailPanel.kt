@@ -2898,17 +2898,31 @@ class SpecDetailPanel(
     }
 
     private fun togglePreviewChecklistAt(event: MouseEvent) {
-        togglePreviewChecklistLine(resolvePreviewChecklistLineIndex(event))
+        applyPreviewChecklistTogglePlan(
+            SpecDetailPreviewChecklistInteractionFacade.buildTogglePlan(
+                pane = previewPane,
+                event = event,
+                interaction = previewChecklistInteraction,
+                isEditing = isEditing,
+                hasClarificationState = clarificationState != null,
+                isSaving = isPreviewChecklistSaving,
+            ),
+        )
     }
 
     private fun togglePreviewChecklistLine(lineIndex: Int?) {
-        val plan = SpecDetailPreviewChecklistInteractionCoordinator.buildTogglePlan(
-            interaction = previewChecklistInteraction,
-            lineIndex,
-            isEditing = isEditing,
-            hasClarificationState = clarificationState != null,
-            isSaving = isPreviewChecklistSaving,
+        applyPreviewChecklistTogglePlan(
+            SpecDetailPreviewChecklistInteractionCoordinator.buildTogglePlan(
+                interaction = previewChecklistInteraction,
+                lineIndex = lineIndex,
+                isEditing = isEditing,
+                hasClarificationState = clarificationState != null,
+                isSaving = isPreviewChecklistSaving,
+            ),
         )
+    }
+
+    private fun applyPreviewChecklistTogglePlan(plan: SpecDetailPreviewChecklistTogglePlan) {
         if (plan !is SpecDetailPreviewChecklistTogglePlan.Save) return
 
         isPreviewChecklistSaving = true
@@ -2927,9 +2941,10 @@ class SpecDetailPanel(
 
     private fun refreshPreviewChecklistCursor(event: MouseEvent?) {
         val cursor = when (
-            SpecDetailPreviewChecklistInteractionCoordinator.cursorKind(
+            SpecDetailPreviewChecklistInteractionFacade.cursorKind(
+                pane = previewPane,
+                event = event,
                 interaction = previewChecklistInteraction,
-                hoveredLineIndex = event?.let(::resolvePreviewChecklistLineIndex),
                 isEditing = isEditing,
                 hasClarificationState = clarificationState != null,
                 isSaving = isPreviewChecklistSaving,
@@ -2953,20 +2968,6 @@ class SpecDetailPanel(
         if (plan.refreshButtonStates) {
             currentWorkflow?.let(::updateButtonStates)
         }
-    }
-
-    private fun resolvePreviewChecklistLineIndex(event: MouseEvent): Int? {
-        val documentLength = previewPane.document.length
-        if (documentLength <= 0) {
-            return null
-        }
-        val position = previewPane.viewToModel2D(event.point)
-        if (position < 0) {
-            return null
-        }
-        val safePosition = position.coerceIn(0, documentLength - 1)
-        val paragraph = previewPane.styledDocument.getParagraphElement(safePosition)
-        return MarkdownRenderer.extractChecklistLineIndex(paragraph.attributes)
     }
 
     private fun buildValidationIssuesMarkdown(
