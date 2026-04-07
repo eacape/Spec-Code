@@ -114,16 +114,10 @@ class SpecDetailPanel(
     private lateinit var validationBannerPanel: JPanel
     private val inputArea = JBTextArea(3, 40)
     private lateinit var clarificationSplitPane: JSplitPane
-    private lateinit var clarificationPreviewSection: JPanel
-    private lateinit var clarificationQuestionsBodyContainer: JPanel
-    private lateinit var clarificationPreviewBodyContainer: JPanel
-    private lateinit var clarificationQuestionsToggleButton: JButton
-    private lateinit var clarificationPreviewToggleButton: JButton
-    private lateinit var processTimelineSection: JPanel
-    private lateinit var processTimelineBodyContainer: JPanel
-    private lateinit var processTimelineToggleButton: JButton
-    private lateinit var composerSectionBodyContainer: JPanel
-    private lateinit var composerSectionToggleButton: JButton
+    private lateinit var composerSection: SpecDetailCollapsibleSectionView
+    private lateinit var clarificationQuestionsSection: SpecDetailCollapsibleSectionView
+    private lateinit var clarificationPreviewSection: SpecDetailCollapsibleSectionView
+    private lateinit var processTimelineSection: SpecDetailCollapsibleSectionView
     private lateinit var inputSectionContainer: JPanel
     private lateinit var actionButtonPanel: JPanel
     private lateinit var bottomPanelContainer: JPanel
@@ -304,9 +298,9 @@ class SpecDetailPanel(
         previewCardPanel.add(createClarificationCard(), CARD_CLARIFY)
         applyDocumentViewportSizing(previewCardPanel)
         switchPreviewCard(SpecDetailPreviewSurfaceCard.PREVIEW)
-        processTimelineSection = createProcessTimelineSection()
+        val processTimelineSectionRoot = createProcessTimelineSection()
         setProcessTimelineVisible(false)
-        previewPanel.add(processTimelineSection, BorderLayout.NORTH)
+        previewPanel.add(processTimelineSectionRoot, BorderLayout.NORTH)
         previewPanel.add(
             previewCardPanel,
             BorderLayout.CENTER,
@@ -385,7 +379,7 @@ class SpecDetailPanel(
         composerContent.add(actionBarLayout.footerContainer, BorderLayout.SOUTH)
         composerTitleLabel.text = SpecCodingBundle.message("spec.detail.composer.title")
         styleClarificationSectionLabel(composerTitleLabel)
-        val composerSection = createCollapsibleSection(
+        composerSection = createCollapsibleSection(
             titleLabel = composerTitleLabel,
             content = createSectionContainer(
                 composerContent,
@@ -399,8 +393,6 @@ class SpecDetailPanel(
                 refreshComposerSectionLayout()
             },
         )
-        composerSectionBodyContainer = composerSection.bodyContainer
-        composerSectionToggleButton = composerSection.toggleButton
         bottomPanelContainer = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.emptyTop(6)
@@ -891,7 +883,7 @@ class SpecDetailPanel(
         clarificationPreviewPane.border = JBUI.Borders.empty(2, 2)
         styleClarificationSectionLabel(clarificationPreviewLabel)
 
-        val questionsCollapsible = createCollapsibleSection(
+        clarificationQuestionsSection = createCollapsibleSection(
             titleLabel = clarificationQuestionsLabel,
             content = createSectionContainer(
                 clarificationQuestionsCardPanel,
@@ -903,11 +895,9 @@ class SpecDetailPanel(
             isClarificationQuestionsExpanded = expanded
             refreshClarificationSectionsLayout()
         }
-        clarificationQuestionsBodyContainer = questionsCollapsible.bodyContainer
-        clarificationQuestionsToggleButton = questionsCollapsible.toggleButton
-        val questionsSection = questionsCollapsible.root
+        val questionsSection = clarificationQuestionsSection.root
 
-        val previewCollapsible = createCollapsibleSection(
+        clarificationPreviewSection = createCollapsibleSection(
             titleLabel = clarificationPreviewLabel,
             content = createSectionContainer(
                 JBScrollPane(clarificationPreviewPane).apply {
@@ -922,16 +912,13 @@ class SpecDetailPanel(
             isClarificationPreviewExpanded = expanded
             refreshClarificationSectionsLayout()
         }
-        clarificationPreviewSection = previewCollapsible.root
-        clarificationPreviewBodyContainer = previewCollapsible.bodyContainer
-        clarificationPreviewToggleButton = previewCollapsible.toggleButton
 
         return JPanel(BorderLayout(0, JBUI.scale(8))).apply {
             isOpaque = true
             background = CLARIFICATION_CARD_BG
             clarificationSplitPane = JSplitPane(JSplitPane.VERTICAL_SPLIT).apply {
                 topComponent = questionsSection
-                bottomComponent = clarificationPreviewSection
+                bottomComponent = clarificationPreviewSection.root
                 resizeWeight = 0.58
                 border = JBUI.Borders.empty()
                 background = PANEL_BG
@@ -951,7 +938,7 @@ class SpecDetailPanel(
         processTimelinePane.border = JBUI.Borders.empty(2, 2)
         styleClarificationSectionLabel(processTimelineLabel)
 
-        val timelineCollapsible = createCollapsibleSection(
+        processTimelineSection = createCollapsibleSection(
             titleLabel = processTimelineLabel,
             content = createSectionContainer(
                 JBScrollPane(processTimelinePane).apply {
@@ -969,51 +956,27 @@ class SpecDetailPanel(
             isProcessTimelineExpanded = expanded
             applyProcessTimelineCollapseState()
         }
-        processTimelineBodyContainer = timelineCollapsible.bodyContainer
-        processTimelineToggleButton = timelineCollapsible.toggleButton
-        return timelineCollapsible.root.apply {
+        return processTimelineSection.root.apply {
             border = JBUI.Borders.emptyBottom(JBUI.scale(2))
             applyProcessTimelineCollapseState()
         }
     }
-
-    private data class CollapsibleSectionWidgets(
-        val root: JPanel,
-        val bodyContainer: JPanel,
-        val toggleButton: JButton,
-    )
 
     private fun createCollapsibleSection(
         titleLabel: JBLabel,
         content: Component,
         expanded: Boolean,
         onToggle: (Boolean) -> Unit,
-    ): CollapsibleSectionWidgets {
-        val body = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            isVisible = expanded
-            add(content, BorderLayout.CENTER)
-        }
-        val toggleButton = JButton().apply {
-            styleCollapsibleToggleButton(this)
-            addActionListener {
-                val nextExpanded = !body.isVisible
-                body.isVisible = nextExpanded
-                onToggle(nextExpanded)
-            }
-        }
-        val header = JPanel(BorderLayout(JBUI.scale(4), 0)).apply {
-            isOpaque = false
-            add(titleLabel, BorderLayout.WEST)
-            add(toggleButton, BorderLayout.EAST)
-        }
-        val root = JPanel(BorderLayout(0, JBUI.scale(4))).apply {
-            isOpaque = false
-            add(header, BorderLayout.NORTH)
-            add(body, BorderLayout.CENTER)
-        }
-        updateCollapseToggleButton(toggleButton, expanded = expanded, enabled = true)
-        return CollapsibleSectionWidgets(root = root, bodyContainer = body, toggleButton = toggleButton)
+    ): SpecDetailCollapsibleSectionView {
+        return SpecDetailCollapsibleSectionView(
+            titleLabel = titleLabel,
+            content = content,
+            expandedInitially = expanded,
+            activeToggleForeground = COLLAPSE_TOGGLE_TEXT_ACTIVE,
+            inactiveToggleForeground = TREE_FILE_TEXT,
+            disabledToggleForeground = TREE_STATUS_PENDING_TEXT,
+            onToggle = onToggle,
+        )
     }
 
     private fun createTopAnchoredStackItem(component: Component): JPanel {
@@ -1029,74 +992,27 @@ class SpecDetailPanel(
         }
     }
 
-    private fun styleCollapsibleToggleButton(button: JButton) {
-        button.isFocusable = false
-        button.isFocusPainted = false
-        button.isContentAreaFilled = false
-        button.isOpaque = false
-        button.isBorderPainted = false
-        button.font = JBUI.Fonts.smallFont().deriveFont(Font.BOLD)
-        button.foreground = TREE_FILE_TEXT
-        button.margin = JBUI.insets(0, 6, 0, 6)
-        button.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-    }
-
-    private fun updateCollapseToggleButton(button: JButton, expanded: Boolean, enabled: Boolean) {
-        val key = if (expanded && enabled) {
-            "spec.detail.toggle.collapse"
-        } else {
-            "spec.detail.toggle.expand"
-        }
-        button.text = SpecCodingBundle.message(key)
-        button.toolTipText = button.text
-        button.isEnabled = enabled
-        button.foreground = when {
-            !enabled -> TREE_STATUS_PENDING_TEXT
-            expanded -> COLLAPSE_TOGGLE_TEXT_ACTIVE
-            else -> TREE_FILE_TEXT
-        }
-        button.cursor = if (enabled) {
-            Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-        } else {
-            Cursor.getDefaultCursor()
-        }
-        applyCollapseToggleButtonSize(button)
-    }
-
-    private fun applyCollapseToggleButtonSize(button: JButton) {
-        val textWidth = button.getFontMetrics(button.font).stringWidth(button.text.orEmpty())
-        val horizontalPadding = button.margin.left + button.margin.right + JBUI.scale(14)
-        val targetWidth = maxOf(JBUI.scale(68), textWidth + horizontalPadding)
-        val targetSize = JBUI.size(targetWidth, JBUI.scale(22))
-        button.preferredSize = targetSize
-        button.minimumSize = targetSize
-    }
-
     private fun refreshCollapsibleToggleTexts() {
-        if (::processTimelineToggleButton.isInitialized) {
-            updateCollapseToggleButton(
-                processTimelineToggleButton,
+        if (::processTimelineSection.isInitialized) {
+            processTimelineSection.applyToggleState(
                 expanded = isProcessTimelineExpanded,
                 enabled = true,
             )
         }
-        if (::clarificationQuestionsToggleButton.isInitialized) {
-            updateCollapseToggleButton(
-                clarificationQuestionsToggleButton,
+        if (::clarificationQuestionsSection.isInitialized) {
+            clarificationQuestionsSection.applyToggleState(
                 expanded = isClarificationQuestionsExpanded,
                 enabled = true,
             )
         }
-        if (::clarificationPreviewToggleButton.isInitialized) {
-            updateCollapseToggleButton(
-                clarificationPreviewToggleButton,
+        if (::clarificationPreviewSection.isInitialized) {
+            clarificationPreviewSection.applyToggleState(
                 expanded = isClarificationPreviewExpanded,
                 enabled = isClarificationPreviewContentVisible,
             )
         }
-        if (::composerSectionToggleButton.isInitialized) {
-            updateCollapseToggleButton(
-                composerSectionToggleButton,
+        if (::composerSection.isInitialized) {
+            composerSection.applyToggleState(
                 expanded = isComposerExpanded,
                 enabled = currentWorkflow != null,
             )
@@ -1319,7 +1235,7 @@ class SpecDetailPanel(
         actionBarPresenter.applyEmptyState()
         composerContextKey = null
         composerManualOverride = null
-        if (::composerSectionBodyContainer.isInitialized) {
+        if (::composerSection.isInitialized) {
             setComposerExpanded(false)
         }
     }
@@ -2234,7 +2150,7 @@ class SpecDetailPanel(
     }
 
     private fun syncComposerSectionState(forceReset: Boolean = false) {
-        if (!::composerSectionBodyContainer.isInitialized) {
+        if (!::composerSection.isInitialized) {
             return
         }
         val contextKey = buildComposerContextKey()
@@ -2274,7 +2190,7 @@ class SpecDetailPanel(
 
     private fun setComposerExpanded(expanded: Boolean) {
         isComposerExpanded = expanded
-        composerSectionBodyContainer.isVisible = expanded
+        composerSection.setBodyVisible(expanded)
         refreshComposerSectionLayout()
         refreshCollapsibleToggleTexts()
     }
@@ -2387,30 +2303,24 @@ class SpecDetailPanel(
             return
         }
         val layoutPlan = clarificationSectionsLayoutPlan()
-        if (::clarificationQuestionsBodyContainer.isInitialized) {
-            clarificationQuestionsBodyContainer.isVisible = layoutPlan.questionsBodyVisible
-        }
-        if (::clarificationPreviewBodyContainer.isInitialized) {
-            clarificationPreviewBodyContainer.isVisible = layoutPlan.previewBodyVisible
-        }
-        if (::clarificationQuestionsToggleButton.isInitialized) {
-            updateCollapseToggleButton(
-                clarificationQuestionsToggleButton,
+        if (::clarificationQuestionsSection.isInitialized) {
+            clarificationQuestionsSection.setBodyVisible(layoutPlan.questionsBodyVisible)
+            clarificationQuestionsSection.applyToggleState(
                 expanded = layoutPlan.questionsToggle.expanded,
                 enabled = layoutPlan.questionsToggle.enabled,
             )
         }
-        if (::clarificationPreviewToggleButton.isInitialized) {
-            updateCollapseToggleButton(
-                clarificationPreviewToggleButton,
+        if (::clarificationPreviewSection.isInitialized) {
+            clarificationPreviewSection.setBodyVisible(layoutPlan.previewBodyVisible)
+            clarificationPreviewSection.applyToggleState(
                 expanded = layoutPlan.previewToggle.expanded,
                 enabled = layoutPlan.previewToggle.enabled,
             )
         }
         if (layoutPlan.previewSectionVisible) {
-            clarificationPreviewSection.isVisible = true
+            clarificationPreviewSection.root.isVisible = true
             if (layoutPlan.attachPreviewSection && clarificationSplitPane.bottomComponent == null) {
-                clarificationSplitPane.bottomComponent = clarificationPreviewSection
+                clarificationSplitPane.bottomComponent = clarificationPreviewSection.root
             }
             clarificationSplitPane.resizeWeight = layoutPlan.resizeWeight
             clarificationSplitPane.dividerSize = layoutPlan.dividerSize
@@ -2427,7 +2337,7 @@ class SpecDetailPanel(
                 }
             }
         } else {
-            clarificationPreviewSection.isVisible = false
+            clarificationPreviewSection.root.isVisible = false
             clarificationSplitPane.bottomComponent = null
             clarificationSplitPane.resizeWeight = layoutPlan.resizeWeight
             clarificationSplitPane.dividerSize = layoutPlan.dividerSize
@@ -2442,33 +2352,28 @@ class SpecDetailPanel(
     }
 
     private fun applyProcessTimelineCollapseState() {
-        if (!::processTimelineBodyContainer.isInitialized) {
+        if (!::processTimelineSection.isInitialized) {
             return
         }
-        processTimelineBodyContainer.isVisible = isProcessTimelineExpanded
-        if (::processTimelineToggleButton.isInitialized) {
-            updateCollapseToggleButton(
-                processTimelineToggleButton,
-                expanded = isProcessTimelineExpanded,
-                enabled = true,
-            )
-        }
-        if (::processTimelineSection.isInitialized) {
-            processTimelineSection.revalidate()
-            processTimelineSection.repaint()
-        }
+        processTimelineSection.setBodyVisible(isProcessTimelineExpanded)
+        processTimelineSection.applyToggleState(
+            expanded = isProcessTimelineExpanded,
+            enabled = true,
+        )
+        processTimelineSection.root.revalidate()
+        processTimelineSection.root.repaint()
     }
 
     private fun setProcessTimelineVisible(visible: Boolean) {
         if (!::processTimelineSection.isInitialized) {
             return
         }
-        processTimelineSection.isVisible = visible
+        processTimelineSection.root.isVisible = visible
         if (visible) {
             applyProcessTimelineCollapseState()
         }
-        processTimelineSection.revalidate()
-        processTimelineSection.repaint()
+        processTimelineSection.root.revalidate()
+        processTimelineSection.root.repaint()
     }
 
     private fun renderProcessTimeline() {
@@ -2855,8 +2760,8 @@ class SpecDetailPanel(
     }
 
     internal fun toggleComposerExpandedForTest() {
-        if (::composerSectionToggleButton.isInitialized) {
-            composerSectionToggleButton.doClick()
+        if (::composerSection.isInitialized) {
+            composerSection.clickToggleForTest()
         }
     }
 
@@ -2909,20 +2814,20 @@ class SpecDetailPanel(
     }
 
     internal fun toggleProcessTimelineExpandedForTest() {
-        if (::processTimelineToggleButton.isInitialized) {
-            processTimelineToggleButton.doClick()
+        if (::processTimelineSection.isInitialized) {
+            processTimelineSection.clickToggleForTest()
         }
     }
 
     internal fun toggleClarificationQuestionsExpandedForTest() {
-        if (::clarificationQuestionsToggleButton.isInitialized) {
-            clarificationQuestionsToggleButton.doClick()
+        if (::clarificationQuestionsSection.isInitialized) {
+            clarificationQuestionsSection.clickToggleForTest()
         }
     }
 
     internal fun toggleClarificationPreviewExpandedForTest() {
-        if (::clarificationPreviewToggleButton.isInitialized) {
-            clarificationPreviewToggleButton.doClick()
+        if (::clarificationPreviewSection.isInitialized) {
+            clarificationPreviewSection.clickToggleForTest()
         }
     }
 
@@ -2939,30 +2844,25 @@ class SpecDetailPanel(
     }
 
     internal fun clarificationQuestionsToggleTextForTest(): String {
-        return if (::clarificationQuestionsToggleButton.isInitialized) {
-            clarificationQuestionsToggleButton.text
+        return if (::clarificationQuestionsSection.isInitialized) {
+            clarificationQuestionsSection.toggleTextForTest()
         } else {
             ""
         }
     }
 
     internal fun clarificationQuestionsToggleHasEnoughWidthForTest(): Boolean {
-        if (!::clarificationQuestionsToggleButton.isInitialized) {
-            return false
-        }
-        val button = clarificationQuestionsToggleButton
-        val textWidth = button.getFontMetrics(button.font).stringWidth(button.text.orEmpty())
-        val horizontalPadding = button.margin.left + button.margin.right + JBUI.scale(14)
-        return button.preferredSize.width >= textWidth + horizontalPadding
+        return ::clarificationQuestionsSection.isInitialized &&
+            clarificationQuestionsSection.toggleHasEnoughWidthForTest()
     }
 
     internal fun clarificationQuestionsToggleCanFitTextForTest(text: String): Boolean {
-        if (!::clarificationQuestionsToggleButton.isInitialized) {
-            return false
-        }
-        clarificationQuestionsToggleButton.text = text
-        applyCollapseToggleButtonSize(clarificationQuestionsToggleButton)
-        return clarificationQuestionsToggleHasEnoughWidthForTest()
+        return ::clarificationQuestionsSection.isInitialized &&
+            clarificationQuestionsSection.toggleCanFitTextForTest(text)
+    }
+
+    internal fun isComposerToggleEnabledForTest(): Boolean {
+        return ::composerSection.isInitialized && composerSection.isToggleEnabledForTest()
     }
 
     internal fun clickGenerateForTest() {
@@ -3012,7 +2912,7 @@ class SpecDetailPanel(
     }
 
     internal fun isProcessTimelineVisibleForTest(): Boolean {
-        return ::processTimelineSection.isInitialized && processTimelineSection.isVisible
+        return ::processTimelineSection.isInitialized && processTimelineSection.root.isVisible
     }
 
     internal fun hasLegacyDocumentModeButtonsForTest(): Boolean {

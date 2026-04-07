@@ -48,6 +48,7 @@ class SpecDetailPanelTest {
             listOf("generate", "openEditor", "historyDiff", "edit"),
             panel.visibleComposerActionOrderForTest(),
         )
+        assertFalse(panel.isComposerToggleEnabledForTest())
     }
 
     @Test
@@ -587,6 +588,7 @@ class SpecDetailPanelTest {
 
         panel.updateWorkflow(workflow)
         assertTrue(panel.isComposerExpandedForTest())
+        assertTrue(panel.isComposerToggleEnabledForTest())
 
         panel.updateWorkbenchState(
             state = workbenchState(
