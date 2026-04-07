@@ -131,7 +131,11 @@ internal object SpecDetailClarificationChecklistCoordinator {
         return SpecDetailClarificationChecklistMutationResult(
             state = mutation.state,
             activeDetailIndex = mutation.activeDetailIndex,
-            confirmedContext = mutation.state.confirmedContext(text),
+            confirmedContext = SpecDetailClarificationContextCoordinator.resolveConfirmedContext(
+                state = mutation.state,
+                clarificationInput = "",
+                clarificationText = text,
+            ),
             questionListChanged = questionListChanged,
         )
     }

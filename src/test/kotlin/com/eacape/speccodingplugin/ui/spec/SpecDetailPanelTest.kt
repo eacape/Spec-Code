@@ -1201,6 +1201,50 @@ class SpecDetailPanelTest {
     }
 
     @Test
+    fun `clarification regenerate should reuse checklist confirmed context`() {
+        var regenerateInput: String? = null
+        var regenerateContext: String? = null
+        val panel = createPanel(
+            onClarificationRegenerate = { input, context ->
+                regenerateInput = input
+                regenerateContext = context
+            },
+        )
+        val workflow = SpecWorkflow(
+            id = "wf-checklist-regenerate",
+            currentPhase = SpecPhase.SPECIFY,
+            documents = mapOf(
+                SpecPhase.SPECIFY to document(
+                    phase = SpecPhase.SPECIFY,
+                    content = "requirements",
+                    valid = true,
+                ),
+            ),
+            status = WorkflowStatus.IN_PROGRESS,
+            title = "Checklist Regenerate",
+            description = "Clarification regenerate should reuse confirmed context",
+            createdAt = 1L,
+            updatedAt = 2L,
+        )
+        panel.updateWorkflow(workflow)
+        panel.showClarificationDraft(
+            phase = SpecPhase.SPECIFY,
+            input = "clarify storage",
+            questionsMarkdown = "1. clarify",
+            suggestedDetails = "",
+            structuredQuestions = listOf("Should support offline sync"),
+        )
+
+        panel.toggleClarificationQuestionForTest(0)
+        panel.setClarificationQuestionDetailForTest(0, "Keep queue locally")
+        panel.clickRegenerateClarificationForTest()
+
+        assertEquals("clarify storage", regenerateInput)
+        assertTrue((regenerateContext ?: "").contains("Should support offline sync"))
+        assertTrue((regenerateContext ?: "").contains("Keep queue locally"))
+    }
+
+    @Test
     fun `clarification checklist should auto collapse previous detail editor when switching items`() {
         val panel = createPanel()
         val workflow = SpecWorkflow(
@@ -1847,11 +1891,58 @@ class SpecDetailPanelTest {
         assertEquals("", confirmedContext)
     }
 
+    @Test
+    fun `clarification skip and cancel should route through action plan and exit clarify mode`() {
+        var skippedInput: String? = null
+        var cancelCalls = 0
+        val panel = createPanel(
+            onClarificationSkip = { input ->
+                skippedInput = input
+            },
+            onClarificationCancel = {
+                cancelCalls += 1
+            },
+        )
+        val workflow = SpecWorkflow(
+            id = "wf-clarify-skip-cancel",
+            currentPhase = SpecPhase.SPECIFY,
+            documents = mapOf(
+                SpecPhase.SPECIFY to document(
+                    phase = SpecPhase.SPECIFY,
+                    content = "requirements",
+                    valid = true,
+                ),
+            ),
+            status = WorkflowStatus.IN_PROGRESS,
+            title = "Clarify Skip Cancel",
+            description = "clarification action plan should route skip and cancel",
+            createdAt = 1L,
+            updatedAt = 2L,
+        )
+        panel.updateWorkflow(workflow)
+        panel.showClarificationDraft(
+            phase = SpecPhase.SPECIFY,
+            input = "clarify retry policy",
+            questionsMarkdown = "1. clarify",
+            suggestedDetails = "keep manual review",
+        )
+
+        panel.clickSkipClarificationForTest()
+        assertEquals("clarify retry policy", skippedInput)
+        assertTrue(panel.isClarifyingForTest())
+
+        panel.clickCancelClarificationForTest()
+        assertEquals(1, cancelCalls)
+        assertFalse(panel.isClarifyingForTest())
+    }
+
     private fun createPanel(
         onGenerate: (String) -> Unit = {},
         canGenerateWithEmptyInput: () -> Boolean = { false },
         onClarificationConfirm: (String, String) -> Unit = { _, _ -> },
         onClarificationRegenerate: (String, String) -> Unit = { _, _ -> },
+        onClarificationSkip: (String) -> Unit = {},
+        onClarificationCancel: () -> Unit = {},
         onOpenArtifactInEditor: (String) -> Unit = {},
         onSaveDocument: (SpecPhase, String, (Result<SpecWorkflow>) -> Unit) -> Unit = { _, _, onDone ->
             onDone(Result.failure(IllegalStateException("not implemented")))
@@ -1866,8 +1957,8 @@ class SpecDetailPanelTest {
             onRestoreWorkflowSourcesRequested = {},
             onClarificationConfirm = onClarificationConfirm,
             onClarificationRegenerate = onClarificationRegenerate,
-            onClarificationSkip = {},
-            onClarificationCancel = {},
+            onClarificationSkip = onClarificationSkip,
+            onClarificationCancel = onClarificationCancel,
             onNextPhase = {},
             onGoBack = {},
             onComplete = {},

@@ -42,6 +42,25 @@ class SpecDetailPreviewPanePresenterTest {
     }
 
     @Test
+    fun `renderContent should build markdown plan and store rendered source text`() {
+        val pane = JTextPane()
+        val presenter = createPresenter(
+            pane = pane,
+            renderMarkdown = { target, content ->
+                target.text = "rendered:$content"
+            },
+        )
+
+        presenter.renderContent(
+            content = "## Preview",
+            interactivePhase = SpecPhase.DESIGN,
+        )
+
+        assertEquals("## Preview", presenter.currentSourceText())
+        assertEquals("rendered:## Preview", pane.text)
+    }
+
+    @Test
     fun `toggleLine should reuse rendered checklist interaction and forward successful save`() {
         val pane = JTextPane()
         var savedPhase: SpecPhase? = null

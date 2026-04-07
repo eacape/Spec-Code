@@ -179,6 +179,8 @@ class SpecDetailPanel(
     private val validationBannerPresenter = SpecDetailValidationBannerPresenter(
         label = validationLabel,
         bannerPanel = { if (::validationBannerPanel.isInitialized) validationBannerPanel else null },
+        infoForeground = TREE_TEXT,
+        generatingForeground = GENERATING_FG,
     )
     private val previewPanePresenter = SpecDetailPreviewPanePresenter(
         pane = previewPane,
@@ -489,43 +491,32 @@ class SpecDetailPanel(
             stopEditing(keepText = false)
         }
         confirmGenerateButton.addActionListener {
-            val state = clarificationState ?: return@addActionListener
-            if (state.checklistMode) {
-                val firstMissingDetailQuestion = state.firstMissingConfirmedQuestion()
-                if (firstMissingDetailQuestion != null) {
-                    setValidationMessage(
-                        SpecCodingBundle.message(
-                            "spec.detail.clarify.checklist.detail.required",
-                            firstMissingDetailQuestion,
-                        ),
-                        JBColor(Color(213, 52, 52), Color(255, 140, 140)),
-                    )
-                    return@addActionListener
-                }
-            }
-            val confirmed = resolveClarificationConfirmedContext(state)
-            val allowBlank = state.phase == SpecPhase.DESIGN || state.phase == SpecPhase.IMPLEMENT
-            if (confirmed.isBlank() && !allowBlank) {
-                setValidationMessage(
-                    SpecCodingBundle.message("spec.detail.clarify.detailsRequired"),
-                    JBColor(Color(213, 52, 52), Color(255, 140, 140)),
-                )
-                return@addActionListener
-            }
-            setClarificationChecklistReadOnly(true)
-            onClarificationConfirm(state.input, confirmed)
+            applyClarificationActionPlan(
+                SpecDetailClarificationActionCoordinator.confirm(
+                    state = clarificationState,
+                    clarificationInput = inputArea.text,
+                    clarificationText = clarificationText(),
+                ),
+            )
         }
         regenerateClarificationButton.addActionListener {
-            val state = clarificationState ?: return@addActionListener
-            onClarificationRegenerate(state.input, resolveClarificationConfirmedContext(state))
+            applyClarificationActionPlan(
+                SpecDetailClarificationActionCoordinator.regenerate(
+                    state = clarificationState,
+                    clarificationInput = inputArea.text,
+                    clarificationText = clarificationText(),
+                ),
+            )
         }
         skipClarificationButton.addActionListener {
-            val state = clarificationState ?: return@addActionListener
-            onClarificationSkip(state.input)
+            applyClarificationActionPlan(
+                SpecDetailClarificationActionCoordinator.skip(clarificationState),
+            )
         }
         cancelClarificationButton.addActionListener {
-            exitClarificationMode(clearInput = false)
-            onClarificationCancel()
+            applyClarificationActionPlan(
+                SpecDetailClarificationActionCoordinator.cancel(clarificationState),
+            )
         }
 
         panel.add(generateButton)
@@ -1493,7 +1484,7 @@ class SpecDetailPanel(
         updateClarificationPreview()
         refreshInputAreaMode()
         if (currentWorkflow == null) {
-            setValidationMessage(SpecCodingBundle.message("spec.detail.noWorkflow"))
+            validationBannerPresenter.applyStatus(SpecDetailPreviewStatusCoordinator.noWorkflow())
         } else {
             showActivePreview()
         }
@@ -1584,7 +1575,7 @@ class SpecDetailPanel(
         clarificationChecklistPanel.removeAll()
         clarificationChecklistHintLabel.text = SpecCodingBundle.message("spec.detail.clarify.checklist.hint")
         clarificationPreviewPane.text = ""
-        setValidationMessage(SpecCodingBundle.message("spec.detail.noWorkflow"))
+        validationBannerPresenter.applyStatus(SpecDetailPreviewStatusCoordinator.noWorkflow())
         inputArea.isEnabled = true
         inputArea.isEditable = true
         inputArea.toolTipText = null
@@ -1693,7 +1684,7 @@ class SpecDetailPanel(
         if (!keepGeneratingIndicator || !isGeneratingActive) {
             stopGeneratingAnimation()
         }
-        applyPreviewContentPlan(
+        previewContentPresenter.apply(
             SpecDetailPreviewContentCoordinator.forActivePreview(
                 workflow = workflow,
                 selectedPhase = selectedPhase,
@@ -1857,7 +1848,12 @@ class SpecDetailPanel(
             questionDetails = draftState.state.questionDetails,
         )
         if (draftState.state.checklistMode) {
-            syncClarificationInputFromSelection(clarificationState)
+            applyClarificationInputSync(
+                SpecDetailClarificationContextCoordinator.resolveInputSyncPlan(
+                    state = clarificationState,
+                    clarificationText = clarificationText(),
+                ),
+            )
         } else {
             inputArea.text = suggestedDetails
             inputArea.caretPosition = 0
@@ -1867,9 +1863,8 @@ class SpecDetailPanel(
         applyPreviewSurfacePlan(SpecDetailPreviewSurfaceCoordinator.forClarification(isGenerating = false))
         updateClarificationPreview()
         persistClarificationDraftSnapshot()
-        setValidationMessage(
-            ArtifactComposeActionUiText.clarificationHint(currentComposeActionMode(phase)),
-            TREE_TEXT,
+        validationBannerPresenter.applyStatus(
+            SpecDetailPreviewStatusCoordinator.clarificationHint(currentComposeActionMode(phase)),
         )
         currentWorkflow?.let { updateButtonStates(it) } ?: disableAllButtons()
     }
@@ -2365,27 +2360,16 @@ class SpecDetailPanel(
         inputArea.caretPosition = 0
         updateClarificationPreview()
         persistClarificationDraftSnapshot(result.state)
-        setValidationMessage(
-            ArtifactComposeActionUiText.clarificationHint(currentComposeActionMode(phase)),
-            TREE_TEXT,
+        validationBannerPresenter.applyStatus(
+            SpecDetailPreviewStatusCoordinator.clarificationHint(currentComposeActionMode(phase)),
         )
         currentWorkflow?.let(::updateButtonStates)
     }
 
-    private fun resolveClarificationConfirmedContext(state: SpecDetailClarificationFormState): String {
-        if (state.checklistMode) {
-            return state.confirmedContext(clarificationText())
-        }
-        return normalizeContent(inputArea.text)
-    }
-
-    private fun syncClarificationInputFromSelection(state: SpecDetailClarificationFormState?) {
-        val currentState = state ?: clarificationState ?: return
-        if (!currentState.checklistMode) {
-            return
-        }
-        inputArea.text = currentState.confirmedContext(clarificationText())
-        inputArea.caretPosition = 0
+    private fun applyClarificationInputSync(plan: SpecDetailClarificationInputSyncPlan?) {
+        val syncPlan = plan ?: return
+        inputArea.text = syncPlan.inputText
+        inputArea.caretPosition = syncPlan.caretPosition.coerceIn(0, inputArea.text.length)
     }
 
     private fun clarificationText(): SpecDetailClarificationText {
@@ -2396,6 +2380,33 @@ class SpecDetailPanel(
             confirmedSectionMarkers = clarificationConfirmedSectionMarkers(),
             notApplicableSectionMarkers = clarificationNotApplicableSectionMarkers(),
         )
+    }
+
+    private fun applyClarificationActionPlan(plan: SpecDetailClarificationActionPlan) {
+        when (plan) {
+            SpecDetailClarificationActionPlan.Ignore -> Unit
+            is SpecDetailClarificationActionPlan.Validation -> {
+                validationBannerPresenter.applyPreviewValidation(plan.banner)
+            }
+
+            is SpecDetailClarificationActionPlan.Confirm -> {
+                setClarificationChecklistReadOnly(plan.setChecklistReadOnly)
+                onClarificationConfirm(plan.input, plan.confirmedContext)
+            }
+
+            is SpecDetailClarificationActionPlan.Regenerate -> {
+                onClarificationRegenerate(plan.input, plan.confirmedContext)
+            }
+
+            is SpecDetailClarificationActionPlan.Skip -> {
+                onClarificationSkip(plan.input)
+            }
+
+            SpecDetailClarificationActionPlan.Cancel -> {
+                exitClarificationMode(clearInput = false)
+                onClarificationCancel()
+            }
+        }
     }
 
     private fun clarificationConfirmedSectionMarkers(): List<String> {
@@ -2617,11 +2628,16 @@ class SpecDetailPanel(
 
     private fun persistClarificationDraftSnapshot(state: SpecDetailClarificationFormState? = clarificationState) {
         val snapshot = state ?: return
+        val plan = SpecDetailClarificationContextCoordinator.resolveDraftAutosavePlan(
+            state = snapshot,
+            clarificationInput = inputArea.text,
+            clarificationText = clarificationText(),
+        )
         onClarificationDraftAutosave(
-            snapshot.input,
-            resolveClarificationConfirmedContext(snapshot),
-            snapshot.questionsMarkdown,
-            snapshot.structuredQuestions,
+            plan.input,
+            plan.confirmedContext,
+            plan.questionsMarkdown,
+            plan.structuredQuestions,
         )
     }
 
@@ -2760,7 +2776,7 @@ class SpecDetailPanel(
         setClarificationChecklistReadOnly(false)
         val workflow = currentWorkflow
         if (workflow == null) {
-            setValidationMessage(SpecCodingBundle.message("spec.detail.noWorkflow"))
+            validationBannerPresenter.applyStatus(SpecDetailPreviewStatusCoordinator.noWorkflow())
             return
         }
         updateButtonStates(workflow)
@@ -2781,7 +2797,7 @@ class SpecDetailPanel(
         isClarificationGenerating = false
         stopGeneratingAnimation()
         setClarificationChecklistReadOnly(false)
-        applyPreviewContentPlan(
+        previewContentPresenter.apply(
             SpecDetailPreviewContentCoordinator.forValidationFailure(
                 markdownContent = buildValidationPreviewMarkdown(phase, validation),
                 validationMessage = buildValidationFailureLabel(validation),
@@ -2816,7 +2832,7 @@ class SpecDetailPanel(
         if (!keepGeneratingIndicator || !isGeneratingActive) {
             stopGeneratingAnimation()
         }
-        applyPreviewContentPlan(
+        previewContentPresenter.apply(
             SpecDetailPreviewContentCoordinator.forDocumentPreview(
                 workflow = workflow,
                 phase = phase,
@@ -2827,15 +2843,6 @@ class SpecDetailPanel(
                 isEditing = isEditing,
             ),
         )
-    }
-
-    private fun renderPreviewMarkdown(content: String, interactivePhase: SpecPhase? = null) {
-        val plan = SpecDetailPreviewMarkdownCoordinator.buildPlan(
-            content = content,
-            interactivePhase = interactivePhase,
-            revisionLockedPhase = currentWorkflow?.let(::currentReadOnlyRevisionLockedPhase),
-        )
-        previewPanePresenter.render(plan)
     }
 
     private fun buildValidationIssuesMarkdown(
@@ -2931,12 +2938,14 @@ class SpecDetailPanel(
 
     private fun updateGeneratingLabel() {
         val frame = GENERATING_FRAMES[generatingFrameIndex]
-        val text = if (isClarificationGenerating) {
-            ArtifactComposeActionUiText.clarificationGenerating(currentComposeActionMode())
-        } else {
-            ArtifactComposeActionUiText.activeProgress(currentComposeActionMode(), generatingPercent)
-        }
-        setValidationMessage("$text $frame", GENERATING_FG)
+        validationBannerPresenter.applyStatus(
+            SpecDetailPreviewStatusCoordinator.generating(
+                mode = currentComposeActionMode(),
+                progressPercent = generatingPercent,
+                frame = frame,
+                isClarificationGenerating = isClarificationGenerating,
+            ),
+        )
     }
 
     private fun updateButtonStates(workflow: SpecWorkflow) {
@@ -3010,7 +3019,12 @@ class SpecDetailPanel(
 
     fun clearInput() {
         if (clarificationState?.structuredQuestions?.isNotEmpty() == true) {
-            syncClarificationInputFromSelection(clarificationState)
+            applyClarificationInputSync(
+                SpecDetailClarificationContextCoordinator.resolveInputSyncPlan(
+                    state = clarificationState,
+                    clarificationText = clarificationText(),
+                ),
+            )
             updateClarificationPreview()
             return
         }
@@ -3275,6 +3289,18 @@ class SpecDetailPanel(
 
     internal fun clickConfirmGenerateForTest() {
         confirmGenerateButton.doClick()
+    }
+
+    internal fun clickRegenerateClarificationForTest() {
+        regenerateClarificationButton.doClick()
+    }
+
+    internal fun clickSkipClarificationForTest() {
+        skipClarificationButton.doClick()
+    }
+
+    internal fun clickCancelClarificationForTest() {
+        cancelClarificationButton.doClick()
     }
 
     internal fun clickOpenEditorForTest() {
