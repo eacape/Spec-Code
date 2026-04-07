@@ -5227,8 +5227,6 @@ class SpecWorkflowPanel(
 
     internal fun currentDocumentPreviewTextForTest(): String = detailPanel.currentPreviewTextForTest()
 
-    internal fun currentDocumentMetaTextForTest(): String = detailPanel.currentDocumentMetaTextForTest()
-
     internal fun composerSourceChipLabelsForTest(): List<String> = detailPanel.composerSourceChipLabelsForTest()
 
     internal fun composerSourceMetaTextForTest(): String = detailPanel.composerSourceMetaTextForTest()

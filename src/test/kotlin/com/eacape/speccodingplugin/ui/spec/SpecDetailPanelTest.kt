@@ -114,7 +114,7 @@ class SpecDetailPanelTest {
         assertTrue(states["historyDiffEnabled"] as Boolean)
         assertEquals("history", states["historyDiffIconId"])
         assertTrue(states["historyDiffFocusable"] as Boolean)
-        assertEquals(0, panel.documentToolbarActionCountForTest())
+        assertEquals(SpecPhase.DESIGN.name, panel.selectedPhaseNameForTest())
         assertEquals(
             listOf("generate", "openEditor", "historyDiff", "edit"),
             panel.visibleComposerActionOrderForTest(),
@@ -732,9 +732,7 @@ class SpecDetailPanelTest {
             SpecCodingBundle.message("spec.detail.workbench.readOnly", "verification.md"),
             panel.currentValidationTextForTest(),
         )
-        assertEquals("", panel.currentDocumentMetaTextForTest())
         assertEquals(null, panel.selectedPhaseNameForTest())
-        assertFalse(panel.areDocumentTabsVisibleForTest())
 
         val states = panel.buttonStatesForTest()
         assertTrue(states["openEditorEnabled"] as Boolean)
@@ -800,9 +798,7 @@ class SpecDetailPanelTest {
 
         assertEquals(emptyMessage, panel.currentPreviewTextForTest())
         assertEquals(emptyMessage, panel.currentValidationTextForTest())
-        assertEquals("", panel.currentDocumentMetaTextForTest())
         assertEquals(SpecPhase.SPECIFY.name, panel.selectedPhaseNameForTest())
-        assertFalse(panel.areDocumentTabsVisibleForTest())
     }
 
     @Test
@@ -859,9 +855,7 @@ class SpecDetailPanelTest {
 
         assertEquals(emptyMessage, panel.currentPreviewTextForTest())
         assertEquals(emptyMessage, panel.currentValidationTextForTest())
-        assertEquals("", panel.currentDocumentMetaTextForTest())
         assertEquals(null, panel.selectedPhaseNameForTest())
-        assertFalse(panel.areDocumentTabsVisibleForTest())
     }
 
     @Test

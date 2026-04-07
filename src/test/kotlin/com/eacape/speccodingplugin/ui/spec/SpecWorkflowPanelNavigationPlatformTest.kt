@@ -526,7 +526,6 @@ class SpecWorkflowPanelNavigationPlatformTest : BasePlatformTestCase() {
                 panel.currentDocumentPreviewTextForTest().contains("verification preview")
         }
 
-        assertEquals("verification.md", panel.currentDocumentMetaTextForTest())
         assertTrue(panel.currentDocumentPreviewTextForTest().contains("# Verification Document"))
     }
 
@@ -595,7 +594,6 @@ class SpecWorkflowPanelNavigationPlatformTest : BasePlatformTestCase() {
         assertNotEquals(tasksProgress, verifySnapshot.getValue("progress"))
         assertNull(panel.currentPrimaryActionKindForTest())
         assertTrue(panel.visibleWorkspaceSectionIdsForTest().contains(SpecWorkflowWorkspaceSectionId.VERIFY))
-        assertEquals("verification.md", panel.currentDocumentMetaTextForTest())
     }
 
 

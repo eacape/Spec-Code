@@ -87,8 +87,6 @@ class SpecDetailPanel(
     private val treeModel = DefaultTreeModel(treeRoot)
     private val documentTree = JTree(treeModel)
     private val phaseStepperRail = PhaseStepperRail()
-    private val documentTabsPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0))
-    private val documentTabButtons = linkedMapOf<SpecPhase, JButton>()
 
     private val previewPane = JTextPane()
     private val clarificationQuestionsPane = JTextPane()
@@ -449,31 +447,6 @@ class SpecDetailPanel(
         return workflow.resolveComposeActionMode(resolvedPhase)
     }
 
-    private fun configureDocumentTabsPanel() {
-        documentTabsPanel.isOpaque = false
-        documentTabsPanel.removeAll()
-        documentTabButtons.clear()
-        SpecPhase.entries.forEach { phase ->
-            val button = JButton().apply {
-                isFocusable = false
-                addActionListener {
-                    if (!isPhaseStepperEnabled) return@addActionListener
-                    val workflow = currentWorkflow ?: return@addActionListener
-                    if (selectedPhase == phase) return@addActionListener
-                    selectedPhase = phase
-                    updateTreeSelection(phase)
-                    showDocumentPreview(phase)
-                    updateButtonStates(workflow)
-                    updatePhaseStepperVisuals()
-                }
-            }
-            SpecDetailButtonChromeStyler.apply(button)
-            documentTabsPanel.add(button)
-            documentTabButtons[phase] = button
-        }
-        updatePhaseStepperVisuals()
-    }
-
     private fun phaseStepperTitle(phase: SpecPhase): String {
         return when (phase) {
             SpecPhase.SPECIFY -> SpecCodingBundle.message("spec.detail.step.requirements")
@@ -550,38 +523,6 @@ class SpecDetailPanel(
             StageId.ARCHIVE,
             -> null
         }
-    }
-
-    private fun applyDocumentTabButtonStyle(
-        button: JButton,
-        selected: Boolean,
-        current: Boolean,
-        available: Boolean,
-    ) {
-        val background = when {
-            selected -> DOCUMENT_TAB_BG_SELECTED
-            current -> DOCUMENT_TAB_BG_CURRENT
-            available -> DOCUMENT_TAB_BG_AVAILABLE
-            else -> DOCUMENT_TAB_BG_IDLE
-        }
-        val border = when {
-            selected -> DOCUMENT_TAB_BORDER_SELECTED
-            current -> DOCUMENT_TAB_BORDER_CURRENT
-            available -> DOCUMENT_TAB_BORDER_AVAILABLE
-            else -> DOCUMENT_TAB_BORDER_IDLE
-        }
-        val foreground = when {
-            selected -> DOCUMENT_TAB_TEXT_SELECTED
-            current -> DOCUMENT_TAB_TEXT_CURRENT
-            available -> DOCUMENT_TAB_TEXT_AVAILABLE
-            else -> DOCUMENT_TAB_TEXT_IDLE
-        }
-        button.background = background
-        button.foreground = foreground
-        button.border = BorderFactory.createCompoundBorder(
-            SpecUiStyle.roundedLineBorder(border, JBUI.scale(10)),
-            JBUI.Borders.empty(2, 8, 2, 8),
-        )
     }
 
     private inner class PhaseStepperRail : JPanel() {
@@ -1088,17 +1029,8 @@ class SpecDetailPanel(
         component.minimumSize = viewportSize
     }
 
-    private fun updateButtonCursor(button: JButton) {
-        button.cursor = if (button.isEnabled) {
-            Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-        } else {
-            Cursor.getDefaultCursor()
-        }
-    }
-
     private fun refreshActionButtonCursors() {
         actionBarPresenter.refreshCursors()
-        documentTabButtons.values.forEach(::updateButtonCursor)
     }
 
     fun refreshLocalizedTexts() {
@@ -2660,10 +2592,6 @@ class SpecDetailPanel(
         return ::validationBannerPanel.isInitialized && validationBannerPanel.isVisible
     }
 
-    internal fun currentDocumentMetaTextForTest(): String {
-        return ""
-    }
-
     internal fun currentInputTextForTest(): String {
         return inputArea.text
     }
@@ -2697,8 +2625,6 @@ class SpecDetailPanel(
     internal fun togglePreviewChecklistForTest(lineIndex: Int) {
         previewPanePresenter.toggleLine(lineIndex)
     }
-
-    internal fun areDocumentTabsVisibleForTest(): Boolean = false
 
     internal fun toggleClarificationQuestionForTest(index: Int) {
         val currentDecision = clarificationState
@@ -2929,10 +2855,6 @@ class SpecDetailPanel(
             "inputEditable" to inputArea.isEditable,
             "inputTooltip" to inputArea.toolTipText.orEmpty(),
         )
-    }
-
-    internal fun documentToolbarActionCountForTest(): Int {
-        return 0
     }
 
     internal fun visibleComposerActionOrderForTest(): List<String> {
@@ -3193,18 +3115,6 @@ class SpecDetailPanel(
         private val TREE_STATUS_DRAFT_TEXT_SELECTED = JBColor(Color(124, 102, 77), Color(246, 223, 187))
         private val TREE_STATUS_PENDING_TEXT = JBColor(Color(120, 132, 149), Color(196, 210, 230))
         private val TREE_STATUS_PENDING_TEXT_SELECTED = JBColor(Color(100, 113, 131), Color(215, 224, 239))
-        private val DOCUMENT_TAB_BG_IDLE = JBColor(Color(246, 249, 253), Color(60, 67, 78))
-        private val DOCUMENT_TAB_BG_AVAILABLE = JBColor(Color(242, 247, 255), Color(65, 74, 87))
-        private val DOCUMENT_TAB_BG_CURRENT = JBColor(Color(234, 243, 255), Color(72, 87, 108))
-        private val DOCUMENT_TAB_BG_SELECTED = JBColor(Color(224, 238, 255), Color(80, 98, 122))
-        private val DOCUMENT_TAB_BORDER_IDLE = JBColor(Color(212, 222, 236), Color(92, 103, 121))
-        private val DOCUMENT_TAB_BORDER_AVAILABLE = JBColor(Color(193, 209, 230), Color(102, 114, 133))
-        private val DOCUMENT_TAB_BORDER_CURRENT = JBColor(Color(156, 190, 236), Color(120, 151, 191))
-        private val DOCUMENT_TAB_BORDER_SELECTED = JBColor(Color(121, 170, 236), Color(138, 176, 222))
-        private val DOCUMENT_TAB_TEXT_IDLE = JBColor(Color(120, 132, 149), Color(170, 182, 200))
-        private val DOCUMENT_TAB_TEXT_AVAILABLE = JBColor(Color(69, 92, 126), Color(210, 222, 238))
-        private val DOCUMENT_TAB_TEXT_CURRENT = JBColor(Color(45, 79, 128), Color(223, 233, 246))
-        private val DOCUMENT_TAB_TEXT_SELECTED = JBColor(Color(34, 68, 113), Color(236, 242, 251))
         private val SECTION_TITLE_FG = JBColor(Color(36, 60, 101), Color(212, 223, 241))
         private val COLLAPSE_TOGGLE_TEXT_ACTIVE = JBColor(Color(86, 115, 158), Color(187, 205, 230))
         private val DETAIL_START_REVISION_ICON = IconLoader.getIcon("/icons/spec-workflow-start-revision.svg", SpecDetailPanel::class.java)
