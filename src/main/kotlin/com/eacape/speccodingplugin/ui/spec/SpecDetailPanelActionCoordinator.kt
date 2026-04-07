@@ -35,78 +35,67 @@ internal object SpecDetailPanelActionCoordinator {
         composeMode: ArtifactComposeActionMode,
         viewState: SpecDetailPanelViewState,
         isEditing: Boolean,
-        isGeneratingActive: Boolean,
-        isClarifying: Boolean,
-        isClarificationChecklistReadOnly: Boolean,
+        clarificationLifecycleState: SpecDetailClarificationLifecycleState,
         revisionLockedDisabledReason: (SpecPhase) -> String,
     ): SpecDetailPanelActionState {
         val inProgress = workflow.status == WorkflowStatus.IN_PROGRESS
-        val clarificationLocked = isClarifying && isClarificationChecklistReadOnly
+        val clarificationMode = SpecDetailClarificationModeCoordinator.resolve(
+            workflowStatus = workflow.status,
+            composeMode = composeMode,
+            lifecycleState = clarificationLifecycleState,
+        )
         val standardModeEnabled = inProgress &&
             !isEditing &&
-            !isClarifying &&
-            !isGeneratingActive &&
+            !clarificationMode.isActive &&
+            !clarificationLifecycleState.isGeneratingActive &&
             viewState.revisionLockedPhase == null
 
         return SpecDetailPanelActionState(
             generate = button(
-                visible = !isClarifying,
+                visible = clarificationMode.standardActionsVisible,
                 enabled = standardModeEnabled,
                 disabledReason = viewState.revisionLockedPhase?.let(revisionLockedDisabledReason)
                     ?: ArtifactComposeActionUiText.primaryActionDisabledReason(
                         mode = composeMode,
                         status = workflow.status,
-                        isGeneratingActive = isGeneratingActive,
+                        isGeneratingActive = clarificationLifecycleState.isGeneratingActive,
                         isEditing = isEditing,
                     ),
             ),
             nextPhase = button(
-                visible = !isClarifying,
+                visible = clarificationMode.standardActionsVisible,
                 enabled = workflow.canProceedToNext() && standardModeEnabled,
             ),
             goBack = hiddenButton(),
             complete = hiddenButton(),
             pauseResume = hiddenButton(),
             openEditor = button(
-                visible = !isClarifying,
-                enabled = !isEditing && !isClarifying && (viewState.selectedDocumentAvailable || viewState.artifactOpenAvailable),
+                visible = clarificationMode.standardActionsVisible,
+                enabled = !isEditing &&
+                    clarificationMode.standardActionsVisible &&
+                    (viewState.selectedDocumentAvailable || viewState.artifactOpenAvailable),
             ),
             historyDiff = button(
-                visible = !isClarifying && !viewState.artifactOnlyView,
-                enabled = !viewState.artifactOnlyView && !isEditing && !isClarifying && viewState.selectedDocumentAvailable,
-            ),
-            edit = button(
-                visible = !isClarifying && !viewState.artifactOnlyView && !isEditing,
+                visible = clarificationMode.standardActionsVisible && !viewState.artifactOnlyView,
                 enabled = !viewState.artifactOnlyView &&
                     !isEditing &&
-                    !isGeneratingActive &&
-                    !isClarifying &&
+                    clarificationMode.standardActionsVisible &&
+                    viewState.selectedDocumentAvailable,
+            ),
+            edit = button(
+                visible = clarificationMode.standardActionsVisible && !viewState.artifactOnlyView && !isEditing,
+                enabled = !viewState.artifactOnlyView &&
+                    !isEditing &&
+                    !clarificationLifecycleState.isGeneratingActive &&
+                    clarificationMode.standardActionsVisible &&
                     viewState.editablePhase != null,
             ),
-            save = button(visible = !isClarifying && isEditing, enabled = isEditing),
-            cancelEdit = button(visible = !isClarifying && isEditing, enabled = isEditing),
-            confirmGenerate = button(
-                visible = isClarifying,
-                enabled = isClarifying && inProgress && !isGeneratingActive && !clarificationLocked,
-                disabledReason = ArtifactComposeActionUiText.clarificationConfirmDisabledReason(
-                    mode = composeMode,
-                    status = workflow.status,
-                    isGeneratingActive = isGeneratingActive,
-                    clarificationLocked = clarificationLocked,
-                ),
-            ),
-            regenerateClarification = button(
-                visible = isClarifying,
-                enabled = isClarifying && inProgress && !isGeneratingActive && !clarificationLocked,
-            ),
-            skipClarification = button(
-                visible = isClarifying,
-                enabled = isClarifying && inProgress && !isGeneratingActive && !clarificationLocked,
-            ),
-            cancelClarification = button(
-                visible = isClarifying,
-                enabled = isClarifying && !isGeneratingActive && !clarificationLocked,
-            ),
+            save = button(visible = clarificationMode.standardActionsVisible && isEditing, enabled = isEditing),
+            cancelEdit = button(visible = clarificationMode.standardActionsVisible && isEditing, enabled = isEditing),
+            confirmGenerate = clarificationMode.confirmGenerate,
+            regenerateClarification = clarificationMode.regenerateClarification,
+            skipClarification = clarificationMode.skipClarification,
+            cancelClarification = clarificationMode.cancelClarification,
         )
     }
 

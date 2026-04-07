@@ -1499,9 +1499,7 @@ class SpecDetailPanel(
         }
         if (previousWorkflowId != workflow.id) {
             explicitRevisionPhase = null
-            clarificationState = null
-            activeChecklistDetailIndex = null
-            isClarificationChecklistReadOnly = false
+            applyClarificationLifecycleState(SpecDetailClarificationLifecycleCoordinator.clear())
             clearProcessTimeline()
             composerSourcePanel.clear()
         }
@@ -1509,12 +1507,14 @@ class SpecDetailPanel(
             composerCodeContextState = ComposerCodeContextState(workflowId = workflow.id)
         }
         if (clarificationState?.phase != null && clarificationState?.phase != workflow.currentPhase) {
-            clarificationState = null
-            activeChecklistDetailIndex = null
-            isClarificationChecklistReadOnly = false
+            applyClarificationLifecycleState(SpecDetailClarificationLifecycleCoordinator.clear())
         }
-        isGeneratingActive = false
-        isClarificationGenerating = false
+        applyClarificationLifecycleState(
+            SpecDetailClarificationLifecycleCoordinator.stopGenerating(
+                state = currentClarificationLifecycleState(),
+                unlockChecklist = false,
+            ),
+        )
         stopGeneratingAnimation()
         if (followCurrentPhase) {
             clearInput()
@@ -1549,8 +1549,7 @@ class SpecDetailPanel(
     }
 
     fun showEmpty() {
-        isGeneratingActive = false
-        isClarificationGenerating = false
+        applyClarificationLifecycleState(SpecDetailClarificationLifecycleCoordinator.clear())
         stopGeneratingAnimation()
         isEditing = false
         explicitRevisionPhase = null
@@ -1560,9 +1559,6 @@ class SpecDetailPanel(
         composerSourceState = ComposerSourceState()
         composerCodeContextState = ComposerCodeContextState()
         selectedPhase = null
-        clarificationState = null
-        activeChecklistDetailIndex = null
-        isClarificationChecklistReadOnly = false
         clearProcessTimeline()
         treeRoot.removeAllChildren()
         treeModel.reload()
@@ -1790,31 +1786,28 @@ class SpecDetailPanel(
         input: String,
         suggestedDetails: String = input,
     ) {
-        val generatingText = ArtifactComposeActionUiText.clarificationGenerating(currentComposeActionMode(phase))
-        clarificationState = SpecDetailClarificationFormState(
+        val lifecyclePlan = SpecDetailClarificationLifecycleCoordinator.showGenerating(
             phase = phase,
             input = input,
-            questionsMarkdown = generatingText,
+            suggestedDetails = suggestedDetails,
+            mode = currentComposeActionMode(phase),
         )
-        activeChecklistDetailIndex = null
-        isClarificationChecklistReadOnly = false
+        applyClarificationLifecycleState(lifecyclePlan.lifecycleState)
         renderClarificationQuestions(
-            markdown = generatingText,
+            markdown = lifecyclePlan.questionsMarkdown,
             structuredQuestions = emptyList(),
             questionDecisions = emptyMap(),
             questionDetails = emptyMap(),
         )
-        inputArea.text = suggestedDetails
+        inputArea.text = lifecyclePlan.suggestedDetails
         inputArea.caretPosition = 0
         updateInputPlaceholder(phase)
         refreshInputAreaMode()
-        applyPreviewSurfacePlan(SpecDetailPreviewSurfaceCoordinator.forClarification(isGenerating = true))
+        applyPreviewSurfacePlan(lifecyclePlan.previewSurfacePlan)
         updateClarificationPreview()
         persistClarificationDraftSnapshot()
 
         generatingPercent = 0
-        isClarificationGenerating = true
-        isGeneratingActive = true
         startGeneratingAnimation()
         updateGeneratingLabel()
         currentWorkflow?.let { updateButtonStates(it) } ?: disableAllButtons()
@@ -1827,45 +1820,36 @@ class SpecDetailPanel(
         suggestedDetails: String = input,
         structuredQuestions: List<String> = emptyList(),
     ) {
-        isGeneratingActive = false
-        isClarificationGenerating = false
-        stopGeneratingAnimation()
-        val draftState = SpecDetailClarificationFormState.draft(
+        val lifecyclePlan = SpecDetailClarificationLifecycleCoordinator.showDraft(
             phase = phase,
             input = input,
             questionsMarkdown = questionsMarkdown,
             suggestedDetails = suggestedDetails,
             structuredQuestions = structuredQuestions,
-            text = clarificationText(),
+            clarificationText = clarificationText(),
+            mode = currentComposeActionMode(phase),
         )
-        clarificationState = draftState.state
-        activeChecklistDetailIndex = draftState.activeDetailIndex
-        isClarificationChecklistReadOnly = false
+        stopGeneratingAnimation()
+        applyClarificationLifecycleState(lifecyclePlan.lifecycleState)
+        val draftState = requireNotNull(lifecyclePlan.lifecycleState.clarificationState)
         renderClarificationQuestions(
-            markdown = questionsMarkdown,
-            structuredQuestions = draftState.state.structuredQuestions,
-            questionDecisions = draftState.state.questionDecisions,
-            questionDetails = draftState.state.questionDetails,
+            markdown = lifecyclePlan.questionsMarkdown,
+            structuredQuestions = draftState.structuredQuestions,
+            questionDecisions = draftState.questionDecisions,
+            questionDetails = draftState.questionDetails,
         )
-        if (draftState.state.checklistMode) {
-            applyClarificationInputSync(
-                SpecDetailClarificationContextCoordinator.resolveInputSyncPlan(
-                    state = clarificationState,
-                    clarificationText = clarificationText(),
-                ),
-            )
+        if (draftState.checklistMode) {
+            applyClarificationInputSync(lifecyclePlan.inputSyncPlan)
         } else {
-            inputArea.text = suggestedDetails
+            inputArea.text = lifecyclePlan.suggestedDetails
             inputArea.caretPosition = 0
         }
         updateInputPlaceholder(phase)
         refreshInputAreaMode()
-        applyPreviewSurfacePlan(SpecDetailPreviewSurfaceCoordinator.forClarification(isGenerating = false))
+        applyPreviewSurfacePlan(lifecyclePlan.previewSurfacePlan)
         updateClarificationPreview()
         persistClarificationDraftSnapshot()
-        validationBannerPresenter.applyStatus(
-            SpecDetailPreviewStatusCoordinator.clarificationHint(currentComposeActionMode(phase)),
-        )
+        validationBannerPresenter.applyStatus(lifecyclePlan.statusPlan)
         currentWorkflow?.let { updateButtonStates(it) } ?: disableAllButtons()
     }
 
@@ -1917,26 +1901,46 @@ class SpecDetailPanel(
         currentWorkflow?.let { updateButtonStates(it) }
     }
 
+    private fun currentClarificationLifecycleState(): SpecDetailClarificationLifecycleState {
+        return SpecDetailClarificationLifecycleState(
+            clarificationState = clarificationState,
+            activeDetailIndex = activeChecklistDetailIndex,
+            checklistReadOnly = isClarificationChecklistReadOnly,
+            isGeneratingActive = isGeneratingActive,
+            isClarificationGenerating = isClarificationGenerating,
+        )
+    }
+
+    private fun applyClarificationLifecycleState(
+        state: SpecDetailClarificationLifecycleState,
+        rerenderChecklistOnReadOnlyChange: Boolean = false,
+    ) {
+        val readOnlyChanged = isClarificationChecklistReadOnly != state.checklistReadOnly
+        clarificationState = state.clarificationState
+        activeChecklistDetailIndex = state.activeDetailIndex
+        isGeneratingActive = state.isGeneratingActive
+        isClarificationGenerating = state.isClarificationGenerating
+        if (rerenderChecklistOnReadOnlyChange && readOnlyChanged) {
+            setClarificationChecklistReadOnly(state.checklistReadOnly)
+        } else {
+            isClarificationChecklistReadOnly = state.checklistReadOnly
+        }
+    }
+
     fun exitClarificationMode(clearInput: Boolean = false) {
-        isGeneratingActive = false
-        isClarificationGenerating = false
+        val lifecyclePlan = SpecDetailClarificationLifecycleCoordinator.exit(
+            isEditing = isEditing,
+            clearInput = clearInput,
+        )
         stopGeneratingAnimation()
-        clarificationState = null
-        activeChecklistDetailIndex = null
-        isClarificationChecklistReadOnly = false
+        applyClarificationLifecycleState(lifecyclePlan.lifecycleState)
         clarificationQuestionsPane.text = ""
         clarificationPreviewPane.text = ""
         updateInputPlaceholder(currentWorkflow?.currentPhase)
-        if (clearInput) {
+        if (lifecyclePlan.clearInput) {
             inputArea.text = ""
         }
-        applyPreviewSurfacePlan(
-            if (isEditing) {
-                SpecDetailPreviewSurfaceCoordinator.forEdit()
-            } else {
-                SpecDetailPreviewSurfaceCoordinator.forPreview()
-            },
-        )
+        applyPreviewSurfacePlan(lifecyclePlan.previewSurfacePlan)
         refreshInputAreaMode()
         currentWorkflow?.let { updateButtonStates(it) } ?: disableAllButtons()
     }
@@ -2770,22 +2774,27 @@ class SpecDetailPanel(
     }
 
     fun showGenerationFailed() {
-        isGeneratingActive = false
-        isClarificationGenerating = false
+        val restorePlan = SpecDetailClarificationLifecycleCoordinator.restoreAfterFailure(
+            state = currentClarificationLifecycleState(),
+            workflow = currentWorkflow,
+            selectedPhase = selectedPhase,
+        )
         stopGeneratingAnimation()
-        setClarificationChecklistReadOnly(false)
+        applyClarificationLifecycleState(
+            restorePlan.lifecycleState,
+            rerenderChecklistOnReadOnlyChange = true,
+        )
         val workflow = currentWorkflow
         if (workflow == null) {
-            validationBannerPresenter.applyStatus(SpecDetailPreviewStatusCoordinator.noWorkflow())
+            validationBannerPresenter.applyStatus(restorePlan.statusPlan)
             return
         }
         updateButtonStates(workflow)
-        if (clarificationState != null) {
-            applyPreviewSurfacePlan(SpecDetailPreviewSurfaceCoordinator.forClarification(isGenerating = false))
+        if (restorePlan.restoreClarificationPreview) {
+            applyPreviewSurfacePlan(requireNotNull(restorePlan.previewSurfacePlan))
             updateClarificationPreview()
-        } else {
-            val phase = selectedPhase ?: workflow.currentPhase
-            showDocumentPreview(phase, keepGeneratingIndicator = false)
+        } else if (restorePlan.restoreDocumentPhase != null) {
+            showDocumentPreview(restorePlan.restoreDocumentPhase, keepGeneratingIndicator = false)
         }
     }
 
@@ -2793,10 +2802,13 @@ class SpecDetailPanel(
         phase: SpecPhase,
         validation: ValidationResult,
     ) {
-        isGeneratingActive = false
-        isClarificationGenerating = false
+        applyClarificationLifecycleState(
+            SpecDetailClarificationLifecycleCoordinator.stopGenerating(
+                state = currentClarificationLifecycleState(),
+            ),
+            rerenderChecklistOnReadOnlyChange = true,
+        )
         stopGeneratingAnimation()
-        setClarificationChecklistReadOnly(false)
         previewContentPresenter.apply(
             SpecDetailPreviewContentCoordinator.forValidationFailure(
                 markdownContent = buildValidationPreviewMarkdown(phase, validation),
@@ -2955,9 +2967,7 @@ class SpecDetailPanel(
             composeMode = currentComposeActionMode(),
             viewState = resolveDetailViewState(workflow),
             isEditing = isEditing,
-            isGeneratingActive = isGeneratingActive,
-            isClarifying = clarificationState != null,
-            isClarificationChecklistReadOnly = isClarificationChecklistReadOnly,
+            clarificationLifecycleState = currentClarificationLifecycleState(),
             revisionLockedDisabledReason = ::revisionLockedDisabledReason,
         )
 
@@ -3336,6 +3346,7 @@ class SpecDetailPanel(
     internal fun buttonStatesForTest(): Map<String, Any> {
         return mapOf(
             "generateEnabled" to generateButton.isEnabled,
+            "generateVisible" to generateButton.isVisible,
             "generateIconId" to SpecWorkflowIcons.debugId(generateButton.icon),
             "generateFocusable" to generateButton.isFocusable,
             "generateTooltip" to generateButton.toolTipText.orEmpty(),
@@ -3374,18 +3385,22 @@ class SpecDetailPanel(
             "inputEditable" to inputArea.isEditable,
             "inputTooltip" to inputArea.toolTipText.orEmpty(),
             "confirmGenerateEnabled" to confirmGenerateButton.isEnabled,
+            "confirmGenerateVisible" to confirmGenerateButton.isVisible,
             "confirmGenerateIconId" to SpecWorkflowIcons.debugId(confirmGenerateButton.icon),
             "confirmGenerateFocusable" to confirmGenerateButton.isFocusable,
             "confirmGenerateTooltip" to confirmGenerateButton.toolTipText.orEmpty(),
             "confirmGenerateAccessibleName" to (confirmGenerateButton.accessibleContext?.accessibleName ?: ""),
             "confirmGenerateAccessibleDescription" to (confirmGenerateButton.accessibleContext?.accessibleDescription ?: ""),
             "regenerateClarificationEnabled" to regenerateClarificationButton.isEnabled,
+            "regenerateClarificationVisible" to regenerateClarificationButton.isVisible,
             "regenerateClarificationIconId" to SpecWorkflowIcons.debugId(regenerateClarificationButton.icon),
             "regenerateClarificationFocusable" to regenerateClarificationButton.isFocusable,
             "skipClarificationEnabled" to skipClarificationButton.isEnabled,
+            "skipClarificationVisible" to skipClarificationButton.isVisible,
             "skipClarificationIconId" to SpecWorkflowIcons.debugId(skipClarificationButton.icon),
             "skipClarificationFocusable" to skipClarificationButton.isFocusable,
             "cancelClarificationEnabled" to cancelClarificationButton.isEnabled,
+            "cancelClarificationVisible" to cancelClarificationButton.isVisible,
             "cancelClarificationIconId" to SpecWorkflowIcons.debugId(cancelClarificationButton.icon),
             "cancelClarificationFocusable" to cancelClarificationButton.isFocusable,
         )

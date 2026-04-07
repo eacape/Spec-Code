@@ -1040,6 +1040,10 @@ class SpecDetailPanelTest {
         assertEquals("CLARIFY", panel.currentPreviewCardForTest())
         assertFalse(panel.isClarificationPreviewVisibleForTest())
         val generatingStates = panel.buttonStatesForTest()
+        assertFalse(generatingStates["generateVisible"] as Boolean)
+        assertTrue(generatingStates["confirmGenerateVisible"] as Boolean)
+        assertTrue(generatingStates["skipClarificationVisible"] as Boolean)
+        assertTrue(generatingStates["cancelClarificationVisible"] as Boolean)
         assertFalse(generatingStates["confirmGenerateEnabled"] as Boolean)
         assertFalse(generatingStates["regenerateClarificationEnabled"] as Boolean)
         assertFalse(generatingStates["skipClarificationEnabled"] as Boolean)
@@ -1060,6 +1064,11 @@ class SpecDetailPanelTest {
         assertTrue(panel.isInputSectionVisibleForTest())
         assertFalse(panel.isBottomCollapsedForChecklistForTest())
         val readyStates = panel.buttonStatesForTest()
+        assertFalse(readyStates["generateVisible"] as Boolean)
+        assertTrue(readyStates["confirmGenerateVisible"] as Boolean)
+        assertTrue(readyStates["regenerateClarificationVisible"] as Boolean)
+        assertTrue(readyStates["skipClarificationVisible"] as Boolean)
+        assertTrue(readyStates["cancelClarificationVisible"] as Boolean)
         assertTrue(readyStates["confirmGenerateEnabled"] as Boolean)
         assertTrue(readyStates["regenerateClarificationEnabled"] as Boolean)
         assertTrue(readyStates["skipClarificationEnabled"] as Boolean)
@@ -1930,10 +1939,57 @@ class SpecDetailPanelTest {
         panel.clickSkipClarificationForTest()
         assertEquals("clarify retry policy", skippedInput)
         assertTrue(panel.isClarifyingForTest())
+        assertTrue(panel.buttonStatesForTest()["confirmGenerateVisible"] as Boolean)
 
         panel.clickCancelClarificationForTest()
         assertEquals(1, cancelCalls)
         assertFalse(panel.isClarifyingForTest())
+        val exitedStates = panel.buttonStatesForTest()
+        assertTrue(exitedStates["generateVisible"] as Boolean)
+        assertFalse(exitedStates["confirmGenerateVisible"] as Boolean)
+        assertFalse(exitedStates["skipClarificationVisible"] as Boolean)
+        assertFalse(exitedStates["cancelClarificationVisible"] as Boolean)
+    }
+
+    @Test
+    fun `showGenerationFailed should unlock clarification checklist after confirm`() {
+        val panel = createPanel()
+        val workflow = SpecWorkflow(
+            id = "wf-clarify-failure-restore",
+            currentPhase = SpecPhase.SPECIFY,
+            documents = mapOf(
+                SpecPhase.SPECIFY to document(
+                    phase = SpecPhase.SPECIFY,
+                    content = "requirements",
+                    valid = true,
+                ),
+            ),
+            status = WorkflowStatus.IN_PROGRESS,
+            title = "Clarify Failure Restore",
+            description = "clarification failure should unlock checklist",
+            createdAt = 1L,
+            updatedAt = 2L,
+        )
+        panel.updateWorkflow(workflow)
+        panel.showClarificationDraft(
+            phase = SpecPhase.SPECIFY,
+            input = "clarify offline mode",
+            questionsMarkdown = "1. Should support offline mode?",
+            suggestedDetails = "",
+            structuredQuestions = listOf("Should support offline mode?"),
+        )
+        panel.toggleClarificationQuestionForTest(0)
+        panel.setClarificationQuestionDetailForTest(0, "Keep queue locally")
+
+        panel.clickConfirmGenerateForTest()
+        assertTrue(panel.isClarificationChecklistReadOnlyForTest())
+
+        panel.showGenerationFailed()
+
+        assertFalse(panel.isClarificationChecklistReadOnlyForTest())
+        assertTrue(panel.isClarifyingForTest())
+        assertEquals("CLARIFY", panel.currentPreviewCardForTest())
+        assertTrue(panel.isClarificationPreviewVisibleForTest())
     }
 
     private fun createPanel(

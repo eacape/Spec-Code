@@ -32,9 +32,7 @@ class SpecDetailPanelActionCoordinatorTest {
             composeMode = ArtifactComposeActionMode.GENERATE,
             viewState = viewState,
             isEditing = false,
-            isGeneratingActive = false,
-            isClarifying = false,
-            isClarificationChecklistReadOnly = false,
+            clarificationLifecycleState = SpecDetailClarificationLifecycleState(),
             revisionLockedDisabledReason = { phase -> "locked:${phase.name}" },
         )
 
@@ -64,9 +62,7 @@ class SpecDetailPanelActionCoordinatorTest {
             composeMode = ArtifactComposeActionMode.GENERATE,
             viewState = viewState,
             isEditing = false,
-            isGeneratingActive = false,
-            isClarifying = false,
-            isClarificationChecklistReadOnly = false,
+            clarificationLifecycleState = SpecDetailClarificationLifecycleState(),
             revisionLockedDisabledReason = { "locked:${it.name}" },
         )
 
@@ -93,9 +89,14 @@ class SpecDetailPanelActionCoordinatorTest {
             composeMode = ArtifactComposeActionMode.REVISE,
             viewState = viewState,
             isEditing = false,
-            isGeneratingActive = false,
-            isClarifying = true,
-            isClarificationChecklistReadOnly = true,
+            clarificationLifecycleState = SpecDetailClarificationLifecycleState(
+                clarificationState = SpecDetailClarificationFormState(
+                    phase = SpecPhase.DESIGN,
+                    input = "clarify",
+                    questionsMarkdown = "question",
+                ),
+                checklistReadOnly = true,
+            ),
             revisionLockedDisabledReason = { "locked:${it.name}" },
         )
 
