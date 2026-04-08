@@ -290,6 +290,45 @@ class ChatMessagePanelTraceStreamingTest {
     }
 
     @Test
+    fun `assistant answer should keep narrative summary when output continuation is followed immediately by result text`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent(
+                """
+                [Output] collected workspace diagnostics
+                currentAssistantPanel = null
+                src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt:1181
+                At line:2 char:1
+                本轮收敛的是一个更硬的门禁闭环：把“不要再往巨型 Panel 里堆新逻辑”从约定升级成默认 CI 约束。
+                • build.gradle.kts / build.gradle.kts / build.gradle.kts
+                • ci.yml
+                """.trimIndent()
+            )
+            panel.finishMessage()
+        }
+
+        val extracted = invokeAssistantAnswerExtractor(panel, panel.getContent())
+        assertTrue(extracted.contains("本轮收敛的是一个更硬的门禁闭环"), extracted)
+        assertTrue(extracted.contains("• build.gradle.kts / build.gradle.kts / build.gradle.kts"))
+        assertTrue(extracted.contains("• ci.yml"))
+        assertFalse(extracted.contains("currentAssistantPanel = null"))
+        assertFalse(extracted.contains("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt:1181"))
+        assertFalse(extracted.contains("At line:2 char:1"))
+
+        val renderedText = collectDescendants(panel)
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertTrue(renderedText.contains("本轮收敛的是一个更硬的门禁闭环"), renderedText)
+        assertTrue(renderedText.contains("build.gradle.kts / build.gradle.kts / build.gradle.kts"))
+        assertTrue(renderedText.contains("ci.yml"))
+        assertFalse(renderedText.contains("currentAssistantPanel = null"))
+        assertFalse(renderedText.contains("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt:1181"))
+        assertFalse(renderedText.contains("At line:2 char:1"))
+    }
+
+    @Test
     fun `assistant answer should render user reported comparison markdown table as html table`() {
         val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
         val markdown = """
@@ -1284,6 +1323,23 @@ class ChatMessagePanelTraceStreamingTest {
         )
         method.isAccessible = true
         return method.invoke(panel, content) as String
+    }
+
+    private fun invokeAssistantAnswerExtractor(panel: ChatMessagePanel, content: String): String {
+        val method = ChatMessagePanel::class.java.getDeclaredMethod(
+            "extractAssistantAnswerContent",
+            String::class.java,
+        )
+        method.isAccessible = true
+        return method.invoke(panel, content) as String
+    }
+
+    private fun textOf(pane: JTextPane): String {
+        return runCatching {
+            pane.document.getText(0, pane.document.length)
+        }.getOrElse {
+            pane.text.orEmpty()
+        }
     }
 }
 

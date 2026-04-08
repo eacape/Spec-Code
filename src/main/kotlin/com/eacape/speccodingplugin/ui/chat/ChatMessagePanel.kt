@@ -2207,6 +2207,24 @@ open class ChatMessagePanel(
         if (OUTPUT_ALLOWED_HEADING_REGEX.matches(trimmed)) return true
         if (OUTPUT_METADATA_KEY_VALUE_REGEX.matches(trimmed)) return false
         if (OUTPUT_SHORT_STATUS_REGEX.matches(trimmed)) return true
+        val cjkCount = OUTPUT_CJK_CHAR_REGEX.findAll(trimmed).count()
+        if (cjkCount >= OUTPUT_NARRATIVE_MIN_CJK_CHARS) return true
+        val wordCount = OUTPUT_LATIN_WORD_REGEX.findAll(trimmed).count()
+        if (wordCount >= OUTPUT_NARRATIVE_MIN_WORDS) return true
+
+        val hasSentenceHint = trimmed.any { it in OUTPUT_NARRATIVE_HINT_PUNCTUATION }
+        return hasSentenceHint && (
+            wordCount >= OUTPUT_NARRATIVE_MIN_SENTENCE_WORDS ||
+                cjkCount >= OUTPUT_NARRATIVE_MIN_SENTENCE_CJK_CHARS ||
+                trimmed.length >= OUTPUT_NARRATIVE_MIN_CHARS
+            )
+    }
+
+    private fun looksLikePostOutputNarrativeLine(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.isBlank() || trimmed.startsWith("|")) return false
+        if (OUTPUT_ALLOWED_HEADING_REGEX.matches(trimmed) || OUTPUT_SHORT_STATUS_REGEX.matches(trimmed)) return true
+        if (looksLikeRawCodeOrPatchLine(trimmed) || looksLikeToolDiagnosticLine(trimmed)) return false
 
         val cjkCount = OUTPUT_CJK_CHAR_REGEX.findAll(trimmed).count()
         if (cjkCount >= OUTPUT_NARRATIVE_MIN_CJK_CHARS) return true
@@ -2594,6 +2612,7 @@ open class ChatMessagePanel(
 
         val kept = mutableListOf<String>()
         var skippingOutputBody = false
+        var skippingOutputFence = false
 
         content.lines().forEach { rawLine ->
             val trimmed = rawLine.trim()
@@ -2601,23 +2620,52 @@ open class ChatMessagePanel(
             if (timelineItem != null) {
                 skippingOutputBody = timelineItem.kind == ExecutionTimelineParser.Kind.OUTPUT ||
                     timelineItem.kind == ExecutionTimelineParser.Kind.TOOL
+                skippingOutputFence = false
                 return@forEach
             }
 
             if (skippingOutputBody) {
                 if (trimmed.isBlank()) {
                     skippingOutputBody = false
+                    skippingOutputFence = false
                 } else if (isLikelyWorkflowHeading(trimmed)) {
                     skippingOutputBody = false
+                    skippingOutputFence = false
                     kept += rawLine
+                } else if (shouldSkipOutputContinuation(rawLine, trimmed, skippingOutputFence)) {
+                    if (trimmed.startsWith("```")) {
+                        skippingOutputFence = !skippingOutputFence
+                    }
+                } else {
+                    skippingOutputBody = false
+                    skippingOutputFence = false
                 }
-                return@forEach
+                if (skippingOutputBody) {
+                    return@forEach
+                }
             }
 
             kept += rawLine
         }
 
         return kept.joinToString("\n").trim()
+    }
+
+    private fun shouldSkipOutputContinuation(
+        rawLine: String,
+        trimmed: String,
+        insideFence: Boolean,
+    ): Boolean {
+        if (trimmed.isBlank()) return false
+        if (trimmed.startsWith("```")) return true
+        if (insideFence) return true
+        if (rawLine.startsWith('\t') || rawLine.startsWith("    ")) return true
+        if (trimmed.startsWith("|")) return true
+        if (looksLikeRawCodeOrPatchLine(trimmed)) return true
+        if (looksLikeToolDiagnosticLine(trimmed)) return true
+        if (looksLikePostOutputNarrativeLine(trimmed)) return false
+        if (OUTPUT_METADATA_KEY_VALUE_REGEX.matches(trimmed)) return true
+        return false
     }
 
     private fun isLikelyWorkflowHeading(line: String): Boolean {
