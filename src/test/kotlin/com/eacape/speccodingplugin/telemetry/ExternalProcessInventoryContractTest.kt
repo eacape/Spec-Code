@@ -108,12 +108,12 @@ private object ExternalProcessInventoryContract {
             summary = "MCP server bootstrap and lifecycle management on IO dispatcher.",
         ),
         ExternalProcessInventoryRule(
-            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/spec/SpecProcessRunner.kt",
+            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/spec/VerifyCommandRuntime.kt",
             category = ExternalProcessCategory.VERIFY,
             occurrenceCount = 1,
             threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_PREFERRED,
             mainThreadRisk = ExternalProcessMainThreadRisk.MEDIUM,
-            summary = "VERIFY command runner with timeout, truncation, and redaction.",
+            summary = "VERIFY command runtime with timeout and split stdout/stderr truncation handling.",
         ),
         ExternalProcessInventoryRule(
             relativePath = "src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanelWorkflowCommandRunner.kt",

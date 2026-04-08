@@ -441,6 +441,11 @@ object SpecArchitectureContract {
             blockedImportPrefixes = infrastructureBlockedImportPrefixes,
         ),
         SourceRule(
+            fileName = "VerifyCommandRuntime.kt",
+            layer = Layer.INFRASTRUCTURE,
+            blockedImportPrefixes = infrastructureBlockedImportPrefixes,
+        ),
+        SourceRule(
             fileName = "SpecRelatedFilesService.kt",
             layer = Layer.INFRASTRUCTURE,
             blockedImportPrefixes = infrastructureBlockedImportPrefixes,

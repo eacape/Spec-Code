@@ -183,6 +183,35 @@ class SpecProcessRunnerTest {
         assertTrue(result.durationMs >= 700)
     }
 
+    @Test
+    fun `execute should surface verify runtime startup failure as structured startup error`() {
+        val projectRoot = Files.createDirectories(tempDir.resolve("project"))
+        val runner = SpecProcessRunner(
+            VerifyCommandRuntime(
+                processStarter = {
+                    error("missing executable")
+                },
+            ),
+        )
+
+        val request = runner.prepare(
+            projectRoot = projectRoot,
+            verifyConfig = SpecVerifyConfig(),
+            command = SpecVerifyCommand(
+                id = "missing-binary",
+                command = javaCommand(projectRoot, "echo"),
+            ),
+        )
+
+        val error = assertThrows(VerifyCommandStartupError::class.java) {
+            runner.execute(request)
+        }
+
+        assertEquals(VerifyCommandFailureKind.EXECUTABLE_NOT_FOUND, error.diagnostic.kind)
+        assertTrue(error.message.orEmpty().contains("executable-not-found"))
+        assertTrue(error.message.orEmpty().contains("verify executable was not found"))
+    }
+
     private fun javaCommand(projectRoot: Path, vararg args: String): List<String> {
         val sourceFile = writeFixtureSource(projectRoot)
         return buildList {

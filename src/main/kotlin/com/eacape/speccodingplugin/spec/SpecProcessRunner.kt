@@ -8,6 +8,16 @@ import java.util.concurrent.TimeUnit
 
 class SpecProcessRunner {
 
+    private val runtime: VerifyCommandRuntime
+
+    constructor() {
+        runtime = VerifyCommandRuntime()
+    }
+
+    internal constructor(runtime: VerifyCommandRuntime) {
+        this.runtime = runtime
+    }
+
     data class SanitizedDisplayCommand(
         val text: String,
         val redacted: Boolean,
@@ -59,47 +69,24 @@ class SpecProcessRunner {
     fun execute(request: VerifyCommandExecutionRequest): VerifyCommandExecutionResult {
         validateRequest(request)
         val redactionRules = compileRedactionRules(request.commandId, request.redactionPatterns)
-        val runtime = try {
-            val process = ProcessBuilder(request.command)
-                .directory(request.workingDirectory.toFile())
-                .redirectErrorStream(false)
-                .start()
-            ManagedSplitOutputProcess.start(
-                process = process,
-                outputLimitChars = request.outputLimitChars,
-                stdoutThreadName = "${request.commandId}-stdout",
-                stderrThreadName = "${request.commandId}-stderr",
-            )
-        } catch (error: Exception) {
-            throw InvalidVerifyCommandError(
-                request.commandId,
-                "failed to start process: ${error.message ?: error::class.java.simpleName}",
-            )
+        val startedAt = System.nanoTime()
+        val execution = runtime.execute(request)
+        val durationMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
+        execution.startupDiagnostic?.let { startupDiagnostic ->
+            throw VerifyCommandStartupError(startupDiagnostic)
         }
 
-        val startedAt = System.nanoTime()
-        val completion = runtime.awaitCompletion(
-            timeout = request.timeoutMs.toLong(),
-            timeoutUnit = TimeUnit.MILLISECONDS,
-            joinTimeoutMillis = OUTPUT_JOIN_TIMEOUT_MILLIS,
-            timeoutDestroyGraceWait = TIMEOUT_DESTROY_GRACE_WAIT_MILLIS,
-            timeoutDestroyGraceWaitUnit = TimeUnit.MILLISECONDS,
-            timeoutDestroyForceWait = TIMEOUT_DESTROY_FORCE_WAIT_MILLIS,
-            timeoutDestroyForceWaitUnit = TimeUnit.MILLISECONDS,
-        )
-        val durationMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
-
-        val redactedStdout = redact(completion.stdout, redactionRules)
-        val redactedStderr = redact(completion.stderr, redactionRules)
+        val redactedStdout = redact(execution.stdout, redactionRules)
+        val redactedStderr = redact(execution.stderr, redactionRules)
         return VerifyCommandExecutionResult(
             commandId = request.commandId,
-            exitCode = completion.exitCode,
+            exitCode = execution.exitCode,
             stdout = redactedStdout.text,
             stderr = redactedStderr.text,
             durationMs = durationMs,
-            timedOut = completion.timedOut,
-            stdoutTruncated = completion.stdoutTruncated,
-            stderrTruncated = completion.stderrTruncated,
+            timedOut = execution.timedOut,
+            stdoutTruncated = execution.stdoutTruncated,
+            stderrTruncated = execution.stderrTruncated,
             redacted = redactedStdout.redacted || redactedStderr.redacted,
         )
     }
@@ -282,9 +269,6 @@ class SpecProcessRunner {
     )
 
     companion object {
-        private const val OUTPUT_JOIN_TIMEOUT_MILLIS = 1_000L
-        private const val TIMEOUT_DESTROY_GRACE_WAIT_MILLIS = 250L
-        private const val TIMEOUT_DESTROY_FORCE_WAIT_MILLIS = 500L
         private const val REDACTED_VALUE = "<redacted>"
 
         private val DEFAULT_REDACTION_RULES = listOf(
