@@ -64,6 +64,7 @@ internal data class HookWatcherPollObservation(
     val gitCommandCount: Int,
     val failedGitCommandCount: Int,
     val timedOutGitCommandCount: Int,
+    val effectivePollIntervalMs: Long = 0L,
 )
 
 internal data class HookWatcherSlowPollTelemetry(
@@ -74,6 +75,7 @@ internal data class HookWatcherSlowPollTelemetry(
     val timedOutGitCommandCount: Int,
     val openProjectCount: Int,
     val configuredPollIntervalMs: Long,
+    val effectivePollIntervalMs: Long,
     val workspacePollsPerMinute: Int,
     val estimatedWorkspaceGitCommandsPerMinute: Int,
 ) {
@@ -86,6 +88,7 @@ internal data class HookWatcherSlowPollTelemetry(
             append(", timedOutGitCommands=").append(timedOutGitCommandCount)
             append(", openProjects=").append(openProjectCount)
             append(", configuredIntervalMs=").append(configuredPollIntervalMs)
+            append(", effectiveIntervalMs=").append(effectivePollIntervalMs)
             append(", workspacePollsPerMinute=").append(workspacePollsPerMinute)
             append(", estimatedWorkspaceGitCommandsPerMinute=").append(estimatedWorkspaceGitCommandsPerMinute)
         }
@@ -104,6 +107,7 @@ internal data class HookWatcherSummaryTelemetry(
     val maxElapsedMs: Long,
     val openProjectCount: Int,
     val configuredPollIntervalMs: Long,
+    val effectivePollIntervalMs: Long,
     val workspacePollsPerMinute: Int,
     val estimatedWorkspaceGitCommandsPerMinute: Int,
 ) {
@@ -120,6 +124,7 @@ internal data class HookWatcherSummaryTelemetry(
             append(", maxElapsedMs=").append(maxElapsedMs)
             append(", openProjects=").append(openProjectCount)
             append(", configuredIntervalMs=").append(configuredPollIntervalMs)
+            append(", effectiveIntervalMs=").append(effectivePollIntervalMs)
             append(", workspacePollsPerMinute=").append(workspacePollsPerMinute)
             append(", estimatedWorkspaceGitCommandsPerMinute=").append(estimatedWorkspaceGitCommandsPerMinute)
         }
@@ -161,7 +166,10 @@ internal class HookWatcherTelemetryTracker(
 
         return HookWatcherTelemetryEvent(
             slowPoll = buildSlowPollTelemetry(observation),
-            summary = buildSummaryTelemetry(observation.openProjectCount),
+            summary = buildSummaryTelemetry(
+                openProjectCount = observation.openProjectCount,
+                effectivePollIntervalMs = observation.effectivePollIntervalMs,
+            ),
         )
     }
 
@@ -169,9 +177,12 @@ internal class HookWatcherTelemetryTracker(
         if (determineHookWatcherTelemetrySeverity(observation.elapsedMs) == HookWatcherTelemetrySeverity.SKIP) {
             return null
         }
+        val effectivePollIntervalMs = observation.effectivePollIntervalMs
+            .takeIf { it > 0L }
+            ?: configuredPollIntervalMs
         val workspacePollsPerMinute = estimateHookWatcherWorkspacePollsPerMinute(
             openProjectCount = observation.openProjectCount,
-            configuredPollIntervalMs = configuredPollIntervalMs,
+            configuredPollIntervalMs = effectivePollIntervalMs,
         )
         return HookWatcherSlowPollTelemetry(
             outcome = observation.outcome,
@@ -181,6 +192,7 @@ internal class HookWatcherTelemetryTracker(
             timedOutGitCommandCount = observation.timedOutGitCommandCount,
             openProjectCount = observation.openProjectCount,
             configuredPollIntervalMs = configuredPollIntervalMs,
+            effectivePollIntervalMs = effectivePollIntervalMs,
             workspacePollsPerMinute = workspacePollsPerMinute,
             estimatedWorkspaceGitCommandsPerMinute = estimateHookWatcherWorkspaceGitCommandsPerMinute(
                 workspacePollsPerMinute = workspacePollsPerMinute,
@@ -189,13 +201,19 @@ internal class HookWatcherTelemetryTracker(
         )
     }
 
-    private fun buildSummaryTelemetry(openProjectCount: Int): HookWatcherSummaryTelemetry? {
+    private fun buildSummaryTelemetry(
+        openProjectCount: Int,
+        effectivePollIntervalMs: Long,
+    ): HookWatcherSummaryTelemetry? {
         if (summaryEveryPolls <= 0L || pollCount % summaryEveryPolls != 0L) {
             return null
         }
+        val resolvedPollIntervalMs = effectivePollIntervalMs
+            .takeIf { it > 0L }
+            ?: configuredPollIntervalMs
         val workspacePollsPerMinute = estimateHookWatcherWorkspacePollsPerMinute(
             openProjectCount = openProjectCount,
-            configuredPollIntervalMs = configuredPollIntervalMs,
+            configuredPollIntervalMs = resolvedPollIntervalMs,
         )
         val averageGitCommandsPerPoll = if (pollCount <= 0L) {
             0.0
@@ -214,6 +232,7 @@ internal class HookWatcherTelemetryTracker(
             maxElapsedMs = maxElapsedMs,
             openProjectCount = openProjectCount,
             configuredPollIntervalMs = configuredPollIntervalMs,
+            effectivePollIntervalMs = resolvedPollIntervalMs,
             workspacePollsPerMinute = workspacePollsPerMinute,
             estimatedWorkspaceGitCommandsPerMinute = estimateHookWatcherWorkspaceGitCommandsPerMinute(
                 workspacePollsPerMinute = workspacePollsPerMinute,

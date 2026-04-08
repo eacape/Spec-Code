@@ -43,6 +43,33 @@ class HookWatcherTelemetryTest {
     }
 
     @Test
+    fun `HookWatcherTelemetryTracker should use effective backoff interval when provided`() {
+        val tracker = HookWatcherTelemetryTracker(
+            configuredPollIntervalMs = 3_000L,
+            summaryEveryPolls = 10L,
+        )
+
+        val event = tracker.record(
+            HookWatcherPollObservation(
+                outcome = HookWatcherPollOutcome.UNCHANGED,
+                elapsedMs = 260L,
+                openProjectCount = 3,
+                gitCommandCount = 2,
+                failedGitCommandCount = 0,
+                timedOutGitCommandCount = 0,
+                effectivePollIntervalMs = 6_000L,
+            ),
+        )
+
+        val slowPoll = event.slowPoll
+        assertNotNull(slowPoll)
+        assertEquals(6_000L, slowPoll?.effectivePollIntervalMs)
+        assertEquals(30, slowPoll?.workspacePollsPerMinute)
+        assertEquals(60, slowPoll?.estimatedWorkspaceGitCommandsPerMinute)
+        assertTrue(slowPoll?.summary()?.contains("effectiveIntervalMs=6000") == true)
+    }
+
+    @Test
     fun `HookWatcherTelemetryTracker should emit periodic summary with hit rate and aggregated cost`() {
         val tracker = HookWatcherTelemetryTracker(
             configuredPollIntervalMs = 3_000L,
@@ -83,6 +110,7 @@ class HookWatcherTelemetryTest {
         assertEquals(1L, summary?.failedGitCommandCount)
         assertEquals(40, summary?.workspacePollsPerMinute)
         assertEquals(56, summary?.estimatedWorkspaceGitCommandsPerMinute)
+        assertEquals(3_000L, summary?.effectivePollIntervalMs)
         assertTrue(summary?.summary()?.contains("hitRate=20%") == true)
     }
 }

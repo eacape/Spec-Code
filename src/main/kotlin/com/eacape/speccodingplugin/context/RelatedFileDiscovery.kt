@@ -1,12 +1,9 @@
 package com.eacape.speccodingplugin.context
 
-import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.thisLogger
-import com.intellij.openapi.editor.Editor
-import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFileManager
@@ -44,14 +41,6 @@ class RelatedFileDiscovery(private val project: Project) : Disposable {
     private val cacheHitCount = AtomicLong(0)
     private val cacheMissCount = AtomicLong(0)
 
-    private data class ActiveEditorDiscoveryRequest(
-        val filePath: String,
-        val fileName: String,
-        val content: String,
-        val documentModificationStamp: Long,
-        val context: RelatedFileDiscoveryContext,
-    )
-
     private data class CachedRelatedFileDiscoveryResult(
         val result: RelatedFileDiscoveryResult,
         val documentModificationStamp: Long,
@@ -73,7 +62,8 @@ class RelatedFileDiscovery(private val project: Project) : Disposable {
     }
 
     internal fun discoverRelatedFilesDetailed(): RelatedFileDiscoveryResult {
-        val request = resolveActiveEditorRequest() ?: return RelatedFileDiscoveryResult.empty()
+        val request = RelatedFileDiscoveryRequestResolver.resolveFromActiveEditor(project)
+            ?: return RelatedFileDiscoveryResult.empty()
         var cacheStatus = "miss"
 
         cachedResults[request.filePath]?.let { cached ->
@@ -153,7 +143,7 @@ class RelatedFileDiscovery(private val project: Project) : Disposable {
     }
 
     private fun logCacheHit(
-        request: ActiveEditorDiscoveryRequest,
+        request: RelatedFileDiscoveryRequest,
         cacheStats: RelatedFileCacheStats,
     ) {
         if (!cacheStats.shouldEmitPeriodicHitLog()) {
@@ -163,29 +153,6 @@ class RelatedFileDiscovery(private val project: Project) : Disposable {
             "RelatedFileDiscovery cache hit: file=${request.fileName}, path=${request.filePath}, " +
                 "language=${request.context.language.wireName}, ${cacheStats.summary()}",
         )
-    }
-
-    private fun resolveActiveEditorRequest(): ActiveEditorDiscoveryRequest? {
-        val editor = getActiveEditor() ?: return null
-        return ReadAction.compute<ActiveEditorDiscoveryRequest?, Throwable> {
-            val virtualFile = editor.virtualFile ?: return@compute null
-            val basePath = project.basePath ?: return@compute null
-            ActiveEditorDiscoveryRequest(
-                filePath = virtualFile.path,
-                fileName = virtualFile.name,
-                content = editor.document.text,
-                documentModificationStamp = editor.document.modificationStamp,
-                context = RelatedFileDiscoveryContext(
-                    basePath = Path.of(basePath),
-                    activeFilePath = Path.of(virtualFile.path),
-                    language = RelatedFileDiscoveryLanguage.fromFileName(virtualFile.name),
-                ),
-            )
-        }
-    }
-
-    private fun getActiveEditor(): Editor? {
-        return FileEditorManager.getInstance(project).selectedTextEditor
     }
 
     private fun currentCacheStats(

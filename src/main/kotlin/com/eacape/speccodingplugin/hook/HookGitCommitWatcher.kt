@@ -30,6 +30,10 @@ class HookGitCommitWatcher(
     private val logger = thisLogger()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val telemetryTracker = HookWatcherTelemetryTracker(configuredPollIntervalMs = POLL_INTERVAL_MS)
+    private val pollIntervalBackoff = HookWatcherPollIntervalBackoff(
+        baseIntervalMs = POLL_INTERVAL_MS,
+        maxIntervalMs = MAX_POLL_INTERVAL_MS,
+    )
     private val gitCommandRuntime = HookGitCommandRuntime()
 
     @Volatile
@@ -48,8 +52,9 @@ class HookGitCommitWatcher(
         started = true
         scope.launch {
             while (!project.isDisposed) {
-                emitTelemetry(recordPollObservation())
-                delay(POLL_INTERVAL_MS)
+                val cycle = recordPollObservation()
+                emitTelemetry(cycle.event)
+                delay(cycle.nextPollIntervalMs)
             }
         }
     }
@@ -58,7 +63,7 @@ class HookGitCommitWatcher(
         scope.cancel()
     }
 
-    private fun recordPollObservation(): HookWatcherTelemetryEvent {
+    private fun recordPollObservation(): HookWatcherPollCycle {
         val pollStartedAt = System.nanoTime()
         val openProjectCount = currentOpenProjectCount()
         val observation = runCatching { pollHeadChange() }
@@ -85,6 +90,7 @@ class HookGitCommitWatcher(
                     )
                 },
             )
+        val nextPollIntervalMs = pollIntervalBackoff.intervalAfter(observation.outcome)
         emitSlowPathBaseline(
             logger = logger,
             sample = SlowPathBaselineSample(
@@ -93,7 +99,14 @@ class HookGitCommitWatcher(
                 timedOut = observation.timedOutGitCommandCount > 0,
             ),
         )
-        return telemetryTracker.record(observation)
+        return HookWatcherPollCycle(
+            event = telemetryTracker.record(
+                observation.copy(
+                    effectivePollIntervalMs = nextPollIntervalMs,
+                ),
+            ),
+            nextPollIntervalMs = nextPollIntervalMs,
+        )
     }
 
     private fun pollHeadChange(): HookWatcherPollResult {
@@ -206,8 +219,14 @@ class HookGitCommitWatcher(
         val timedOutGitCommandCount: Int = 0,
     )
 
+    private data class HookWatcherPollCycle(
+        val event: HookWatcherTelemetryEvent,
+        val nextPollIntervalMs: Long,
+    )
+
     companion object {
         private const val POLL_INTERVAL_MS = 3_000L
+        private const val MAX_POLL_INTERVAL_MS = 15_000L
         private const val GIT_COMMAND_TIMEOUT_MILLIS = 2_000L
 
         fun getInstance(project: Project): HookGitCommitWatcher = project.service()
