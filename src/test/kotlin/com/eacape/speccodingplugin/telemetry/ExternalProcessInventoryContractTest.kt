@@ -100,12 +100,12 @@ private object ExternalProcessInventoryContract {
             summary = "Shared hook RUN_COMMAND runtime with merged-output timeout handling.",
         ),
         ExternalProcessInventoryRule(
-            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/mcp/McpClient.kt",
+            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/mcp/McpServerProcessRuntime.kt",
             category = ExternalProcessCategory.MCP,
             occurrenceCount = 1,
             threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_ONLY,
             mainThreadRisk = ExternalProcessMainThreadRisk.LOW,
-            summary = "MCP server bootstrap and lifecycle management on IO dispatcher.",
+            summary = "Shared MCP server launch runtime with Windows command resolution and structured startup diagnostics.",
         ),
         ExternalProcessInventoryRule(
             relativePath = "src/main/kotlin/com/eacape/speccodingplugin/spec/VerifyCommandRuntime.kt",
