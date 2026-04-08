@@ -9,7 +9,10 @@ import com.intellij.openapi.util.text.StringUtil
 import com.eacape.speccodingplugin.ui.LocalEnvironmentReadiness
 import com.eacape.speccodingplugin.ui.LocalEnvironmentReadinessSnapshot
 import com.eacape.speccodingplugin.ui.ComboBoxAutoWidthSupport
+import com.eacape.speccodingplugin.ui.actions.SpecWorkflowActionSupport
+import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.ui.DialogWrapper
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.ValidationInfo
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
@@ -64,10 +67,15 @@ class NewSpecWorkflowDialog(
     }
     private val localSetupArea = createReadOnlyInfoArea(rows = 8)
     private val onboardingArea = createReadOnlyInfoArea(rows = 3)
+    private val firstRunStatusArea = createReadOnlyInfoArea(rows = 4)
     private val firstRunGuideArea = createReadOnlyInfoArea(rows = 7)
+    private val demoProjectArea = createReadOnlyInfoArea(rows = 3).apply {
+        text = SpecCodingBundle.message("spec.dialog.demo.summary")
+    }
     private val openSettingsButton = JButton(SpecCodingBundle.message("spec.dialog.localSetup.openSettings")).apply {
         isVisible = false
     }
+    private val openBundledDemoButton = JButton(SpecCodingBundle.message("spec.dialog.demo.open"))
     private val entryLabel = JBLabel(SpecCodingBundle.message("spec.dialog.entry.title"))
     private val quickTaskEntryRadio = JBRadioButton(
         SpecWorkflowOverviewPresenter.templateLabel(WorkflowTemplate.QUICK_TASK),
@@ -154,6 +162,7 @@ class NewSpecWorkflowDialog(
         fullSpecEntryRadio.addActionListener { updateFormState() }
         advancedTemplateEntryRadio.addActionListener { updateFormState() }
         openSettingsButton.addActionListener { openSettingsAndRefreshReadiness() }
+        openBundledDemoButton.addActionListener { openBundledDemoProject() }
         verifyCheckBox.addActionListener { updateFormState() }
         fullIntentRadio.addActionListener { updateFormState() }
         incrementalIntentRadio.addActionListener { updateFormState() }
@@ -197,6 +206,13 @@ class NewSpecWorkflowDialog(
             panel.add(javax.swing.Box.createVerticalStrut(4))
             openSettingsButton.alignmentX = JComponent.LEFT_ALIGNMENT
             panel.add(openSettingsButton)
+            panel.add(javax.swing.Box.createVerticalStrut(8))
+            val firstRunStatusLabel = JBLabel(SpecCodingBundle.message("spec.dialog.firstRun.status.title"))
+            firstRunStatusLabel.alignmentX = JComponent.LEFT_ALIGNMENT
+            panel.add(firstRunStatusLabel)
+            panel.add(javax.swing.Box.createVerticalStrut(4))
+            firstRunStatusArea.alignmentX = JComponent.LEFT_ALIGNMENT
+            panel.add(firstRunStatusArea)
         }
         panel.add(javax.swing.Box.createVerticalStrut(8))
 
@@ -235,6 +251,16 @@ class NewSpecWorkflowDialog(
             panel.add(firstRunGuideArea)
             panel.add(javax.swing.Box.createVerticalStrut(8))
         }
+        val demoProjectLabel = JBLabel(SpecCodingBundle.message("spec.dialog.demo.title"))
+        demoProjectLabel.alignmentX = JComponent.LEFT_ALIGNMENT
+        panel.add(demoProjectLabel)
+        panel.add(javax.swing.Box.createVerticalStrut(4))
+        demoProjectArea.alignmentX = JComponent.LEFT_ALIGNMENT
+        panel.add(demoProjectArea)
+        panel.add(javax.swing.Box.createVerticalStrut(4))
+        openBundledDemoButton.alignmentX = JComponent.LEFT_ALIGNMENT
+        panel.add(openBundledDemoButton)
+        panel.add(javax.swing.Box.createVerticalStrut(8))
         verifyCheckBox.alignmentX = JComponent.LEFT_ALIGNMENT
         panel.add(verifyCheckBox)
         panel.add(javax.swing.Box.createVerticalStrut(8))
@@ -495,6 +521,7 @@ class NewSpecWorkflowDialog(
             selectPrimaryEntry(onboarding.recommendedEntry)
         }
         updateOnboardingPresentation(readiness)
+        updateFirstRunStatus(readiness)
         localSetupArea.text = buildString {
             appendLine(readiness.summary)
             appendLine()
@@ -534,6 +561,21 @@ class NewSpecWorkflowDialog(
         }
     }
 
+    private fun updateFirstRunStatus(readiness: LocalEnvironmentReadinessSnapshot) {
+        val activeProject = project ?: return
+        val status = SpecWorkflowFirstRunStatusCoordinator.build(
+            readiness = readiness,
+            tracking = SpecWorkflowFirstRunTrackingStore.getInstance(activeProject).snapshot(),
+        )
+        firstRunStatusArea.text = buildString {
+            appendLine(status.summary)
+            if (status.details.isNotEmpty()) {
+                appendLine()
+                append(status.details.joinToString("\n"))
+            }
+        }
+    }
+
     private fun openSettingsAndRefreshReadiness() {
         val activeProject = project ?: return
         ShowSettingsUtil.getInstance().showSettingsDialog(
@@ -542,6 +584,35 @@ class NewSpecWorkflowDialog(
         )
         updateLocalSetupPresentation()
         updateFormState()
+    }
+
+    private fun openBundledDemoProject() {
+        val demoProject = runCatching {
+            SpecWorkflowBundledDemoProjectSupport.materializeDefault()
+        }.getOrElse { error ->
+            showDemoOpenError(error)
+            return
+        }
+        val readmePath = demoProject.readmePath
+        val openedInEditor = project?.let { activeProject ->
+            SpecWorkflowActionSupport.openFile(activeProject, readmePath)
+        } == true
+        if (!openedInEditor) {
+            BrowserUtil.browse(readmePath.toUri())
+        }
+    }
+
+    private fun showDemoOpenError(error: Throwable) {
+        val message = SpecCodingBundle.message(
+            "spec.dialog.demo.open.failed",
+            error.message ?: error.javaClass.simpleName,
+        )
+        val title = SpecCodingBundle.message("spec.dialog.demo.title")
+        if (project != null) {
+            Messages.showErrorDialog(project, message, title)
+        } else {
+            Messages.showErrorDialog(message, title)
+        }
     }
 
     override fun getPreferredFocusedComponent() = titleField

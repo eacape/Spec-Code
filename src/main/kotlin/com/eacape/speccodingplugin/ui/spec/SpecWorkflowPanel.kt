@@ -2544,6 +2544,7 @@ class SpecWorkflowPanel(
                 val verifyEnabled = dialog.resultVerifyEnabled
                 val changeIntent = dialog.resultChangeIntent
                 val baselineWorkflowId = dialog.resultBaselineWorkflowId
+                SpecWorkflowFirstRunTrackingStore.getInstance(project).recordWorkflowCreateAttempt(template)
                 taskCoordinator.launchIo {
                     specEngine.createWorkflow(
                         title = title,
@@ -2553,6 +2554,8 @@ class SpecWorkflowPanel(
                         changeIntent = changeIntent,
                         baselineWorkflowId = baselineWorkflowId,
                     ).onSuccess { wf ->
+                        SpecWorkflowFirstRunTrackingStore.getInstance(project)
+                            .recordWorkflowCreateSuccess(workflowId = wf.id, template = template)
                         invokeLaterSafe {
                             highlightedWorkflowId = wf.id
                             refreshWorkflows(selectWorkflowId = wf.id)
