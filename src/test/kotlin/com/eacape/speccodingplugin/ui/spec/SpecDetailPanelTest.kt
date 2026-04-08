@@ -445,6 +445,42 @@ class SpecDetailPanelTest {
     }
 
     @Test
+    fun `refreshLocalizedTexts should preserve manually selected phase preview`() {
+        val panel = createPanel()
+        val specifyContent = "requirements content"
+        val designContent = "design content"
+        val workflow = SpecWorkflow(
+            id = "wf-refresh-phase",
+            currentPhase = SpecPhase.DESIGN,
+            documents = mapOf(
+                SpecPhase.SPECIFY to document(
+                    phase = SpecPhase.SPECIFY,
+                    content = specifyContent,
+                    valid = true,
+                ),
+                SpecPhase.DESIGN to document(
+                    phase = SpecPhase.DESIGN,
+                    content = designContent,
+                    valid = true,
+                ),
+            ),
+            status = WorkflowStatus.IN_PROGRESS,
+            title = "Refresh",
+            description = "keep selected preview phase",
+            createdAt = 1L,
+            updatedAt = 2L,
+        )
+
+        panel.updateWorkflow(workflow)
+        panel.selectPhaseForTest(SpecPhase.SPECIFY)
+
+        panel.refreshLocalizedTexts()
+
+        assertEquals(SpecPhase.SPECIFY.name, panel.selectedPhaseNameForTest())
+        assertEquals(specifyContent, panel.currentPreviewTextForTest())
+    }
+
+    @Test
     fun `preview checklist toggle should save updated task document`() {
         var savedPhase: SpecPhase? = null
         var savedContent: String? = null

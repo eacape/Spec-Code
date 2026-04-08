@@ -7,6 +7,13 @@ import org.junit.jupiter.api.Test
 class WindowStateStoreTest {
 
     @Test
+    fun `default snapshot should prefer specs primary tab`() {
+        val store = WindowStateStore()
+
+        assertEquals(WindowStateStore.PRIMARY_TAB_SPEC, store.snapshot().selectedTabTitle)
+    }
+
+    @Test
     fun `update methods should persist runtime snapshot`() {
         val store = WindowStateStore()
 
@@ -48,7 +55,7 @@ class WindowStateStoreTest {
         store.updateActiveSessionId("   ")
 
         val snapshot = store.snapshot()
-        assertEquals("Specs", snapshot.selectedTabTitle)
+        assertEquals(WindowStateStore.PRIMARY_TAB_SPEC, snapshot.selectedTabTitle)
         assertNull(snapshot.activeSessionId)
         assertEquals("PLAN", snapshot.operationMode)
         assertEquals("vibe", snapshot.chatInteractionMode)
@@ -79,15 +86,35 @@ class WindowStateStoreTest {
 
         store.loadState(
             WindowStateStore.WindowState(
-                selectedTabTitle = "Chat",
+                selectedTabTitle = "Dialogue",
                 chatInteractionMode = "spec",
             )
         )
 
         assertEquals("workflow", store.snapshot().chatInteractionMode)
+        assertEquals(WindowStateStore.PRIMARY_TAB_CHAT, store.snapshot().selectedTabTitle)
 
         store.updateChatInteractionMode("spec")
 
         assertEquals("workflow", store.snapshot().chatInteractionMode)
+    }
+
+    @Test
+    fun `legacy localized primary tab titles should normalize to stable keys`() {
+        val store = WindowStateStore()
+
+        store.loadState(
+            WindowStateStore.WindowState(
+                selectedTabTitle = "Specs",
+            )
+        )
+        assertEquals(WindowStateStore.PRIMARY_TAB_SPEC, store.snapshot().selectedTabTitle)
+
+        store.loadState(
+            WindowStateStore.WindowState(
+                selectedTabTitle = "对话",
+            )
+        )
+        assertEquals(WindowStateStore.PRIMARY_TAB_CHAT, store.snapshot().selectedTabTitle)
     }
 }

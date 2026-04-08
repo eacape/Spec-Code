@@ -25,6 +25,17 @@ class NewSpecWorkflowDialogTest {
     }
 
     @Test
+    fun `advanced templates should stay secondary to quick task and full spec`() {
+        assertEquals(
+            listOf(
+                WorkflowTemplate.DESIGN_REVIEW,
+                WorkflowTemplate.DIRECT_IMPLEMENT,
+            ),
+            NewSpecWorkflowDialog.advancedTemplates(),
+        )
+    }
+
+    @Test
     fun `templateSupportsRequirementScope should only allow requirement templates`() {
         assertTrue(NewSpecWorkflowDialog.templateSupportsRequirementScope(WorkflowTemplate.FULL_SPEC))
         assertFalse(NewSpecWorkflowDialog.templateSupportsRequirementScope(WorkflowTemplate.QUICK_TASK))
@@ -77,6 +88,16 @@ class NewSpecWorkflowDialogTest {
             ).joinToString(" -> "),
             presentation.stageSummary,
         )
+        assertTrue(
+            presentation.stageMeaningSummary.contains(
+                SpecWorkflowOverviewPresenter.stageLabel(StageId.REQUIREMENTS),
+            ),
+        )
+        assertTrue(
+            presentation.stageMeaningSummary.contains(
+                SpecWorkflowOverviewPresenter.stageLabel(StageId.VERIFY),
+            ),
+        )
         assertEquals(
             listOf(
                 "requirements.md",
@@ -121,6 +142,21 @@ class NewSpecWorkflowDialogTest {
             ).joinToString(" -> "),
             presentation.stageSummary,
         )
+        assertTrue(
+            presentation.stageMeaningSummary.contains(
+                SpecWorkflowOverviewPresenter.stageLabel(StageId.IMPLEMENT),
+            ),
+        )
+        assertFalse(
+            presentation.stageMeaningSummary.contains(
+                "${
+                    SpecCodingBundle.message(
+                        "spec.dialog.template.optionalValue",
+                        SpecWorkflowOverviewPresenter.stageLabel(StageId.VERIFY),
+                    )
+                }:",
+            ),
+        )
         assertEquals(
             listOf(
                 SpecCodingBundle.message("spec.dialog.template.generatedValue", "tasks.md"),
@@ -145,6 +181,11 @@ class NewSpecWorkflowDialogTest {
                 SpecWorkflowOverviewPresenter.stageLabel(StageId.ARCHIVE),
             ).joinToString(" -> "),
             presentation.stageSummary,
+        )
+        assertTrue(
+            presentation.stageMeaningSummary.contains(
+                SpecWorkflowOverviewPresenter.stageLabel(StageId.IMPLEMENT),
+            ),
         )
         assertEquals(
             listOf(

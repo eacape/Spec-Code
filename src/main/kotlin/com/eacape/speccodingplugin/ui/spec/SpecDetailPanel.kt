@@ -19,7 +19,6 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.IconLoader
 import com.intellij.util.ui.JBUI
-import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.Color
@@ -29,18 +28,11 @@ import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
-import java.awt.GradientPaint
-import java.awt.Graphics
-import java.awt.Graphics2D
 import java.awt.GraphicsEnvironment
-import java.awt.Rectangle
-import java.awt.RenderingHints
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
-import java.awt.event.MouseMotionAdapter
-import java.awt.geom.RoundRectangle2D
 import javax.swing.Box
 import javax.swing.BoxLayout
 import javax.swing.BorderFactory
@@ -86,8 +78,6 @@ class SpecDetailPanel(
     private val treeRoot = DefaultMutableTreeNode(SpecCodingBundle.message("spec.detail.documents"))
     private val treeModel = DefaultTreeModel(treeRoot)
     private val documentTree = JTree(treeModel)
-    private val phaseStepperRail = PhaseStepperRail()
-
     private val previewPane = JTextPane()
     private val clarificationQuestionsPane = JTextPane()
     private val clarificationPreviewPane = JTextPane()
@@ -120,8 +110,6 @@ class SpecDetailPanel(
     private lateinit var actionButtonPanel: JPanel
     private lateinit var bottomPanelContainer: JPanel
     private lateinit var mainSplitPane: JSplitPane
-    private var isPhaseStepperEnabled: Boolean = true
-
     private var currentWorkflow: SpecWorkflow? = null
     private var selectedPhase: SpecPhase? = null
     private var generatingPercent: Int = 0
@@ -488,29 +476,6 @@ class SpecDetailPanel(
         return true
     }
 
-    private fun setPhaseStepperEnabled(enabled: Boolean) {
-        isPhaseStepperEnabled = enabled
-        updatePhaseStepperVisuals()
-    }
-
-    private fun updatePhaseStepperVisuals() {
-        val workflow = currentWorkflow
-        val completedPhases = workflow
-            ?.let { wf ->
-                SpecPhase.entries
-                    .filter { phase -> wf.documents.containsKey(phase) && phase != wf.currentPhase }
-                    .toSet()
-            }
-            .orEmpty()
-        val artifactOnlyView = isWorkbenchArtifactOnlyView()
-        phaseStepperRail.updateState(
-            selected = selectedPhase.takeUnless { artifactOnlyView },
-            current = workflow?.currentPhase,
-            completed = completedPhases,
-            interactive = isPhaseStepperEnabled && workflow != null,
-        )
-    }
-
     private fun documentPhaseForStage(stageId: StageId): SpecPhase? {
         return when (stageId) {
             StageId.REQUIREMENTS -> SpecPhase.SPECIFY
@@ -522,259 +487,6 @@ class SpecDetailPanel(
             StageId.VERIFY,
             StageId.ARCHIVE,
             -> null
-        }
-    }
-
-    private inner class PhaseStepperRail : JPanel() {
-        private var onPhaseSelected: ((SpecPhase) -> Unit)? = null
-        private var selectedPhase: SpecPhase? = null
-        private var currentPhase: SpecPhase? = null
-        private var completedPhases: Set<SpecPhase> = emptySet()
-        private var interactionEnabled: Boolean = false
-        private var hoveredPhase: SpecPhase? = null
-        private var chipBounds: Map<SpecPhase, Rectangle> = emptyMap()
-
-        init {
-            isOpaque = false
-            border = JBUI.Borders.empty()
-            preferredSize = Dimension(0, JBUI.scale(42))
-            minimumSize = Dimension(0, JBUI.scale(38))
-            addMouseListener(
-                object : MouseAdapter() {
-                    override fun mouseExited(e: MouseEvent?) {
-                        updateHoveredPhase(null)
-                    }
-
-                    override fun mouseClicked(e: MouseEvent) {
-                        if (!interactionEnabled || !SwingUtilities.isLeftMouseButton(e)) return
-                        val phase = resolvePhaseAt(e.x, e.y) ?: return
-                        onPhaseSelected?.invoke(phase)
-                    }
-                },
-            )
-            addMouseMotionListener(
-                object : MouseMotionAdapter() {
-                    override fun mouseMoved(e: MouseEvent) {
-                        updateHoveredPhase(resolvePhaseAt(e.x, e.y))
-                    }
-                },
-            )
-        }
-
-        fun setOnPhaseSelected(listener: (SpecPhase) -> Unit) {
-            onPhaseSelected = listener
-        }
-
-        fun updateState(
-            selected: SpecPhase?,
-            current: SpecPhase?,
-            completed: Set<SpecPhase>,
-            interactive: Boolean,
-        ) {
-            selectedPhase = selected
-            currentPhase = current
-            completedPhases = completed
-            interactionEnabled = interactive
-            if (!interactive) {
-                hoveredPhase = null
-            }
-            cursor = if (interactionEnabled && hoveredPhase != null) {
-                Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            } else {
-                Cursor.getDefaultCursor()
-            }
-            repaint()
-        }
-
-        override fun paintComponent(g: Graphics) {
-            super.paintComponent(g)
-            val g2 = (g.create() as? Graphics2D) ?: return
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-            g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
-            val phases = SpecPhase.entries
-            if (phases.isEmpty() || width <= 0 || height <= 0) {
-                g2.dispose()
-                return
-            }
-
-            val strongLabelFont = JBUI.Fonts.label().deriveFont(Font.BOLD, 12f)
-            val normalLabelFont = JBUI.Fonts.label().deriveFont(Font.PLAIN, 12f)
-            val outerPaddingX = 0
-            val outerPaddingY = JBUI.scale(4)
-            val trackX = outerPaddingX
-            val trackY = outerPaddingY
-            val trackWidth = (width - outerPaddingX * 2).coerceAtLeast(phases.size)
-            val trackHeight = (height - outerPaddingY * 2).coerceAtLeast(JBUI.scale(28))
-            val trackRadius = JBUI.scale(14)
-            val baselineInset = JBUI.scale(6)
-            val baselineY = (trackY + trackHeight + JBUI.scale(3)).coerceAtMost(height - JBUI.scale(2))
-            val baseSegmentWidth = trackWidth / phases.size
-            val widthRemainder = trackWidth % phases.size
-
-            g2.color = STEPPER_CHIP_TRACK_BG
-            g2.fillRoundRect(trackX, trackY, trackWidth, trackHeight, trackRadius, trackRadius)
-            g2.color = STEPPER_CHIP_TRACK_BORDER
-            g2.stroke = BasicStroke(JBUI.scale(1).toFloat() + 0.18f)
-            g2.drawRoundRect(trackX, trackY, trackWidth - 1, trackHeight - 1, trackRadius, trackRadius)
-            g2.color = withAlpha(STEPPER_CHIP_TRACK_BORDER, 72)
-            g2.stroke = BasicStroke(JBUI.scale(1).toFloat())
-            g2.drawRoundRect(trackX + 1, trackY + 1, trackWidth - 3, trackHeight - 3, trackRadius, trackRadius)
-
-            val bounds = linkedMapOf<SpecPhase, Rectangle>()
-            val previousClip = g2.clip
-            g2.clip = RoundRectangle2D.Float(
-                trackX.toFloat(),
-                trackY.toFloat(),
-                trackWidth.toFloat(),
-                trackHeight.toFloat(),
-                trackRadius.toFloat(),
-                trackRadius.toFloat(),
-            )
-            var segmentX = trackX
-            phases.forEachIndexed { index, phase ->
-                val segmentWidth = baseSegmentWidth + if (index < widthRemainder) 1 else 0
-                val rect = Rectangle(segmentX, trackY, segmentWidth, trackHeight)
-                segmentX += segmentWidth
-                bounds[phase] = rect
-                val selected = phase == selectedPhase
-                val current = phase == currentPhase
-                val done = phase in completedPhases
-                val hovered = interactionEnabled && hoveredPhase == phase
-
-                if (current) {
-                    g2.color = withAlpha(STEPPER_CHIP_GLOW, if (hovered) 72 else 56)
-                    g2.fillRect(
-                        rect.x - JBUI.scale(2),
-                        rect.y - JBUI.scale(2),
-                        rect.width + JBUI.scale(4),
-                        rect.height + JBUI.scale(4),
-                    )
-                }
-
-                val segmentFill = when {
-                    current -> STEPPER_CHIP_BG_CURRENT
-                    selected -> STEPPER_CHIP_BG_SELECTED
-                    done -> STEPPER_CHIP_BG_DONE
-                    hovered -> STEPPER_CHIP_BG_HOVER
-                    else -> STEPPER_CHIP_BG_PENDING
-                }
-                g2.color = segmentFill
-                g2.fillRect(rect.x, rect.y, rect.width, rect.height)
-            }
-            g2.clip = previousClip
-
-            var dividerX = trackX
-            for (index in 0 until phases.size - 1) {
-                dividerX += baseSegmentWidth + if (index < widthRemainder) 1 else 0
-                g2.color = STEPPER_CHIP_DIVIDER
-                g2.stroke = BasicStroke(JBUI.scale(1).toFloat() + 0.08f)
-                g2.drawLine(
-                    dividerX,
-                    trackY + JBUI.scale(5),
-                    dividerX,
-                    trackY + trackHeight - JBUI.scale(6),
-                )
-            }
-
-            phases.forEach { phase ->
-                val rect = bounds[phase] ?: return@forEach
-                val selected = phase == selectedPhase
-                val current = phase == currentPhase
-                val done = phase in completedPhases
-                val hovered = interactionEnabled && hoveredPhase == phase
-                val label = phaseStepperTitle(phase)
-                g2.font = if (current || selected) {
-                    strongLabelFont
-                } else {
-                    normalLabelFont
-                }
-                val labelMetrics = g2.fontMetrics
-                val displayLabel = fitTextToWidth(label, rect.width - JBUI.scale(12), labelMetrics)
-                val displayWidth = labelMetrics.stringWidth(displayLabel)
-                val labelX = rect.x + ((rect.width - displayWidth) / 2).coerceAtLeast(0)
-                val labelY = rect.y + (rect.height + labelMetrics.ascent - labelMetrics.descent) / 2
-                g2.color = when {
-                    current -> STEPPER_CHIP_TEXT_CURRENT
-                    selected -> STEPPER_CHIP_TEXT_SELECTED
-                    done -> STEPPER_CHIP_TEXT_DONE
-                    hovered -> STEPPER_CHIP_TEXT_HOVER
-                    else -> STEPPER_CHIP_TEXT_PENDING
-                }
-                g2.drawString(displayLabel, labelX, labelY)
-            }
-
-            g2.color = withAlpha(STEPPER_CHIP_BASELINE, 170)
-            g2.stroke = BasicStroke(JBUI.scale(1).toFloat() + 0.35f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
-            g2.drawLine(
-                trackX + baselineInset,
-                baselineY,
-                trackX + trackWidth - baselineInset,
-                baselineY,
-            )
-            val emphasisPhase = selectedPhase ?: currentPhase
-            emphasisPhase?.let { phase ->
-                val rect = bounds[phase] ?: return@let
-                val activeStart = (rect.x + JBUI.scale(13)).coerceAtLeast(trackX + baselineInset)
-                val activeEnd = (rect.x + rect.width - JBUI.scale(13)).coerceAtMost(trackX + trackWidth - baselineInset)
-                if (activeEnd > activeStart) {
-                    g2.color = withAlpha(STEPPER_CHIP_BASELINE_ACTIVE_START, 56)
-                    g2.stroke = BasicStroke(JBUI.scale(2).toFloat() + 0.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
-                    g2.drawLine(activeStart, baselineY, activeEnd, baselineY)
-                    g2.paint = GradientPaint(
-                        activeStart.toFloat(),
-                        baselineY.toFloat(),
-                        STEPPER_CHIP_BASELINE_ACTIVE_START,
-                        activeEnd.toFloat(),
-                        baselineY.toFloat(),
-                        STEPPER_CHIP_BASELINE_ACTIVE_END,
-                    )
-                    g2.stroke = BasicStroke(JBUI.scale(1).toFloat() + 0.45f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
-                    g2.drawLine(activeStart, baselineY, activeEnd, baselineY)
-                }
-            }
-            chipBounds = bounds
-            g2.dispose()
-        }
-
-        private fun updateHoveredPhase(phase: SpecPhase?) {
-            val normalized = if (interactionEnabled) phase else null
-            if (hoveredPhase == normalized) return
-            hoveredPhase = normalized
-            cursor = if (normalized != null) {
-                Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            } else {
-                Cursor.getDefaultCursor()
-            }
-            repaint()
-        }
-
-        private fun resolvePhaseAt(x: Int, y: Int): SpecPhase? {
-            return chipBounds.entries.firstOrNull { (_, rect) -> rect.contains(x, y) }?.key
-        }
-
-        private fun fitTextToWidth(text: String, maxWidth: Int, metrics: java.awt.FontMetrics): String {
-            if (maxWidth <= 0) return ""
-            if (metrics.stringWidth(text) <= maxWidth) return text
-            val ellipsis = "…"
-            val ellipsisWidth = metrics.stringWidth(ellipsis)
-            if (ellipsisWidth >= maxWidth) return ellipsis
-            var low = 0
-            var high = text.length
-            while (low < high) {
-                val mid = (low + high + 1) / 2
-                val candidate = text.substring(0, mid)
-                val width = metrics.stringWidth(candidate) + ellipsisWidth
-                if (width <= maxWidth) {
-                    low = mid
-                } else {
-                    high = mid - 1
-                }
-            }
-            return text.substring(0, low).trimEnd() + ellipsis
-        }
-
-        private fun withAlpha(color: Color, alpha: Int): Color {
-            return Color(color.red, color.green, color.blue, alpha.coerceIn(0, 255))
         }
     }
 
@@ -1045,7 +757,6 @@ class SpecDetailPanel(
         composerCodeContextPanel.refreshLocalizedTexts()
         refreshActionButtonPresentation()
         updateInputPlaceholder(currentWorkflow?.currentPhase)
-        updatePhaseStepperVisuals()
         refreshCollapsibleToggleTexts()
         renderProcessTimeline()
         if (isClarificationGenerating) {
@@ -1114,7 +825,6 @@ class SpecDetailPanel(
             else -> preservedPhase ?: workflow.currentPhase
         }
         refreshActionButtonPresentation(workflow)
-        setPhaseStepperEnabled(!isEditing)
         updateTreeSelection(selectedPhase, forceComposerReset = false)
         updateButtonStates(workflow)
         refreshComposerCodeContextPanelState()
@@ -1147,7 +857,6 @@ class SpecDetailPanel(
         clearProcessTimeline()
         treeRoot.removeAllChildren()
         treeModel.reload()
-        setPhaseStepperEnabled(false)
         updateTreeSelection(null)
         applyPreviewSurfacePlan(SpecDetailPreviewSurfaceCoordinator.forPreview())
         documentTree.isEnabled = true
@@ -1179,7 +888,6 @@ class SpecDetailPanel(
         workbenchArtifactBinding = state.artifactBinding
         preferredWorkbenchPhase = state.artifactBinding.documentPhase
         val workflow = currentWorkflow ?: return
-        updatePhaseStepperVisuals()
         if (isEditing) {
             updateButtonStates(workflow)
             return
@@ -1242,7 +950,6 @@ class SpecDetailPanel(
 
     private fun updateTreeSelection(phase: SpecPhase?, forceComposerReset: Boolean = true) {
         selectedPhase = phase
-        updatePhaseStepperVisuals()
         syncComposerSectionState(forceReset = forceComposerReset)
     }
 
@@ -1295,7 +1002,6 @@ class SpecDetailPanel(
         editorArea.caretPosition = 0
         applyPreviewSurfacePlan(SpecDetailPreviewSurfaceCoordinator.forEdit())
         documentTree.isEnabled = false
-        setPhaseStepperEnabled(false)
         refreshInputAreaMode()
         updateButtonStates(workflow)
     }
@@ -1313,7 +1019,6 @@ class SpecDetailPanel(
         }
         applyPreviewSurfacePlan(SpecDetailPreviewSurfaceCoordinator.forPreview())
         documentTree.isEnabled = true
-        setPhaseStepperEnabled(true)
         refreshInputAreaMode()
         updateButtonStates(workflow)
         showActivePreview(keepGeneratingIndicator = false)
@@ -3034,23 +2739,6 @@ class SpecDetailPanel(
         private val PANEL_BORDER = JBColor(Color(205, 216, 234), Color(84, 92, 106))
         private val TREE_SECTION_BG = JBColor(Color(246, 249, 253), Color(60, 67, 78))
         private val TREE_SECTION_BORDER = JBColor(Color(214, 223, 236), Color(92, 103, 121))
-        private val STEPPER_CHIP_TRACK_BG = JBColor(Color(246, 248, 251), Color(58, 65, 75))
-        private val STEPPER_CHIP_TRACK_BORDER = JBColor(Color(200, 210, 223), Color(101, 113, 130))
-        private val STEPPER_CHIP_DIVIDER = JBColor(Color(202, 213, 228), Color(90, 102, 120))
-        private val STEPPER_CHIP_BASELINE = JBColor(Color(165, 178, 196), Color(116, 132, 154))
-        private val STEPPER_CHIP_BASELINE_ACTIVE_START = JBColor(Color(73, 124, 191), Color(127, 167, 218))
-        private val STEPPER_CHIP_BASELINE_ACTIVE_END = JBColor(Color(100, 149, 212), Color(149, 186, 232))
-        private val STEPPER_CHIP_GLOW = JBColor(Color(104, 149, 210), Color(108, 150, 209))
-        private val STEPPER_CHIP_BG_CURRENT = JBColor(Color(236, 243, 252), Color(77, 94, 118))
-        private val STEPPER_CHIP_BG_SELECTED = JBColor(Color(242, 246, 251), Color(68, 79, 95))
-        private val STEPPER_CHIP_BG_DONE = JBColor(Color(244, 248, 252), Color(64, 74, 88))
-        private val STEPPER_CHIP_BG_HOVER = JBColor(Color(239, 245, 251), Color(72, 85, 102))
-        private val STEPPER_CHIP_BG_PENDING = JBColor(Color(247, 250, 253), Color(60, 70, 84))
-        private val STEPPER_CHIP_TEXT_CURRENT = JBColor(Color(36, 63, 99), Color(219, 230, 244))
-        private val STEPPER_CHIP_TEXT_SELECTED = JBColor(Color(59, 80, 110), Color(206, 218, 234))
-        private val STEPPER_CHIP_TEXT_DONE = JBColor(Color(86, 101, 122), Color(184, 196, 213))
-        private val STEPPER_CHIP_TEXT_HOVER = JBColor(Color(53, 79, 113), Color(212, 223, 239))
-        private val STEPPER_CHIP_TEXT_PENDING = JBColor(Color(111, 125, 145), Color(166, 178, 196))
         private val PREVIEW_COLUMN_BG = JBColor(Color(244, 249, 255), Color(55, 61, 71))
         private val PREVIEW_SECTION_BG = JBColor(Color(250, 253, 255), Color(49, 55, 64))
         private val PREVIEW_SECTION_BORDER = JBColor(Color(204, 217, 236), Color(83, 93, 109))

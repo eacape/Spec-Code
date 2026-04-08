@@ -256,13 +256,11 @@ class ChatToolWindowFactory : ToolWindowFactory, DumbAware {
 
             override fun selectionChanged(event: ContentManagerEvent) {
                 val selectedContent = event.content ?: return
-                val selectedTabTitle = selectedContent.displayName
-                    .takeIf { it.isNotBlank() }
-                    ?: when {
-                        isChatContent(selectedContent) -> SpecCodingBundle.message("toolwindow.tab.chat")
-                        isSpecContent(selectedContent) -> SpecCodingBundle.message("spec.tab.title")
-                        else -> null
-                    }
+                val selectedTabTitle = when {
+                    isChatContent(selectedContent) -> WindowStateStore.PRIMARY_TAB_CHAT
+                    isSpecContent(selectedContent) -> WindowStateStore.PRIMARY_TAB_SPEC
+                    else -> selectedContent.displayName.takeIf { it.isNotBlank() }
+                }
                 windowStateStore.updateSelectedTabTitle(selectedTabTitle)
                 if (isSpecContent(selectedContent)) {
                     (selectedContent.component as? SpecWorkflowPanel)?.let { panel ->
@@ -302,11 +300,11 @@ class ChatToolWindowFactory : ToolWindowFactory, DumbAware {
 
         val restoredTabTitle = windowStateStore.snapshot().selectedTabTitle
         when {
-            restoredTabTitle == SpecCodingBundle.message("spec.tab.title") -> selectSpecContent(toolWindow, project)
-            restoredTabTitle == SpecCodingBundle.message("toolwindow.tab.chat") -> selectChatContent(toolWindow, project)
+            restoredTabTitle == WindowStateStore.PRIMARY_TAB_SPEC -> selectSpecContent(toolWindow, project)
+            restoredTabTitle == WindowStateStore.PRIMARY_TAB_CHAT -> selectChatContent(toolWindow, project)
             else -> contentManager.contents.firstOrNull { it.displayName == restoredTabTitle }
                 ?.let(contentManager::setSelectedContent)
-                ?: selectChatContent(toolWindow, project)
+                ?: selectSpecContent(toolWindow, project)
         }
     }
 

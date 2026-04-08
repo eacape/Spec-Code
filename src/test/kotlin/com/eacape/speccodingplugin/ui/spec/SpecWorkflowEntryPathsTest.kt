@@ -49,4 +49,55 @@ class SpecWorkflowEntryPathsTest {
         assertTrue(SpecWorkflowEntryPaths.isPrimaryTemplate(WorkflowTemplate.FULL_SPEC))
         assertFalse(SpecWorkflowEntryPaths.isPrimaryTemplate(WorkflowTemplate.DESIGN_REVIEW))
     }
+
+    @Test
+    fun `advanced templates should keep non primary templates in stable order`() {
+        assertEquals(
+            listOf(
+                WorkflowTemplate.DESIGN_REVIEW,
+                WorkflowTemplate.DIRECT_IMPLEMENT,
+            ),
+            SpecWorkflowEntryPaths.advancedTemplates(),
+        )
+        assertTrue(SpecWorkflowEntryPaths.isAdvancedTemplate(WorkflowTemplate.DIRECT_IMPLEMENT))
+        assertFalse(SpecWorkflowEntryPaths.isAdvancedTemplate(WorkflowTemplate.QUICK_TASK))
+    }
+
+    @Test
+    fun `primary entry should group advanced templates behind one beta secondary choice`() {
+        assertEquals(
+            SpecWorkflowPrimaryEntry.QUICK_TASK,
+            SpecWorkflowEntryPaths.primaryEntryForTemplate(WorkflowTemplate.QUICK_TASK),
+        )
+        assertEquals(
+            SpecWorkflowPrimaryEntry.FULL_SPEC,
+            SpecWorkflowEntryPaths.primaryEntryForTemplate(WorkflowTemplate.FULL_SPEC),
+        )
+        assertEquals(
+            SpecWorkflowPrimaryEntry.ADVANCED_TEMPLATE,
+            SpecWorkflowEntryPaths.primaryEntryForTemplate(WorkflowTemplate.DIRECT_IMPLEMENT),
+        )
+    }
+
+    @Test
+    fun `template for primary entry should resolve advanced selection and fallback safely`() {
+        assertEquals(
+            WorkflowTemplate.QUICK_TASK,
+            SpecWorkflowEntryPaths.templateForPrimaryEntry(SpecWorkflowPrimaryEntry.QUICK_TASK),
+        )
+        assertEquals(
+            WorkflowTemplate.DIRECT_IMPLEMENT,
+            SpecWorkflowEntryPaths.templateForPrimaryEntry(
+                entry = SpecWorkflowPrimaryEntry.ADVANCED_TEMPLATE,
+                advancedTemplate = WorkflowTemplate.DIRECT_IMPLEMENT,
+            ),
+        )
+        assertEquals(
+            WorkflowTemplate.DESIGN_REVIEW,
+            SpecWorkflowEntryPaths.templateForPrimaryEntry(
+                entry = SpecWorkflowPrimaryEntry.ADVANCED_TEMPLATE,
+                advancedTemplate = WorkflowTemplate.QUICK_TASK,
+            ),
+        )
+    }
 }

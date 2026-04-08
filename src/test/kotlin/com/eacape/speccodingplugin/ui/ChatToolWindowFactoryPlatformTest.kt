@@ -22,6 +22,7 @@ import com.eacape.speccodingplugin.ui.WorkflowChatRefreshEvent
 import com.eacape.speccodingplugin.ui.WorkflowChatRefreshListener
 import com.eacape.speccodingplugin.ui.history.HistorySessionOpenListener
 import com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanel
+import com.eacape.speccodingplugin.window.WindowStateStore
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.wm.RegisterToolWindowTask
 import com.intellij.openapi.wm.ToolWindow
@@ -49,6 +50,19 @@ class ChatToolWindowFactoryPlatformTest : BasePlatformTestCase() {
         assertTrue(primaryContents.any { it.component is ImprovedChatPanel })
         assertTrue(primaryContents.any { it.component is SpecWorkflowPanel })
         assertEquals(ToolWindowContentUiType.TABBED, toolWindow.contentUiType)
+        assertTrue(ChatToolWindowFactory.isSpecContent(toolWindow.contentManager.selectedContent))
+    }
+
+    fun `test create tool window content should preserve remembered chat tab`() {
+        val toolWindow = registerSpecCodeToolWindow()
+        WindowStateStore.getInstance(project).updateSelectedTabTitle(WindowStateStore.PRIMARY_TAB_CHAT)
+
+        ApplicationManager.getApplication().invokeAndWait {
+            ChatToolWindowFactory().createToolWindowContent(project, toolWindow)
+        }
+        UIUtil.dispatchAllInvocationEvents()
+
+        assertTrue(ChatToolWindowFactory.isChatContent(toolWindow.contentManager.selectedContent))
     }
 
     fun `test select spec content should activate spec content tab`() {

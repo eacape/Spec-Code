@@ -7,9 +7,11 @@ import com.eacape.speccodingplugin.spec.WorkflowTemplate
 import com.eacape.speccodingplugin.spec.WorkflowTemplates
 import com.intellij.openapi.util.text.StringUtil
 import com.eacape.speccodingplugin.ui.LocalEnvironmentReadiness
+import com.eacape.speccodingplugin.ui.LocalEnvironmentReadinessSnapshot
 import com.eacape.speccodingplugin.ui.ComboBoxAutoWidthSupport
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.ValidationInfo
+import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.ui.JBColor
 import com.intellij.ui.CollectionComboBoxModel
@@ -25,6 +27,7 @@ import java.awt.Font
 import javax.swing.BoxLayout
 import javax.swing.BorderFactory
 import javax.swing.ButtonGroup
+import javax.swing.JButton
 import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JPanel
@@ -60,28 +63,38 @@ class NewSpecWorkflowDialog(
         text = SpecCodingBundle.message("spec.dialog.template.help.beta")
     }
     private val localSetupArea = createReadOnlyInfoArea(rows = 8)
-    private val templateLabel = JBLabel(SpecCodingBundle.message("spec.dialog.field.template"))
-    private val templateCombo = JComboBox(CollectionComboBoxModel(orderedTemplates())).apply {
-        selectedItem = defaultTemplate
-        renderer = SimpleListCellRenderer.create<WorkflowTemplate> { label, value, index ->
-            val template = value
-            if (template == null) {
-                label.text = ""
-                label.toolTipText = null
-                return@create
-            }
-            val detail = buildTemplatePresentation(template)
-            val templateLabel = SpecWorkflowOverviewPresenter.templateLabel(template)
-            label.toolTipText = detail.bestFor
-            label.text = if (index < 0) {
-                templateLabel
-            } else {
-                buildComboEntryHtml(
-                    title = templateLabel,
-                    subtitle = detail.bestFor,
-                )
-            }
-        }
+    private val onboardingArea = createReadOnlyInfoArea(rows = 3)
+    private val firstRunGuideArea = createReadOnlyInfoArea(rows = 7)
+    private val openSettingsButton = JButton(SpecCodingBundle.message("spec.dialog.localSetup.openSettings")).apply {
+        isVisible = false
+    }
+    private val entryLabel = JBLabel(SpecCodingBundle.message("spec.dialog.entry.title"))
+    private val quickTaskEntryRadio = JBRadioButton(
+        SpecWorkflowOverviewPresenter.templateLabel(WorkflowTemplate.QUICK_TASK),
+        false,
+    )
+    private val fullSpecEntryRadio = JBRadioButton(
+        SpecWorkflowOverviewPresenter.templateLabel(WorkflowTemplate.FULL_SPEC),
+        false,
+    )
+    private val advancedTemplateEntryRadio = JBRadioButton(
+        SpecCodingBundle.message("spec.dialog.entry.advanced"),
+        false,
+    )
+    private val templateLabel = JBLabel(SpecCodingBundle.message("spec.dialog.field.template.advanced"))
+    private val advancedTemplateCombo = JComboBox(CollectionComboBoxModel(advancedTemplates())).apply {
+        selectedItem = SpecWorkflowEntryPaths.templateForPrimaryEntry(
+            entry = SpecWorkflowPrimaryEntry.ADVANCED_TEMPLATE,
+            advancedTemplate = defaultTemplate,
+            availableTemplates = orderedTemplates(),
+        )
+        renderer = buildTemplateRenderer()
+    }
+    private val advancedTemplatePanel = JPanel().apply {
+        layout = BoxLayout(this, BoxLayout.X_AXIS)
+        alignmentX = JComponent.LEFT_ALIGNMENT
+        maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(30))
+        isOpaque = false
     }
     private val verifyCheckBox = JBCheckBox(SpecCodingBundle.message("spec.dialog.field.verify"), false).apply {
         toolTipText = SpecCodingBundle.message("spec.dialog.field.verify.help")
@@ -91,7 +104,7 @@ class NewSpecWorkflowDialog(
     }
     private val templateDescriptionArea = createReadOnlyInfoArea(rows = 3)
     private val templateBestForArea = createReadOnlyInfoArea(rows = 2)
-    private val templateStagesArea = createReadOnlyInfoArea(rows = 2)
+    private val templateStagesArea = createReadOnlyInfoArea(rows = 6)
     private val templateArtifactsArea = createReadOnlyInfoArea(rows = 2)
     private val templateDetailPanel = createTemplateDetailPanel()
     private val intentLabel = JBLabel(SpecCodingBundle.message("spec.dialog.field.intent"))
@@ -116,13 +129,31 @@ class NewSpecWorkflowDialog(
         private set
     var resultBaselineWorkflowId: String? = null
         private set
+    private var localReadinessSnapshot: LocalEnvironmentReadinessSnapshot? = null
 
     init {
         ButtonGroup().apply {
             add(fullIntentRadio)
             add(incrementalIntentRadio)
         }
-        templateCombo.addActionListener { updateFormState() }
+        ButtonGroup().apply {
+            add(quickTaskEntryRadio)
+            add(fullSpecEntryRadio)
+            add(advancedTemplateEntryRadio)
+        }
+        quickTaskEntryRadio.toolTipText = buildTemplatePresentation(WorkflowTemplate.QUICK_TASK).bestFor
+        fullSpecEntryRadio.toolTipText = buildTemplatePresentation(WorkflowTemplate.FULL_SPEC).bestFor
+        advancedTemplateEntryRadio.toolTipText = SpecCodingBundle.message("spec.dialog.entry.advanced.help")
+        when (SpecWorkflowEntryPaths.primaryEntryForTemplate(defaultTemplate)) {
+            SpecWorkflowPrimaryEntry.QUICK_TASK -> quickTaskEntryRadio.isSelected = true
+            SpecWorkflowPrimaryEntry.FULL_SPEC -> fullSpecEntryRadio.isSelected = true
+            SpecWorkflowPrimaryEntry.ADVANCED_TEMPLATE -> advancedTemplateEntryRadio.isSelected = true
+        }
+        advancedTemplateCombo.addActionListener { updateFormState() }
+        quickTaskEntryRadio.addActionListener { updateFormState() }
+        fullSpecEntryRadio.addActionListener { updateFormState() }
+        advancedTemplateEntryRadio.addActionListener { updateFormState() }
+        openSettingsButton.addActionListener { openSettingsAndRefreshReadiness() }
         verifyCheckBox.addActionListener { updateFormState() }
         fullIntentRadio.addActionListener { updateFormState() }
         incrementalIntentRadio.addActionListener { updateFormState() }
@@ -157,30 +188,55 @@ class NewSpecWorkflowDialog(
         panel.add(descriptionScrollPane)
         panel.add(javax.swing.Box.createVerticalStrut(12))
 
-        templateLabel.alignmentX = JComponent.LEFT_ALIGNMENT
-        panel.add(templateLabel)
+        entryLabel.alignmentX = JComponent.LEFT_ALIGNMENT
+        panel.add(entryLabel)
+        panel.add(javax.swing.Box.createVerticalStrut(4))
+        onboardingArea.alignmentX = JComponent.LEFT_ALIGNMENT
+        panel.add(onboardingArea)
+        if (project != null) {
+            panel.add(javax.swing.Box.createVerticalStrut(4))
+            openSettingsButton.alignmentX = JComponent.LEFT_ALIGNMENT
+            panel.add(openSettingsButton)
+        }
+        panel.add(javax.swing.Box.createVerticalStrut(8))
+
+        quickTaskEntryRadio.alignmentX = JComponent.LEFT_ALIGNMENT
+        fullSpecEntryRadio.alignmentX = JComponent.LEFT_ALIGNMENT
+        advancedTemplateEntryRadio.alignmentX = JComponent.LEFT_ALIGNMENT
+        panel.add(quickTaskEntryRadio)
+        panel.add(javax.swing.Box.createVerticalStrut(2))
+        panel.add(fullSpecEntryRadio)
+        panel.add(javax.swing.Box.createVerticalStrut(2))
+        panel.add(advancedTemplateEntryRadio)
         panel.add(javax.swing.Box.createVerticalStrut(4))
 
-        val templateRow = JPanel().apply {
-            layout = BoxLayout(this, BoxLayout.X_AXIS)
-            alignmentX = JComponent.LEFT_ALIGNMENT
-            maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(30))
-        }
-        templateCombo.alignmentX = JComponent.LEFT_ALIGNMENT
+        templateLabel.alignmentY = JComponent.CENTER_ALIGNMENT
+        advancedTemplateCombo.alignmentX = JComponent.LEFT_ALIGNMENT
         ComboBoxAutoWidthSupport.installSelectedItemAutoWidth(
-            comboBox = templateCombo,
+            comboBox = advancedTemplateCombo,
             minWidth = JBUI.scale(160),
             maxWidth = JBUI.scale(640),
             height = JBUI.scale(30),
         )
-        verifyCheckBox.alignmentY = JComponent.CENTER_ALIGNMENT
-        templateRow.add(templateCombo)
-        templateRow.add(javax.swing.Box.createHorizontalStrut(8))
-        templateRow.add(verifyCheckBox)
-        panel.add(templateRow)
+        advancedTemplatePanel.add(templateLabel)
+        advancedTemplatePanel.add(javax.swing.Box.createHorizontalStrut(8))
+        advancedTemplatePanel.add(advancedTemplateCombo)
+        panel.add(advancedTemplatePanel)
         panel.add(javax.swing.Box.createVerticalStrut(8))
         templateHelpArea.alignmentX = JComponent.LEFT_ALIGNMENT
         panel.add(templateHelpArea)
+        panel.add(javax.swing.Box.createVerticalStrut(8))
+        if (project != null) {
+            val firstRunGuideLabel = JBLabel(SpecCodingBundle.message("spec.dialog.firstRun.title"))
+            firstRunGuideLabel.alignmentX = JComponent.LEFT_ALIGNMENT
+            panel.add(firstRunGuideLabel)
+            panel.add(javax.swing.Box.createVerticalStrut(4))
+            firstRunGuideArea.alignmentX = JComponent.LEFT_ALIGNMENT
+            panel.add(firstRunGuideArea)
+            panel.add(javax.swing.Box.createVerticalStrut(8))
+        }
+        verifyCheckBox.alignmentX = JComponent.LEFT_ALIGNMENT
+        panel.add(verifyCheckBox)
         panel.add(javax.swing.Box.createVerticalStrut(8))
         if (project != null) {
             val localSetupLabel = JBLabel(SpecCodingBundle.message("spec.dialog.localSetup.title"))
@@ -224,6 +280,14 @@ class NewSpecWorkflowDialog(
         if (titleField.text.isNullOrBlank()) {
             return ValidationInfo(SpecCodingBundle.message("spec.dialog.validation.titleRequired"), titleField)
         }
+        localReadinessSnapshot?.let { readiness ->
+            SpecWorkflowOnboardingCoordinator.blockedEntryValidationMessage(
+                entry = selectedPrimaryEntry(),
+                readiness = readiness,
+            )?.let { message ->
+                return ValidationInfo(message, entryValidationComponent(selectedPrimaryEntry()))
+            }
+        }
         if (templateSupportsRequirementScope(selectedTemplate()) && incrementalIntentRadio.isSelected) {
             if (descriptionArea.text.isNullOrBlank()) {
                 return ValidationInfo(
@@ -257,6 +321,14 @@ class NewSpecWorkflowDialog(
     }
 
     private fun updateFormState() {
+        val advancedSelected = selectedPrimaryEntry() == SpecWorkflowPrimaryEntry.ADVANCED_TEMPLATE
+        advancedTemplatePanel.isVisible = advancedSelected
+        advancedTemplateCombo.isVisible = advancedSelected
+        advancedTemplateCombo.isEnabled = advancedSelected
+        localReadinessSnapshot?.let { readiness ->
+            updateOnboardingPresentation(readiness)
+            updateFirstRunGuide(readiness)
+        }
         val template = selectedTemplate()
         val supportsVerifySelection = templateSupportsVerifySelection(template)
         verifyCheckBox.isVisible = supportsVerifySelection
@@ -296,8 +368,36 @@ class NewSpecWorkflowDialog(
         )
     }
 
+    private fun selectedPrimaryEntry(): SpecWorkflowPrimaryEntry {
+        return when {
+            quickTaskEntryRadio.isSelected -> SpecWorkflowPrimaryEntry.QUICK_TASK
+            fullSpecEntryRadio.isSelected -> SpecWorkflowPrimaryEntry.FULL_SPEC
+            else -> SpecWorkflowPrimaryEntry.ADVANCED_TEMPLATE
+        }
+    }
+
+    private fun entryValidationComponent(entry: SpecWorkflowPrimaryEntry): JComponent {
+        return when (entry) {
+            SpecWorkflowPrimaryEntry.QUICK_TASK -> quickTaskEntryRadio
+            SpecWorkflowPrimaryEntry.FULL_SPEC -> fullSpecEntryRadio
+            SpecWorkflowPrimaryEntry.ADVANCED_TEMPLATE -> advancedTemplateCombo
+        }
+    }
+
+    private fun selectPrimaryEntry(entry: SpecWorkflowPrimaryEntry) {
+        when (entry) {
+            SpecWorkflowPrimaryEntry.QUICK_TASK -> quickTaskEntryRadio.isSelected = true
+            SpecWorkflowPrimaryEntry.FULL_SPEC -> fullSpecEntryRadio.isSelected = true
+            SpecWorkflowPrimaryEntry.ADVANCED_TEMPLATE -> advancedTemplateEntryRadio.isSelected = true
+        }
+    }
+
     private fun selectedTemplate(): WorkflowTemplate {
-        return (templateCombo.selectedItem as? WorkflowTemplate) ?: WorkflowTemplate.FULL_SPEC
+        return SpecWorkflowEntryPaths.templateForPrimaryEntry(
+            entry = selectedPrimaryEntry(),
+            advancedTemplate = advancedTemplateCombo.selectedItem as? WorkflowTemplate,
+            availableTemplates = orderedTemplates(),
+        )
     }
 
     private fun selectedVerifyEnabled(template: WorkflowTemplate): Boolean? {
@@ -305,6 +405,26 @@ class NewSpecWorkflowDialog(
             verifyCheckBox.isSelected
         } else {
             null
+        }
+    }
+
+    private fun buildTemplateRenderer() = SimpleListCellRenderer.create<WorkflowTemplate> { label, value, index ->
+        val template = value
+        if (template == null) {
+            label.text = ""
+            label.toolTipText = null
+            return@create
+        }
+        val detail = buildTemplatePresentation(template)
+        val templateLabel = SpecWorkflowOverviewPresenter.templateLabel(template)
+        label.toolTipText = detail.bestFor
+        label.text = if (index < 0) {
+            templateLabel
+        } else {
+            buildComboEntryHtml(
+                title = templateLabel,
+                subtitle = detail.bestFor,
+            )
         }
     }
 
@@ -351,22 +471,77 @@ class NewSpecWorkflowDialog(
             template = template,
             verifyEnabled = verifyEnabled,
         )
-        templateCombo.toolTipText = presentation.bestFor
+        advancedTemplateCombo.toolTipText = presentation.bestFor
         templateDetailTitleLabel.text = SpecWorkflowOverviewPresenter.templateLabel(template)
         templateDescriptionArea.text = presentation.description
         templateBestForArea.text = presentation.bestFor
-        templateStagesArea.text = presentation.stageSummary
+        templateStagesArea.text = presentation.stageMeaningSummary
+        templateStagesArea.toolTipText = presentation.stageSummary
         templateArtifactsArea.text = presentation.artifactSummary
     }
 
     private fun updateLocalSetupPresentation() {
         val activeProject = project ?: return
         val readiness = LocalEnvironmentReadiness.inspect(activeProject)
+        localReadinessSnapshot = readiness
+        val onboarding = SpecWorkflowOnboardingCoordinator.build(
+            requestedTemplate = selectedTemplate(),
+            readiness = readiness,
+        )
+        if (
+            !SpecWorkflowOnboardingCoordinator.isEntryReady(selectedPrimaryEntry(), readiness) &&
+            SpecWorkflowOnboardingCoordinator.isEntryReady(onboarding.recommendedEntry, readiness)
+        ) {
+            selectPrimaryEntry(onboarding.recommendedEntry)
+        }
+        updateOnboardingPresentation(readiness)
         localSetupArea.text = buildString {
             appendLine(readiness.summary)
             appendLine()
             append(LocalEnvironmentReadiness.formatDetails(readiness))
         }
+    }
+
+    private fun updateOnboardingPresentation(readiness: LocalEnvironmentReadinessSnapshot) {
+        val onboarding = SpecWorkflowOnboardingCoordinator.build(
+            requestedTemplate = selectedTemplate(),
+            readiness = readiness,
+        )
+        onboardingArea.text = buildString {
+            appendLine(onboarding.summary)
+            append(onboarding.nextStep)
+        }
+        openSettingsButton.isVisible = onboarding.showSettingsShortcut
+    }
+
+    private fun updateFirstRunGuide(readiness: LocalEnvironmentReadinessSnapshot) {
+        val guide = SpecWorkflowFirstRunGuideCoordinator.build(
+            selectedEntry = selectedPrimaryEntry(),
+            template = selectedTemplate(),
+            readiness = readiness,
+        )
+        firstRunGuideArea.text = buildString {
+            appendLine(guide.summary)
+            appendLine()
+            guide.steps.forEachIndexed { index, step ->
+                append(index + 1)
+                append(". ")
+                append(step)
+                if (index < guide.steps.lastIndex) {
+                    appendLine()
+                }
+            }
+        }
+    }
+
+    private fun openSettingsAndRefreshReadiness() {
+        val activeProject = project ?: return
+        ShowSettingsUtil.getInstance().showSettingsDialog(
+            activeProject,
+            "com.eacape.speccodingplugin.settings",
+        )
+        updateLocalSetupPresentation()
+        updateFormState()
     }
 
     override fun getPreferredFocusedComponent() = titleField
@@ -382,11 +557,16 @@ class NewSpecWorkflowDialog(
             val description: String,
             val bestFor: String,
             val stageSummary: String,
+            val stageMeaningSummary: String,
             val artifactSummary: String,
         )
 
         internal fun orderedTemplates(): List<WorkflowTemplate> {
             return SpecWorkflowEntryPaths.prioritizedTemplates()
+        }
+
+        internal fun advancedTemplates(): List<WorkflowTemplate> {
+            return SpecWorkflowEntryPaths.advancedTemplates(orderedTemplates())
         }
 
         internal fun templateSupportsRequirementScope(template: WorkflowTemplate): Boolean {
@@ -420,42 +600,21 @@ class NewSpecWorkflowDialog(
             verifyEnabled: Boolean? = null,
         ): TemplatePresentation {
             val definition = WorkflowTemplates.definitionOf(template)
+            val stageGuide = SpecWorkflowTemplateStageGuideCoordinator.build(
+                template = template,
+                verifyEnabled = verifyEnabled,
+            )
             return TemplatePresentation(
                 description = SpecCodingBundle.message(templateMessageKey("description", template)),
                 bestFor = SpecCodingBundle.message(templateMessageKey("bestFor", template)),
-                stageSummary = buildStageSummary(
-                    definition = definition,
-                    verifyEnabled = verifyEnabled,
-                ),
+                stageSummary = stageGuide.stageSummary,
+                stageMeaningSummary = stageGuide.stageMeaningSummary,
                 artifactSummary = buildArtifactSummary(
                     template = template,
                     definition = definition,
                     verifyEnabled = verifyEnabled,
                 ),
             )
-        }
-
-        private fun buildStageSummary(
-            definition: com.eacape.speccodingplugin.spec.TemplateDefinition,
-            verifyEnabled: Boolean?,
-        ): String {
-            return definition.stagePlan.mapNotNull { item ->
-                when {
-                    item.id == StageId.VERIFY && templateSupportsVerifySelection(definition.template) -> when (verifyEnabled) {
-                        false -> null
-                        true -> SpecWorkflowOverviewPresenter.stageLabel(item.id)
-                        else -> decorateOptional(
-                            value = SpecWorkflowOverviewPresenter.stageLabel(item.id),
-                            optional = item.optional,
-                        )
-                    }
-
-                    else -> decorateOptional(
-                        value = SpecWorkflowOverviewPresenter.stageLabel(item.id),
-                        optional = item.optional,
-                    )
-                }
-            }.joinToString(" -> ")
         }
 
         private fun buildArtifactSummary(
