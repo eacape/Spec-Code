@@ -40,6 +40,7 @@ class McpClientTest {
             server = server,
             scope = scope,
             processRuntime = runtime,
+            testOnly = true,
         )
         val runtimeLogs = mutableListOf<McpRuntimeLogEvent>()
         client.setRuntimeLogListener { runtimeLogs += it }

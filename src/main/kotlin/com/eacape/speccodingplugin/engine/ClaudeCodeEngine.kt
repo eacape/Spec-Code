@@ -1,8 +1,5 @@
 package com.eacape.speccodingplugin.engine
 
-import java.nio.charset.StandardCharsets
-import java.util.concurrent.TimeUnit
-
 /**
  * Claude Code CLI 引擎适配
  */
@@ -181,58 +178,19 @@ class ClaudeCodeEngine(
     }
 
     private fun detectImageFlagSupport(): Boolean {
-        val helpOutput = runCommandForOutput("--help") ?: return false
+        val helpOutput = runCliCommandForOutput(
+            args = listOf("--help"),
+            timeoutSeconds = 8,
+            acceptNonZeroExit = true,
+        ) ?: return false
         return helpOutput.contains("--image")
     }
 
-    private fun runCommandForOutput(vararg args: String): String? {
-        val command = listOf(cliPath) + args.toList()
-        val process = try {
-            ProcessBuilder(command)
-                .redirectErrorStream(true)
-                .start()
-        } catch (e: Exception) {
-            if (!isWindows()) {
-                return null
-            }
-            runCatching {
-                ProcessBuilder(listOf("cmd", "/c", cliPath) + args.toList())
-                    .redirectErrorStream(true)
-                    .start()
-            }.getOrNull() ?: return null
-        }
-
-        return runCatching {
-            val finished = process.waitFor(8, TimeUnit.SECONDS)
-            if (!finished) {
-                process.destroyForcibly()
-                process.waitFor(1, TimeUnit.SECONDS)
-                return null
-            }
-            val output = process.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-            if (output.isBlank()) null else output
-        }.getOrNull()
-    }
-
-    private fun isWindows(): Boolean =
-        System.getProperty("os.name").lowercase().contains("win")
-
     override suspend fun getVersion(): String? {
-        return try {
-            val command = if (System.getProperty("os.name").lowercase().contains("win")) {
-                listOf("cmd", "/c", cliPath, "--version")
-            } else {
-                listOf(cliPath, "--version")
-            }
-            val process = ProcessBuilder(command)
-                .redirectErrorStream(true).start()
-            val output = process.inputStream
-                .bufferedReader(StandardCharsets.UTF_8).readText().trim()
-            process.waitFor()
-            if (process.exitValue() == 0) output else null
-        } catch (e: Exception) {
-            null
-        }
+        return runCliCommandForOutput(
+            args = listOf("--version"),
+            timeoutSeconds = 8,
+        )?.trim()?.takeIf(String::isNotBlank)
     }
 
     private companion object {

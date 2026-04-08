@@ -19,7 +19,9 @@ class McpClientProcessRuntimeContractTest {
         assertTrue(source.contains("private val processRuntime: McpServerProcessRuntime"))
         assertTrue(source.contains("processRuntime.prepareLaunchCommand(server.config)"))
         assertTrue(source.contains("processRuntime.start("))
+        assertTrue(source.contains("error.diagnostic.renderMessage()"))
         assertFalse(source.contains("ProcessBuilder("))
         assertFalse(source.contains("buildLaunchFailureMessage("))
+        assertFalse(source.contains("error.message ?: \"Process launch failed\""))
     }
 }

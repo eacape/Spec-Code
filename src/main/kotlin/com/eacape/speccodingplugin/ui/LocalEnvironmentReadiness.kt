@@ -193,6 +193,16 @@ internal object LocalEnvironmentReadiness {
                 input.codexInfo,
             )?.let(::add)
         }
+        val unavailableProviders = buildList {
+            cliUnavailableDescription(
+                SpecCodingBundle.message("statusbar.modelSelector.provider.claudeCli"),
+                input.claudeInfo,
+            )?.let(::add)
+            cliUnavailableDescription(
+                SpecCodingBundle.message("statusbar.modelSelector.provider.codexCli"),
+                input.codexInfo,
+            )?.let(::add)
+        }
         return LocalEnvironmentCheck(
             label = SpecCodingBundle.message("local.setup.check.cli"),
             severity = if (availableProviders.isNotEmpty()) {
@@ -205,6 +215,9 @@ internal object LocalEnvironmentReadiness {
                     "local.setup.check.cli.ready",
                     localizedRequirementList(availableProviders),
                 )
+            } else if (unavailableProviders.isNotEmpty()) {
+                SpecCodingBundle.message("local.setup.check.cli.blocked") +
+                    " " + unavailableProviders.joinToString("; ")
             } else {
                 SpecCodingBundle.message("local.setup.check.cli.blocked")
             },
@@ -245,6 +258,14 @@ internal object LocalEnvironmentReadiness {
                 normalizedPathLabel("codex", input.configuredCodexPath)?.let(::add)
             }
         }
+        val configuredIssueDetails = buildList {
+            if (input.configuredClaudePath.isNotBlank()) {
+                cliUnavailableDescription("claude", input.claudeInfo)?.let(::add)
+            }
+            if (input.configuredCodexPath.isNotBlank()) {
+                cliUnavailableDescription("codex", input.codexInfo)?.let(::add)
+            }
+        }
 
         val severity: LocalEnvironmentCheckSeverity
         val detail: String
@@ -259,19 +280,21 @@ internal object LocalEnvironmentReadiness {
 
             configuredMissing.isNotEmpty() && availablePaths.isNotEmpty() -> {
                 severity = LocalEnvironmentCheckSeverity.WARNING
-                detail = SpecCodingBundle.message(
+                val baseDetail = SpecCodingBundle.message(
                     "local.setup.check.cliPath.warning",
                     localizedRequirementList(configuredMissing),
                     localizedRequirementList(availablePaths),
                 )
+                detail = appendDiagnosticDetail(baseDetail, configuredIssueDetails)
             }
 
             configuredMissing.isNotEmpty() -> {
                 severity = LocalEnvironmentCheckSeverity.BLOCKER
-                detail = SpecCodingBundle.message(
+                val baseDetail = SpecCodingBundle.message(
                     "local.setup.check.cliPath.blocked",
                     localizedRequirementList(configuredMissing),
                 )
+                detail = appendDiagnosticDetail(baseDetail, configuredIssueDetails)
             }
 
             availablePaths.isNotEmpty() -> {
@@ -331,6 +354,17 @@ internal object LocalEnvironmentReadiness {
         val normalized = info.path.trim()
         if (normalized.isEmpty()) return null
         return "$prefix=$normalized"
+    }
+
+    private fun cliUnavailableDescription(label: String, info: CliToolInfo): String? {
+        if (info.available) return null
+        val issue = info.availabilityIssue ?: return null
+        return "$label: ${issue.renderSummary()}"
+    }
+
+    private fun appendDiagnosticDetail(baseDetail: String, diagnostics: List<String>): String {
+        if (diagnostics.isEmpty()) return baseDetail
+        return baseDetail + " " + diagnostics.joinToString("; ")
     }
 
     private fun displayProjectPath(projectPath: Path?): String {

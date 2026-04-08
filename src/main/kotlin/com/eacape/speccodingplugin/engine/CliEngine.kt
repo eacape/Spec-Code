@@ -31,6 +31,7 @@ abstract class CliEngine(
 ) : CodeGenerationEngine {
 
     private val logger = thisLogger()
+    private val commandRuntime = CliCommandRuntime()
     private val activeProcesses = ConcurrentHashMap<String, Process>()
 
     @Volatile
@@ -365,6 +366,43 @@ abstract class CliEngine(
     /** 获取版本号 */
     protected abstract suspend fun getVersion(): String?
 
+    protected fun isWindows(): Boolean =
+        System.getProperty("os.name").lowercase().contains("win")
+
+    protected fun runCliCommandForOutput(
+        args: List<String>,
+        timeoutSeconds: Long,
+        acceptNonZeroExit: Boolean = false,
+        workingDir: String? = null,
+        environmentOverrides: Map<String, String> = emptyMap(),
+    ): String? {
+        val request = CliCommandRequest(
+            executable = cliPath,
+            args = args,
+            workingDirectory = workingDir?.let(::File),
+            environmentOverrides = environmentOverrides,
+            redirectErrorStream = true,
+        )
+        val result = commandRuntime.execute(
+            request = request,
+            timeoutMs = timeoutSeconds.coerceAtLeast(1L) * 1000L,
+        )
+        result.startupDiagnostic?.let { diagnostic ->
+            logger.debug("CLI probe failed for '${request.renderCommand()}': ${diagnostic.renderMessage()}")
+            return null
+        }
+        if (result.timedOut) {
+            logger.debug("CLI probe timed out: ${request.renderCommand()}")
+            return if (acceptNonZeroExit && result.output.isNotBlank()) result.output else null
+        }
+        return if (result.exitCode == 0 || (acceptNonZeroExit && result.output.isNotBlank())) {
+            result.output
+        } else {
+            logger.debug("CLI probe exited with ${result.exitCode}: ${request.renderCommand()}")
+            null
+        }
+    }
+
     private fun writeRequestInput(process: Process, request: EngineRequest) {
         val payload = stdinPayload(request)
         if (payload == null) {
@@ -416,117 +454,15 @@ abstract class CliEngine(
         workingDir: String?,
         environmentOverrides: Map<String, String> = emptyMap(),
     ): Process {
-        val normalizedArgs = normalizeWindowsArgs(args)
-        val directBuilder = ProcessBuilder(listOf(cliPath) + normalizedArgs)
-        configureBuilder(directBuilder, workingDir, environmentOverrides)
-
-        return try {
-            directBuilder.start()
-        } catch (e: Exception) {
-            if (isWindows()) {
-                logger.debug("Direct CLI start failed for '$cliPath', fallback to cmd /c: ${e.message}")
-                val cmdBuilder = ProcessBuilder(listOf("cmd", "/c", cliPath) + normalizedArgs)
-                configureBuilder(cmdBuilder, workingDir, environmentOverrides)
-                cmdBuilder.start()
-            } else {
-                throw e
-            }
-        }
-    }
-
-    private fun normalizeWindowsArgs(args: List<String>): List<String> {
-        if (!isWindows()) return args
-        return args.map { arg ->
-            arg
-                .replace("\r\n", "\n")
-                .replace('\r', '\n')
-                .replace("\n", "\\n")
-        }
-    }
-
-    private fun configureBuilder(
-        builder: ProcessBuilder,
-        workingDir: String?,
-        environmentOverrides: Map<String, String>,
-    ) {
-
-        if (workingDir != null) {
-            builder.directory(java.io.File(workingDir))
-        }
-
-        ensureExecutableParentOnPath(builder, cliPath)
-        applyEnvironmentOverrides(builder, environmentOverrides)
-
-        if (isWindows() && cliPath.contains("claude", ignoreCase = true)) {
-            val env = builder.environment()
-            val configuredBash = env["CLAUDE_CODE_GIT_BASH_PATH"] ?: System.getenv("CLAUDE_CODE_GIT_BASH_PATH")
-            if (configuredBash.isNullOrBlank() || !File(configuredBash).isFile) {
-                findGitBashPath()?.let { env["CLAUDE_CODE_GIT_BASH_PATH"] = it }
-            }
-        }
-
-        builder.redirectErrorStream(false)
-    }
-
-    private fun applyEnvironmentOverrides(
-        builder: ProcessBuilder,
-        environmentOverrides: Map<String, String>,
-    ) {
-        if (environmentOverrides.isEmpty()) {
-            return
-        }
-        val environment = builder.environment()
-        environmentOverrides.forEach { (key, value) ->
-            val normalizedKey = key.trim()
-            val normalizedValue = value.trim()
-            if (normalizedKey.isNotEmpty() && normalizedValue.isNotEmpty()) {
-                environment[normalizedKey] = normalizedValue
-            }
-        }
-    }
-
-    private fun ensureExecutableParentOnPath(builder: ProcessBuilder, executable: String) {
-        val sanitized = executable.trim().trim('"', '\'')
-        val executableFile = File(sanitized)
-        val parent = executableFile.parentFile ?: return
-        if (!parent.isDirectory) return
-
-        val env = builder.environment()
-        val pathKey = env.keys.firstOrNull { it.equals("PATH", ignoreCase = true) } ?: "PATH"
-        val currentPath = env[pathKey].orEmpty()
-        val normalizedParent = normalizePathForComparison(parent.path)
-        val hasParentInPath = currentPath.split(File.pathSeparator)
-            .asSequence()
-            .map { normalizePathForComparison(it.trim().trim('"', '\'')) }
-            .any { it == normalizedParent }
-        if (hasParentInPath) return
-
-        env[pathKey] = if (currentPath.isBlank()) {
-            parent.path
-        } else {
-            parent.path + File.pathSeparator + currentPath
-        }
-    }
-
-    private fun normalizePathForComparison(path: String): String {
-        return if (isWindows()) {
-            path.replace('\\', '/').trimEnd('/').lowercase()
-        } else {
-            path.replace('\\', '/').trimEnd('/')
-        }
-    }
-
-    private fun isWindows(): Boolean =
-        System.getProperty("os.name").lowercase().contains("win")
-
-    private fun findGitBashPath(): String? {
-        val candidates = listOf(
-            "C:\\Program Files\\Git\\bin\\bash.exe",
-            "C:\\Program Files\\Git\\usr\\bin\\bash.exe",
-            "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
-            "C:\\Program Files (x86)\\Git\\usr\\bin\\bash.exe",
+        return commandRuntime.start(
+            CliCommandRequest(
+                executable = cliPath,
+                args = args,
+                workingDirectory = workingDir?.let(::File),
+                environmentOverrides = environmentOverrides,
+                redirectErrorStream = false,
+            ),
         )
-        return candidates.firstOrNull { File(it).isFile }
     }
 
     private fun terminateProcessAfterStreamDrain(process: Process, requestId: String): Boolean {

@@ -13,8 +13,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.TimeUnit
 
 /**
  * CLI 工具信息
@@ -24,6 +22,7 @@ data class CliToolInfo(
     val path: String,
     val version: String? = null,
     val models: List<String> = emptyList(),
+    val availabilityIssue: CliToolAvailabilityIssue? = null,
 )
 
 /**
@@ -48,8 +47,16 @@ enum class CliSlashInvocationKind {
 @Service(Service.Level.APP)
 class CliDiscoveryService : com.intellij.openapi.Disposable {
 
+    private data class CliCommandProbeResult(
+        val output: String?,
+        val availabilityIssue: CliToolAvailabilityIssue? = null,
+    )
+
     private val logger = thisLogger()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val commandRuntime = CliCommandRuntime(
+        environmentProvider = ::effectiveEnvironment,
+    )
 
     @Volatile
     var claudeInfo: CliToolInfo = CliToolInfo(available = false, path = "claude")
@@ -304,8 +311,13 @@ class CliDiscoveryService : com.intellij.openapi.Disposable {
      * 探测 Claude CLI
      */
     private fun discoverClaude(cliPath: String): CliToolInfo {
-        val version = runCommand(cliPath, listOf("--version"))
-            ?: return CliToolInfo(available = false, path = cliPath)
+        val versionProbe = runCommandProbe(cliPath, listOf("--version"))
+        val version = versionProbe.output
+            ?: return CliToolInfo(
+                available = false,
+                path = cliPath,
+                availabilityIssue = versionProbe.availabilityIssue,
+            )
 
         val models = parseClaudeModels(cliPath)
 
@@ -321,8 +333,13 @@ class CliDiscoveryService : com.intellij.openapi.Disposable {
      * 探测 Codex CLI
      */
     private fun discoverCodex(cliPath: String): CliToolInfo {
-        val version = runCommand(cliPath, listOf("--version"))
-            ?: return CliToolInfo(available = false, path = cliPath)
+        val versionProbe = runCommandProbe(cliPath, listOf("--version"))
+        val version = versionProbe.output
+            ?: return CliToolInfo(
+                available = false,
+                path = cliPath,
+                availabilityIssue = versionProbe.availabilityIssue,
+            )
 
         val models = parseCodexModels(cliPath)
 
@@ -604,91 +621,59 @@ class CliDiscoveryService : com.intellij.openapi.Disposable {
         timeoutSeconds: Long = 10,
         acceptNonZeroExit: Boolean = false,
     ): String? {
-        return try {
-            val directCommand = listOf(executable) + args
-            logger.debug("Running command: ${directCommand.joinToString(" ")}")
-            val builder = ProcessBuilder(directCommand)
-                .redirectErrorStream(true)
-            configureCommandEnvironment(builder, executable)
-            var executedCommand = directCommand
+        return runCommandProbe(
+            executable = executable,
+            args = args,
+            timeoutSeconds = timeoutSeconds,
+            acceptNonZeroExit = acceptNonZeroExit,
+        ).output
+    }
 
-            val process = try {
-                builder.start()
-            } catch (e: Exception) {
-                if (!isWindows()) {
-                    throw e
-                }
-                logger.debug("Direct command failed, fallback to cmd /c: ${e.message}")
-                val fallbackCommand = listOf("cmd", "/c", executable) + args
-                executedCommand = fallbackCommand
-                val fallbackBuilder = ProcessBuilder(fallbackCommand)
-                    .redirectErrorStream(true)
-                configureCommandEnvironment(fallbackBuilder, executable)
-                fallbackBuilder.start()
-            }
-            val outputFuture = CompletableFuture.supplyAsync {
-                process.inputStream.bufferedReader().use { it.readText() }
-            }
-            val finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
-            if (!finished) {
-                process.destroyForcibly()
-                process.waitFor(1, TimeUnit.SECONDS)
-                logger.debug("Command timed out: ${executedCommand.joinToString(" ")}")
-                val timedOutOutput = runCatching { outputFuture.get(1, TimeUnit.SECONDS) }.getOrNull().orEmpty()
-                return if (acceptNonZeroExit && timedOutOutput.isNotBlank()) timedOutOutput else null
-            }
-            val output = runCatching { outputFuture.get(1, TimeUnit.SECONDS) }.getOrNull().orEmpty()
-            if (process.exitValue() == 0 || (acceptNonZeroExit && output.isNotBlank())) {
-                output
+    private fun runCommandProbe(
+        executable: String,
+        args: List<String>,
+        timeoutSeconds: Long = 10,
+        acceptNonZeroExit: Boolean = false,
+    ): CliCommandProbeResult {
+        val request = CliCommandRequest(
+            executable = executable,
+            args = args,
+            redirectErrorStream = true,
+        )
+        logger.debug("Running command: ${request.renderCommand()}")
+        val result = commandRuntime.execute(
+            request = request,
+            timeoutMs = timeoutSeconds.coerceAtLeast(1L) * 1000L,
+        )
+        result.startupDiagnostic?.let { diagnostic ->
+            logger.debug("Command failed: ${request.renderCommand()}: ${diagnostic.renderMessage()}")
+            return CliCommandProbeResult(
+                output = null,
+                availabilityIssue = CliToolAvailabilityIssues.fromStartupDiagnostic(diagnostic),
+            )
+        }
+        if (result.timedOut) {
+            logger.debug("Command timed out: ${request.renderCommand()}")
+            return if (acceptNonZeroExit && result.output.isNotBlank()) {
+                CliCommandProbeResult(output = result.output)
             } else {
-                logger.debug("Command exited with ${process.exitValue()}: ${executedCommand.joinToString(" ")}")
-                null
-            }
-        } catch (e: Exception) {
-            logger.debug("Command failed: $executable ${args.joinToString(" ")}: ${e.message}")
-            null
-        }
-    }
-
-    private fun configureCommandEnvironment(builder: ProcessBuilder, executable: String) {
-        ensureExecutableParentOnPath(builder, executable)
-        if (isWindows() && executable.contains("claude", ignoreCase = true)) {
-            val env = builder.environment()
-            val configuredBash = env["CLAUDE_CODE_GIT_BASH_PATH"] ?: effectiveEnvironment()["CLAUDE_CODE_GIT_BASH_PATH"]
-            if (configuredBash.isNullOrBlank() || !File(configuredBash).isFile) {
-                findGitBashPath()?.let { env["CLAUDE_CODE_GIT_BASH_PATH"] = it }
+                CliCommandProbeResult(
+                    output = null,
+                    availabilityIssue = CliToolAvailabilityIssues.timeout(timeoutSeconds),
+                )
             }
         }
-    }
-
-    private fun ensureExecutableParentOnPath(builder: ProcessBuilder, executable: String) {
-        val normalizedExecutable = normalizePathInput(executable)
-        val executableFile = File(normalizedExecutable)
-        val parent = executableFile.parentFile ?: return
-        if (!parent.isDirectory) return
-
-        val env = builder.environment()
-        val pathKey = resolveEnvKey(env, "PATH")
-        val currentPath = env[pathKey].orEmpty()
-        val normalizedParent = normalizePathForComparison(parent.path)
-        val hasParentInPath = currentPath.split(File.pathSeparator)
-            .asSequence()
-            .map { normalizePathForComparison(normalizePathInput(it)) }
-            .any { it == normalizedParent }
-        if (hasParentInPath) return
-
-        env[pathKey] = if (currentPath.isBlank()) {
-            parent.path
+        return if (result.exitCode == 0 || (acceptNonZeroExit && result.output.isNotBlank())) {
+            CliCommandProbeResult(output = result.output)
         } else {
-            parent.path + File.pathSeparator + currentPath
-        }
-    }
-
-    private fun normalizePathForComparison(path: String): String {
-        return if (isWindows()) {
-            path.replace('\\', '/').trimEnd('/').lowercase()
-        } else {
-            path.replace('\\', '/').trimEnd('/')
+            logger.debug("Command exited with ${result.exitCode}: ${request.renderCommand()}")
+            CliCommandProbeResult(
+                output = null,
+                availabilityIssue = CliToolAvailabilityIssues.commandFailed(
+                    exitCode = result.exitCode,
+                    output = result.output,
+                ),
+            )
         }
     }
 
@@ -774,29 +759,27 @@ class CliDiscoveryService : com.intellij.openapi.Disposable {
             else -> "/bin/sh"
         }
 
-        return try {
-            val process = ProcessBuilder(shell, "-lc", "command -v $toolName")
-                .redirectErrorStream(true)
-                .start()
-            val finished = process.waitFor(4, TimeUnit.SECONDS)
-            if (!finished) {
-                process.destroyForcibly()
-                process.waitFor(1, TimeUnit.SECONDS)
-                return null
-            }
-            if (process.exitValue() != 0) return null
-            process.inputStream.bufferedReader().use { reader ->
-                reader.lineSequence()
-                    .map { it.trim() }
-                    .firstOrNull { candidate ->
-                        candidate.isNotBlank() &&
-                            (candidate.startsWith("/") || candidate.contains(File.separator)) &&
-                            File(candidate).isFile
-                    }
-            }
-        } catch (_: Exception) {
-            null
+        val output = commandRuntime.execute(
+            request = CliCommandRequest(
+                executable = shell,
+                args = listOf("-lc", "command -v $toolName"),
+                redirectErrorStream = true,
+                allowWindowsCmdFallback = false,
+                normalizeWindowsArgs = false,
+            ),
+            timeoutMs = 4_000L,
+        )
+        if (output.timedOut || output.exitCode != 0 || output.startupDiagnostic != null) {
+            return null
         }
+        return output.output
+            .lineSequence()
+            .map { it.trim() }
+            .firstOrNull { candidate ->
+                candidate.isNotBlank() &&
+                    (candidate.startsWith("/") || candidate.contains(File.separator)) &&
+                    File(candidate).isFile
+            }
     }
 
     private fun normalizePathInput(value: String): String {
@@ -832,10 +815,6 @@ class CliDiscoveryService : com.intellij.openapi.Disposable {
             ?: env.entries.firstOrNull { it.key.equals(key, ignoreCase = true) }?.value
     }
 
-    private fun resolveEnvKey(env: MutableMap<String, String>, key: String): String {
-        return env.keys.firstOrNull { it.equals(key, ignoreCase = true) } ?: key
-    }
-
     /**
      * 判断文件是否可执行。
      * Windows 上 .cmd/.bat 文件的 canExecute() 返回 false，需特殊处理。
@@ -854,16 +833,6 @@ class CliDiscoveryService : com.intellij.openapi.Disposable {
 
     private fun isMac(): Boolean =
         System.getProperty("os.name").lowercase().contains("mac")
-
-    private fun findGitBashPath(): String? {
-        val candidates = listOf(
-            "C:\\Program Files\\Git\\bin\\bash.exe",
-            "C:\\Program Files\\Git\\usr\\bin\\bash.exe",
-            "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
-            "C:\\Program Files (x86)\\Git\\usr\\bin\\bash.exe",
-        )
-        return candidates.firstOrNull { File(it).isFile }
-    }
 
     override fun dispose() {
         scope.cancel()

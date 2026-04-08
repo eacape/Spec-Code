@@ -1,6 +1,8 @@
 package com.eacape.speccodingplugin.ui
 
 import com.eacape.speccodingplugin.SpecCodingBundle
+import com.eacape.speccodingplugin.engine.CliToolAvailabilityIssue
+import com.eacape.speccodingplugin.engine.CliToolAvailabilityIssueKind
 import com.eacape.speccodingplugin.engine.CliToolInfo
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -123,5 +125,46 @@ class LocalEnvironmentReadinessTest {
         assertEquals(LocalEnvironmentCheckSeverity.WARNING, cliPathCheck.severity)
         assertTrue(cliPathCheck.detail.contains("claude"))
         assertTrue(cliPathCheck.detail.contains("codex"))
+    }
+
+    @Test
+    fun `evaluate should include structured cli failure detail when probes fail`() {
+        val snapshot = LocalEnvironmentReadiness.evaluate(
+            LocalEnvironmentReadinessInput(
+                projectPath = Path.of("D:/workspace/spec-code"),
+                projectWritable = true,
+                gitRepositoryDetected = true,
+                configuredClaudePath = "C:/broken/claude.cmd",
+                configuredCodexPath = "C:/blocked/codex.cmd",
+                claudeInfo = CliToolInfo(
+                    available = false,
+                    path = "C:/broken/claude.cmd",
+                    availabilityIssue = CliToolAvailabilityIssue(
+                        kind = CliToolAvailabilityIssueKind.EXECUTABLE_NOT_FOUND,
+                        detail = "cli executable was not found: claude.cmd",
+                    ),
+                ),
+                codexInfo = CliToolInfo(
+                    available = false,
+                    path = "C:/blocked/codex.cmd",
+                    availabilityIssue = CliToolAvailabilityIssue(
+                        kind = CliToolAvailabilityIssueKind.ACCESS_DENIED,
+                        detail = "access denied while starting CLI command in D:/workspace/spec-code",
+                    ),
+                ),
+            ),
+        )
+
+        val cliCheck = snapshot.detailChecks.first {
+            it.label == SpecCodingBundle.message("local.setup.check.cli")
+        }
+        val cliPathCheck = snapshot.detailChecks.first {
+            it.label == SpecCodingBundle.message("local.setup.check.cliPath")
+        }
+
+        assertTrue(cliCheck.detail.contains("claude.cmd"))
+        assertTrue(cliCheck.detail.contains("access denied"))
+        assertTrue(cliPathCheck.detail.contains("claude: cli executable was not found"))
+        assertTrue(cliPathCheck.detail.contains("codex: access denied"))
     }
 }

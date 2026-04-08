@@ -1,7 +1,5 @@
 package com.eacape.speccodingplugin.engine
 
-import java.nio.charset.StandardCharsets
-
 /**
  * OpenAI Codex CLI 引擎适配
  */
@@ -95,21 +93,10 @@ class OpenAiCodexEngine(
     override fun streamInactivityTimeoutMillis(request: EngineRequest): Long = CODEX_STREAM_INACTIVITY_TIMEOUT_MILLIS
 
     override suspend fun getVersion(): String? {
-        return try {
-            val command = if (System.getProperty("os.name").lowercase().contains("win")) {
-                listOf("cmd", "/c", cliPath, "--version")
-            } else {
-                listOf(cliPath, "--version")
-            }
-            val process = ProcessBuilder(command)
-                .redirectErrorStream(true)
-                .start()
-            val output = process.inputStream.bufferedReader(StandardCharsets.UTF_8).readText().trim()
-            process.waitFor()
-            if (process.exitValue() == 0) output else null
-        } catch (e: Exception) {
-            null
-        }
+        return runCliCommandForOutput(
+            args = listOf("--version"),
+            timeoutSeconds = 8,
+        )?.trim()?.takeIf(String::isNotBlank)
     }
 
     companion object {
