@@ -1,5 +1,6 @@
 package com.eacape.speccodingplugin.skill
 
+import com.eacape.speccodingplugin.core.GitCommandExecutor
 import com.eacape.speccodingplugin.ui.settings.SpecCodingSettingsState
 import com.intellij.openapi.project.Project
 import io.mockk.every

@@ -16,10 +16,10 @@ class HookGitCommandRuntimeContractTest {
             StandardCharsets.UTF_8,
         )
 
-        assertTrue(source.contains("ManagedMergedOutputProcess.start("))
-        assertTrue(source.contains("runtime.awaitCompletion("))
+        assertTrue(source.contains("GitCliProcessRuntime("))
+        assertTrue(source.contains("runtime.execute("))
         assertFalse(source.contains("process.waitFor("))
-        assertFalse(source.contains("process.inputStream.bufferedReader().use"))
-        assertFalse(source.contains("process.destroyForcibly()"))
+        assertFalse(source.contains("ManagedMergedOutputProcess.start("))
+        assertFalse(source.contains("processStarter(basePath, command)"))
     }
 }

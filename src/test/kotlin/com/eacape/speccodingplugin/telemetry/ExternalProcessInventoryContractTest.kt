@@ -52,6 +52,14 @@ private object ExternalProcessInventoryContract {
 
     val rules = listOf(
         ExternalProcessInventoryRule(
+            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/core/GitCliProcessRuntime.kt",
+            category = ExternalProcessCategory.GIT,
+            occurrenceCount = 1,
+            threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_ONLY,
+            mainThreadRisk = ExternalProcessMainThreadRisk.MEDIUM,
+            summary = "Shared git runtime for hook polling, worktree operations, and team asset sync.",
+        ),
+        ExternalProcessInventoryRule(
             relativePath = "src/main/kotlin/com/eacape/speccodingplugin/engine/CliDiscoveryService.kt",
             category = ExternalProcessCategory.CLI,
             occurrenceCount = 3,
@@ -92,36 +100,12 @@ private object ExternalProcessInventoryContract {
             summary = "Shared hook RUN_COMMAND runtime with merged-output timeout handling.",
         ),
         ExternalProcessInventoryRule(
-            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/hook/HookGitCommandRuntime.kt",
-            category = ExternalProcessCategory.GIT,
-            occurrenceCount = 1,
-            threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_ONLY,
-            mainThreadRisk = ExternalProcessMainThreadRisk.MEDIUM,
-            summary = "Shared git command runtime for HookGitCommitWatcher polling with merged-output timeout handling.",
-        ),
-        ExternalProcessInventoryRule(
             relativePath = "src/main/kotlin/com/eacape/speccodingplugin/mcp/McpClient.kt",
             category = ExternalProcessCategory.MCP,
             occurrenceCount = 1,
             threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_ONLY,
             mainThreadRisk = ExternalProcessMainThreadRisk.LOW,
             summary = "MCP server bootstrap and lifecycle management on IO dispatcher.",
-        ),
-        ExternalProcessInventoryRule(
-            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/prompt/TeamPromptSyncService.kt",
-            category = ExternalProcessCategory.GIT,
-            occurrenceCount = 1,
-            threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_PREFERRED,
-            mainThreadRisk = ExternalProcessMainThreadRisk.MEDIUM,
-            summary = "Team prompt git sync executor for shared prompt assets.",
-        ),
-        ExternalProcessInventoryRule(
-            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/skill/TeamSkillSyncService.kt",
-            category = ExternalProcessCategory.GIT,
-            occurrenceCount = 1,
-            threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_PREFERRED,
-            mainThreadRisk = ExternalProcessMainThreadRisk.MEDIUM,
-            summary = "Team skill git sync executor for shared skill assets.",
         ),
         ExternalProcessInventoryRule(
             relativePath = "src/main/kotlin/com/eacape/speccodingplugin/spec/SpecProcessRunner.kt",
@@ -138,14 +122,6 @@ private object ExternalProcessInventoryContract {
             threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_ONLY,
             mainThreadRisk = ExternalProcessMainThreadRisk.HIGH,
             summary = "Workflow shell command runtime extracted behind a UI-owned runner, pending broader process unification.",
-        ),
-        ExternalProcessInventoryRule(
-            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/worktree/CliGitWorktreeExecutor.kt",
-            category = ExternalProcessCategory.GIT,
-            occurrenceCount = 1,
-            threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_ONLY,
-            mainThreadRisk = ExternalProcessMainThreadRisk.LOW,
-            summary = "Git worktree executor isolated behind IO-bound coroutine entry points.",
         ),
     )
 

@@ -1,5 +1,8 @@
 package com.eacape.speccodingplugin.prompt
 
+import com.eacape.speccodingplugin.core.CliGitCommandExecutor
+import com.eacape.speccodingplugin.core.GitCommandExecutor
+import com.eacape.speccodingplugin.core.runOrThrow
 import com.eacape.speccodingplugin.ui.settings.SpecCodingSettingsState
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
@@ -246,36 +249,3 @@ data class TeamPromptSyncResult(
     val noChanges: Boolean,
     val commitId: String?,
 )
-
-fun interface GitCommandExecutor {
-    fun run(workingDir: Path?, args: List<String>): Result<String>
-}
-
-private class CliGitCommandExecutor : GitCommandExecutor {
-    override fun run(workingDir: Path?, args: List<String>): Result<String> {
-        return runCatching {
-            val command = listOf("git") + args
-            val process = ProcessBuilder(command)
-                .apply {
-                    if (workingDir != null) {
-                        directory(workingDir.toFile())
-                    }
-                    redirectErrorStream(true)
-                }
-                .start()
-
-            val output = process.inputStream.bufferedReader().use { reader -> reader.readText() }.trim()
-            val exitCode = process.waitFor()
-            if (exitCode != 0) {
-                throw IllegalStateException("Git command failed (${command.joinToString(" ")}): $output")
-            }
-            output
-        }
-    }
-}
-
-private fun GitCommandExecutor.runOrThrow(workingDir: Path?, args: List<String>): String {
-    return run(workingDir, args).getOrElse { error ->
-        throw error
-    }
-}

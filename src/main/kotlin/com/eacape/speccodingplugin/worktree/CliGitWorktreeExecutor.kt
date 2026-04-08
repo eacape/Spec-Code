@@ -1,5 +1,7 @@
 package com.eacape.speccodingplugin.worktree
 
+import com.eacape.speccodingplugin.core.GitCliProcessRuntime
+import com.eacape.speccodingplugin.core.GitCliFailureDiagnostics
 import com.intellij.openapi.diagnostic.thisLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -356,10 +358,14 @@ class CliGitWorktreeExecutor(
 
     companion object {
         private const val DEFAULT_REQUESTED_BASE_BRANCH = "main"
+        private const val DEFAULT_GIT_COMMAND_TIMEOUT_MILLIS = 60_000L
+        private const val DEFAULT_GIT_TIMEOUT_EXIT_CODE = 124
+        private const val DEFAULT_GIT_STARTUP_FAILURE_EXIT_CODE = 127
         private const val MAX_ERROR_REFS = 12
         private val COMMIT_HASH_REGEX = Regex("^[0-9a-fA-F]{7,40}$")
         private val AUTO_FALLBACK_REQUESTED_BASE_REFS = setOf("main", "master")
         private val FALLBACK_BASE_REFS = listOf("main", "master", "develop", "dev", "trunk")
+        private val defaultGitRuntime = GitCliProcessRuntime()
 
         private fun compactOutput(output: String, maxLength: Int = 200): String {
             val compact = output
@@ -371,13 +377,29 @@ class CliGitWorktreeExecutor(
         }
 
         private fun defaultProcessRunner(repoPath: String, command: List<String>): ProcessExecutionResult {
-            val process = ProcessBuilder(command)
-                .directory(File(repoPath))
-                .redirectErrorStream(true)
-                .start()
-
-            val output = process.inputStream.bufferedReader().use { it.readText() }
-            val exitCode = process.waitFor()
+            require(command.firstOrNull() == "git") {
+                "CliGitWorktreeExecutor defaultProcessRunner expects git-prefixed commands"
+            }
+            val result = defaultGitRuntime.execute(
+                workingDir = File(repoPath),
+                timeoutMs = DEFAULT_GIT_COMMAND_TIMEOUT_MILLIS,
+                args = command.drop(1),
+            )
+            val diagnostic = GitCliFailureDiagnostics.diagnose(
+                workingDir = File(repoPath).toPath(),
+                args = command.drop(1),
+                timeoutMs = DEFAULT_GIT_COMMAND_TIMEOUT_MILLIS,
+                result = result,
+            )
+            val exitCode = when {
+                diagnostic != null -> diagnostic.suggestedExitCode
+                result.timedOut -> DEFAULT_GIT_TIMEOUT_EXIT_CODE
+                else -> result.exitCode ?: DEFAULT_GIT_STARTUP_FAILURE_EXIT_CODE
+            }
+            val output = when {
+                diagnostic != null -> diagnostic.renderDetail()
+                else -> result.output.orEmpty()
+            }
             return ProcessExecutionResult(exitCode = exitCode, output = output)
         }
     }

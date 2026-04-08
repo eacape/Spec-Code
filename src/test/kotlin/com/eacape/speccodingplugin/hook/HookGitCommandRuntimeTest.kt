@@ -9,6 +9,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -37,7 +38,7 @@ class HookGitCommandRuntimeTest {
             "HEAD",
         )
 
-        assertEquals("D:/repo", startedBasePath.get())
+        assertEquals(File("D:/repo").path, startedBasePath.get())
         assertEquals(listOf("git", "rev-parse", "HEAD"), startedCommand.get())
         assertEquals("abc123", result.output)
         assertFalse(result.failed)
