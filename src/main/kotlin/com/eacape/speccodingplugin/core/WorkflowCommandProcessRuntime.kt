@@ -5,14 +5,65 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
+internal enum class WorkflowCommandFailureKind(val label: String) {
+    EXECUTABLE_NOT_FOUND("executable-not-found"),
+    WORKING_DIRECTORY_UNAVAILABLE("working-directory-unavailable"),
+    ACCESS_DENIED("access-denied"),
+    STARTUP_FAILED("startup-failed"),
+}
+
+internal data class WorkflowCommandStartupDiagnostic(
+    val kind: WorkflowCommandFailureKind,
+    val commandKey: String,
+    val launchCommand: List<String>,
+    val workingDirectory: File?,
+    val startupErrorMessage: String? = null,
+) {
+    fun renderMessage(): String {
+        return "Workflow command '$commandKey' failed to start (${kind.label}): ${renderDetail()}"
+    }
+
+    fun renderDetail(): String {
+        return when (kind) {
+            WorkflowCommandFailureKind.EXECUTABLE_NOT_FOUND ->
+                "workflow executable was not found: ${renderExecutable()}"
+
+            WorkflowCommandFailureKind.WORKING_DIRECTORY_UNAVAILABLE ->
+                "working directory is unavailable: ${renderWorkingDirectory()}"
+
+            WorkflowCommandFailureKind.ACCESS_DENIED ->
+                "access denied while starting workflow command in ${renderWorkingDirectory()}"
+
+            WorkflowCommandFailureKind.STARTUP_FAILED ->
+                startupErrorMessage?.ifBlank { null }
+                    ?: "workflow process could not be started"
+        }
+    }
+
+    private fun renderExecutable(): String {
+        return launchCommand.firstOrNull()
+            ?.substringAfterLast('/')
+            ?.substringAfterLast('\\')
+            ?.ifBlank { launchCommand.firstOrNull().orEmpty() }
+            ?: "unknown"
+    }
+
+    private fun renderWorkingDirectory(): String {
+        return workingDirectory?.absolutePath ?: "default process working directory"
+    }
+}
+
 internal sealed interface WorkflowCommandProcessRunResult {
     data class Completed(
         val result: WorkflowCommandProcessExecutionResult,
     ) : WorkflowCommandProcessRunResult
 
     data class FailedToStart(
-        val errorMessage: String,
-    ) : WorkflowCommandProcessRunResult
+        val diagnostic: WorkflowCommandStartupDiagnostic,
+    ) : WorkflowCommandProcessRunResult {
+        val errorMessage: String
+            get() = diagnostic.renderMessage()
+    }
 
     data object AlreadyRunning : WorkflowCommandProcessRunResult
 }
@@ -74,7 +125,12 @@ internal class WorkflowCommandProcessRuntime(
             return WorkflowCommandProcessRunResult.AlreadyRunning
         } catch (error: Exception) {
             return WorkflowCommandProcessRunResult.FailedToStart(
-                error.message ?: error::class.java.simpleName,
+                diagnostic = WorkflowCommandFailureDiagnostics.diagnoseStartup(
+                    commandKey = commandKey,
+                    launchCommand = launchCommand,
+                    workingDirectory = workingDirectory,
+                    startupErrorMessage = error.message ?: error::class.java.simpleName,
+                ),
             )
         }
         onStarted?.invoke()
@@ -162,5 +218,59 @@ internal class WorkflowCommandProcessRuntime(
         private const val DEFAULT_OUTPUT_JOIN_TIMEOUT_MILLIS = 2_000L
         private const val DEFAULT_STOP_GRACE_SECONDS = 3L
         private const val DEFAULT_FORCE_DESTROY_WAIT_SECONDS = 2L
+    }
+}
+
+internal object WorkflowCommandFailureDiagnostics {
+
+    fun diagnoseStartup(
+        commandKey: String,
+        launchCommand: List<String>,
+        workingDirectory: File?,
+        startupErrorMessage: String,
+    ): WorkflowCommandStartupDiagnostic {
+        return WorkflowCommandStartupDiagnostic(
+            kind = classifyStartupFailureKind(
+                workingDirectory = workingDirectory,
+                startupErrorMessage = startupErrorMessage,
+            ),
+            commandKey = commandKey,
+            launchCommand = launchCommand,
+            workingDirectory = workingDirectory,
+            startupErrorMessage = startupErrorMessage,
+        )
+    }
+
+    private fun classifyStartupFailureKind(
+        workingDirectory: File?,
+        startupErrorMessage: String,
+    ): WorkflowCommandFailureKind {
+        if (workingDirectory != null && !workingDirectory.isDirectory) {
+            return WorkflowCommandFailureKind.WORKING_DIRECTORY_UNAVAILABLE
+        }
+
+        val normalized = startupErrorMessage.lowercase()
+        return when {
+            normalized.contains("createprocess error=5") ||
+                normalized.contains("access is denied") ||
+                normalized.contains("permission denied") ->
+                WorkflowCommandFailureKind.ACCESS_DENIED
+
+            normalized.contains("createprocess error=2") ||
+                normalized.contains("no such file or directory") ||
+                normalized.contains("cannot find the file specified") ||
+                normalized.contains("error=2,") ||
+                normalized.contains("missing executable") ||
+                normalized.contains("executable not found") ||
+                normalized.contains("command not found") ->
+                WorkflowCommandFailureKind.EXECUTABLE_NOT_FOUND
+
+            normalized.contains("createprocess error=267") ||
+                normalized.contains("the directory name is invalid") ||
+                normalized.contains("not a directory") ->
+                WorkflowCommandFailureKind.WORKING_DIRECTORY_UNAVAILABLE
+
+            else -> WorkflowCommandFailureKind.STARTUP_FAILED
+        }
     }
 }

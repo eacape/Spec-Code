@@ -73,7 +73,7 @@ private object ExternalProcessInventoryContract {
             occurrenceCount = 1,
             threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_ONLY,
             mainThreadRisk = ExternalProcessMainThreadRisk.LOW,
-            summary = "Shared hook RUN_COMMAND runtime with merged-output timeout handling.",
+            summary = "Shared hook RUN_COMMAND runtime with merged-output timeout handling and structured startup diagnostics.",
         ),
         ExternalProcessInventoryRule(
             relativePath = "src/main/kotlin/com/eacape/speccodingplugin/mcp/McpServerProcessRuntime.kt",
@@ -97,7 +97,7 @@ private object ExternalProcessInventoryContract {
             occurrenceCount = 1,
             threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_ONLY,
             mainThreadRisk = ExternalProcessMainThreadRisk.MEDIUM,
-            summary = "Shared workflow shell command runtime with stop/dispose semantics extracted out of the UI runner.",
+            summary = "Shared workflow shell command runtime with stop/dispose semantics and structured startup diagnostics extracted out of the UI runner.",
         ),
     )
 

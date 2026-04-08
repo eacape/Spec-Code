@@ -18,6 +18,7 @@ class HookCommandRuntimeContractTest {
 
         assertTrue(source.contains("ManagedMergedOutputProcess.start("))
         assertTrue(source.contains("runtime.awaitCompletion("))
+        assertTrue(source.contains("HookCommandFailureDiagnostics.diagnoseStartup("))
         assertFalse(source.contains("process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)"))
         assertFalse(source.contains("process.inputStream.bufferedReader().use"))
         assertFalse(source.contains("process.destroyForcibly()"))

@@ -45,9 +45,12 @@ class ImprovedChatPanelWorkflowCommandRunnerTest {
         val outcome = runner.execute("gradle verify")
 
         assertTrue(outcome is ImprovedChatPanelWorkflowCommandRunOutcome.FailedToStart)
-        assertEquals(
-            "shell unavailable",
-            (outcome as ImprovedChatPanelWorkflowCommandRunOutcome.FailedToStart).errorMessage,
+        val failedOutcome = outcome as ImprovedChatPanelWorkflowCommandRunOutcome.FailedToStart
+        assertTrue(
+            failedOutcome.errorMessage.contains("failed to start"),
+        )
+        assertTrue(
+            failedOutcome.errorMessage.contains("shell unavailable"),
         )
     }
 

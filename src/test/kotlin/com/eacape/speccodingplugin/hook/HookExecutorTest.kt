@@ -10,6 +10,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import java.nio.file.Path
 
 class HookExecutorTest {
 
@@ -111,5 +112,29 @@ class HookExecutorTest {
         assertFalse(log.success)
         assertTrue(log.message.contains("denied"))
         verify(exactly = 1) { modeManager.checkOperation(any()) }
+    }
+
+    @Test
+    fun `run command should surface structured startup diagnostic detail`() = runBlocking {
+        val project = mockk<Project>(relaxed = true)
+        every { project.basePath } returns Path.of("").toAbsolutePath().normalize().toString()
+
+        val result = HookExecutor.runCommand(
+            action = HookAction(
+                type = HookActionType.RUN_COMMAND,
+                command = "gradle",
+                timeoutMillis = 100,
+            ),
+            triggerContext = HookTriggerContext(),
+            project = project,
+            commandRuntime = HookCommandRuntime(
+                processStarter = { _, _ ->
+                    error("CreateProcess error=2, The system cannot find the file specified")
+                },
+            ),
+        )
+
+        assertFalse(result.success)
+        assertTrue(result.message.contains("hook executable was not found"))
     }
 }

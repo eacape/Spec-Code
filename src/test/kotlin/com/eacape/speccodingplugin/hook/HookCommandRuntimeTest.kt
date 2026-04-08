@@ -10,6 +10,8 @@ import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.nio.file.Path
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -17,6 +19,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class HookCommandRuntimeTest {
+
+    private val existingBasePath = Path.of("").toAbsolutePath().normalize().toString()
 
     @Test
     fun `execute should start command in provided working directory and trim output`() {
@@ -42,7 +46,7 @@ class HookCommandRuntimeTest {
         assertEquals("command ok", result.output)
         assertEquals(0, result.exitCode)
         assertFalse(result.timedOut)
-        assertNull(result.startupErrorMessage)
+        assertNull(result.startupDiagnostic)
     }
 
     @Test
@@ -61,7 +65,7 @@ class HookCommandRuntimeTest {
         assertEquals("hook failed", result.output)
         assertEquals(17, result.exitCode)
         assertFalse(result.timedOut)
-        assertNull(result.startupErrorMessage)
+        assertNull(result.startupDiagnostic)
     }
 
     @Test
@@ -80,17 +84,17 @@ class HookCommandRuntimeTest {
 
         assertTrue(result.timedOut)
         assertTrue(hangingProcess.destroyCalls.get() > 0)
-        assertNull(result.startupErrorMessage)
+        assertNull(result.startupDiagnostic)
     }
 
     @Test
-    fun `execute should surface startup error message`() {
+    fun `execute should surface executable startup failures with structured diagnostic`() {
         val runtime = HookCommandRuntime(
             processStarter = { _, _ -> error("missing tool") },
         )
 
         val result = runtime.execute(
-            basePath = "D:/repo",
+            basePath = existingBasePath,
             executable = "gradle",
             args = listOf("test"),
             timeoutMs = 100,
@@ -99,7 +103,45 @@ class HookCommandRuntimeTest {
         assertFalse(result.timedOut)
         assertNull(result.output)
         assertNull(result.exitCode)
-        assertEquals("missing tool", result.startupErrorMessage)
+        assertEquals(HookCommandFailureKind.EXECUTABLE_NOT_FOUND, result.startupDiagnostic?.kind)
+        assertEquals("missing tool", result.startupDiagnostic?.startupErrorMessage)
+        assertTrue(result.startupDiagnostic?.renderDetail().orEmpty().contains("hook executable was not found"))
+    }
+
+    @Test
+    fun `execute should classify missing working directory startup failures`() {
+        val runtime = HookCommandRuntime(
+            processStarter = { _, _ -> error("The directory name is invalid") },
+        )
+        val missingDir = Path.of("build", "hook-missing-dir-${System.nanoTime()}").toAbsolutePath()
+        Files.createDirectories(missingDir.parent)
+
+        val result = runtime.execute(
+            basePath = missingDir.toString(),
+            executable = "gradle",
+            args = listOf("test"),
+            timeoutMs = 100,
+        )
+
+        assertEquals(HookCommandFailureKind.WORKING_DIRECTORY_UNAVAILABLE, result.startupDiagnostic?.kind)
+        assertTrue(result.startupDiagnostic?.renderDetail().orEmpty().contains("working directory is unavailable"))
+    }
+
+    @Test
+    fun `execute should classify permission denied startup failures`() {
+        val runtime = HookCommandRuntime(
+            processStarter = { _, _ -> error("CreateProcess error=5, Access is denied") },
+        )
+
+        val result = runtime.execute(
+            basePath = existingBasePath,
+            executable = "gradle",
+            args = listOf("test"),
+            timeoutMs = 100,
+        )
+
+        assertEquals(HookCommandFailureKind.ACCESS_DENIED, result.startupDiagnostic?.kind)
+        assertTrue(result.startupDiagnostic?.renderDetail().orEmpty().contains("access denied"))
     }
 
     private class CompletedProcess(

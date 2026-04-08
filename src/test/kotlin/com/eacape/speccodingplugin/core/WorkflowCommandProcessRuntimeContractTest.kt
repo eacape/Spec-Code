@@ -18,6 +18,7 @@ class WorkflowCommandProcessRuntimeContractTest {
         assertTrue(source.contains("ProcessBuilder(command)"))
         assertTrue(source.contains("ManagedMergedOutputProcess.start("))
         assertTrue(source.contains("runningCommands = ConcurrentHashMap"))
+        assertTrue(source.contains("WorkflowCommandFailureDiagnostics.diagnoseStartup("))
         assertTrue(source.contains("fun stop(commandKey: String): WorkflowCommandProcessStopResult"))
     }
 }

@@ -18,6 +18,8 @@ class HookExecutorProcessRuntimeContractTest {
 
         assertTrue(source.contains("commandRuntime: HookCommandRuntime = HookCommandRuntime()"))
         assertTrue(source.contains("commandRuntime.execute("))
+        assertTrue(source.contains("execution.startupDiagnostic != null"))
+        assertTrue(source.contains("execution.startupDiagnostic.renderMessage()"))
         assertFalse(source.contains("ProcessBuilder("))
         assertFalse(source.contains("ManagedMergedOutputProcess.start("))
         assertFalse(source.contains("runtime.awaitCompletion("))

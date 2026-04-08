@@ -127,9 +127,9 @@ class HookExecutor internal constructor(
             )
 
             when {
-                execution.startupErrorMessage != null -> HookActionExecutionResult(
+                execution.startupDiagnostic != null -> HookActionExecutionResult(
                     success = false,
-                    message = "Command execution error: ${execution.startupErrorMessage}",
+                    message = execution.startupDiagnostic.renderMessage(),
                 )
 
                 execution.timedOut -> HookActionExecutionResult(
