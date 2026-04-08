@@ -100,17 +100,30 @@ data class FrozenSourceBudget(
     val label: String,
     val relativePath: String,
     val maxLines: Int,
+    val maxFunctionDeclarations: Int,
 )
 
 data class FrozenSourceBudgetResult(
     val budget: FrozenSourceBudget,
     val lineCount: Int,
+    val functionDeclarations: Int,
 ) {
-    val growth: Int
+    val lineGrowth: Int
         get() = lineCount - budget.maxLines
+
+    val functionGrowth: Int
+        get() = functionDeclarations - budget.maxFunctionDeclarations
 }
 
 fun countFileLines(file: File): Int = file.useLines { lines -> lines.count() }
+
+private val kotlinFunctionDeclarationRegex = Regex("""^\s*(?:[A-Za-z]+\s+)*fun\s+(?!interface\b).*""")
+
+// Keep this line-based on purpose: the guard only needs a stable coarse signal
+// for new function surface being added to frozen hotspot panels.
+fun countKotlinFunctionDeclarations(file: File): Int = file.useLines { lines ->
+    lines.count { line -> kotlinFunctionDeclarationRegex.matches(line) }
+}
 
 fun classNameToClassFilePattern(className: String): String = "${className.replace('.', '/')}.class"
 
@@ -139,17 +152,20 @@ val frozenUiHotspotBudgets = listOf(
     FrozenSourceBudget(
         label = "ImprovedChatPanel",
         relativePath = "src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt",
-        maxLines = 8377,
+        maxLines = 7548,
+        maxFunctionDeclarations = 327,
     ),
     FrozenSourceBudget(
         label = "SpecWorkflowPanel",
         relativePath = "src/main/kotlin/com/eacape/speccodingplugin/ui/spec/SpecWorkflowPanel.kt",
-        maxLines = 6028,
+        maxLines = 5402,
+        maxFunctionDeclarations = 271,
     ),
     FrozenSourceBudget(
         label = "SpecDetailPanel",
         relativePath = "src/main/kotlin/com/eacape/speccodingplugin/ui/spec/SpecDetailPanel.kt",
-        maxLines = 4545,
+        maxLines = 2817,
+        maxFunctionDeclarations = 182,
     ),
 )
 
@@ -448,7 +464,7 @@ tasks {
 
     val uiHotspotGrowthGuard = register("uiHotspotGrowthGuard") {
         group = "verification"
-        description = "Fail when frozen UI hotspot files grow beyond their current baseline"
+        description = "Fail when frozen UI hotspot files grow beyond their current baseline size or function surface"
 
         doLast {
             val isGitHubActions = System.getenv("GITHUB_ACTIONS") == "true"
@@ -461,11 +477,13 @@ tasks {
                 FrozenSourceBudgetResult(
                     budget = budget,
                     lineCount = countFileLines(sourceFile),
+                    functionDeclarations = countKotlinFunctionDeclarations(sourceFile),
                 )
             }
 
             val violations = results.filter { result ->
-                result.lineCount > result.budget.maxLines
+                result.lineCount > result.budget.maxLines ||
+                    result.functionDeclarations > result.budget.maxFunctionDeclarations
             }
 
             if (violations.isEmpty()) {
@@ -477,8 +495,19 @@ tasks {
             }
 
             violations.forEach { result ->
+                val exceededMetrics = buildList {
+                    if (result.lineCount > result.budget.maxLines) {
+                        add("lines ${result.budget.maxLines} -> ${result.lineCount} (+${result.lineGrowth})")
+                    }
+                    if (result.functionDeclarations > result.budget.maxFunctionDeclarations) {
+                        add(
+                            "functions ${result.budget.maxFunctionDeclarations} -> " +
+                                "${result.functionDeclarations} (+${result.functionGrowth})"
+                        )
+                    }
+                }.joinToString("; ")
                 val message =
-                    "${result.budget.label} grew from baseline ${result.budget.maxLines} lines to ${result.lineCount} lines (+${result.growth}). " +
+                    "${result.budget.label} exceeded frozen baseline: $exceededMetrics. " +
                         "Extract orchestration or state logic out of ${result.budget.relativePath} instead of growing the panel."
                 logger.error(message)
                 if (isGitHubActions) {
@@ -488,7 +517,7 @@ tasks {
 
             throw GradleException(
                 "UI hotspot growth guard failed for ${violations.size} frozen file(s). " +
-                    "Keep the frozen panels at or below baseline size until the refactor lands."
+                    "Keep the frozen panels at or below baseline size and function surface until the refactor lands."
             )
         }
     }

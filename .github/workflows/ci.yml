@@ -40,7 +40,7 @@ jobs:
       - name: Audit oversized ui/spec source files
         run: ./gradlew largeFileWarningAudit --stacktrace
 
-      - name: Guard frozen UI hotspot growth
+      - name: Guard frozen UI hotspot growth and function surface
         run: ./gradlew uiHotspotGrowthGuard --stacktrace
 
       - name: Run core, architecture, and external process audit regression tests
