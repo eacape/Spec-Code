@@ -222,6 +222,8 @@ class ProjectStructureScanner(private val project: Project) : Disposable {
         )
     }
 
+    internal fun cacheStatsSnapshot(): ProjectStructureCacheStats = currentCacheStats()
+
     private fun isIgnored(name: String): Boolean {
         return name in IGNORED_NAMES
     }

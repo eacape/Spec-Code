@@ -464,6 +464,8 @@ class CodeGraphService(private val project: Project) : Disposable {
         )
     }
 
+    internal fun cacheStatsSnapshot(): CodeGraphCacheStats = currentCacheStats()
+
     private fun invalidateCache(reason: String) {
         val hadCache = cachedSnapshots.isNotEmpty()
         cachedSnapshots.clear()

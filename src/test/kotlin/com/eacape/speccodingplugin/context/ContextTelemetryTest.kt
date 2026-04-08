@@ -45,6 +45,44 @@ class ContextTelemetryTest {
     }
 
     @Test
+    fun `RelatedFileCacheStats should compute hit rate and periodic hit logging`() {
+        val stats = RelatedFileCacheStats(
+            hitCount = 20,
+            missCount = 4,
+            lastInvalidationReason = "vfs-rename:src/web/shared/helper.ts",
+        )
+
+        assertEquals(83, stats.hitRatePercent())
+        assertTrue(stats.shouldEmitPeriodicHitLog())
+        assertTrue(stats.summary().contains("lastInvalidation=vfs-rename:src/web/shared/helper.ts"))
+        assertFalse(stats.copy(hitCount = 19).shouldEmitPeriodicHitLog())
+    }
+
+    @Test
+    fun `RelatedFileDiscoveryTelemetry summary should include heuristic semantic and unresolved breakdown`() {
+        val telemetry = RelatedFileDiscoveryTelemetry(
+            currentFileName = "main.ts",
+            language = "typescript",
+            heuristicReferenceCount = 3,
+            heuristicResolvedCount = 2,
+            semanticResolvedCount = 0,
+            finalItemCount = 2,
+            unresolvedReferences = listOf("typescript:./missing"),
+            skippedLayers = listOf("semantic:unavailable"),
+        )
+
+        val summary = telemetry.summary()
+
+        assertTrue(summary.contains("file=main.ts"))
+        assertTrue(summary.contains("language=typescript"))
+        assertTrue(summary.contains("heuristicRefs=3"))
+        assertTrue(summary.contains("heuristicResolved=2"))
+        assertTrue(summary.contains("semanticResolved=0"))
+        assertTrue(summary.contains("unresolved=typescript:./missing"))
+        assertTrue(summary.contains("skippedLayers=semantic:unavailable"))
+    }
+
+    @Test
     fun `ContextCollectionTelemetry summary should include budgets and skipped stages`() {
         val telemetry = ContextCollectionTelemetry(
             operationKey = "collectForItems",
@@ -66,6 +104,25 @@ class ContextTelemetryTest {
             wasTokenTrimmed = true,
             budgetDropSummary = "byte-budget=1",
             skippedStages = listOf("project-structure:time-budget"),
+            cacheView = ContextCollectionCacheTelemetry(
+                codeGraph = CodeGraphCacheStats(
+                    hitCount = 4,
+                    missCount = 2,
+                    lastInvalidationReason = "psi-change:Main.kt",
+                ),
+                relatedFiles = RelatedFileCacheStats(
+                    hitCount = 3,
+                    missCount = 1,
+                    lastInvalidationReason = "document-change:main.ts",
+                ),
+                runOutcomes = listOf(
+                    ContextCollectionStageCacheOutcome(stage = "codeGraph", outcome = "hit"),
+                    ContextCollectionStageCacheOutcome(stage = "relatedFiles", outcome = "miss"),
+                ),
+            ),
+            baselineComparison = ContextCollectionBaselineComparison(
+                phase = "mixed",
+            ),
         )
 
         val summary = telemetry.summary()
@@ -76,6 +133,94 @@ class ContextTelemetryTest {
         assertTrue(summary.contains("files=1, symbols=1, bytes=320"))
         assertTrue(summary.contains("budgetDrops=byte-budget=1"))
         assertTrue(summary.contains("skippedStages=project-structure:time-budget"))
+        assertTrue(summary.contains("cacheView=codeGraph{cacheHits=4"))
+        assertTrue(summary.contains("relatedFiles{cacheHits=3"))
+        assertTrue(summary.contains("runOutcomes=codeGraph:hit|relatedFiles:miss"))
+        assertTrue(summary.contains("baseline=phase=mixed"))
+    }
+
+    @Test
+    fun `shouldEmitContextTelemetryInfo should emit for first warm improvement even when run is fast`() {
+        val telemetry = ContextCollectionTelemetry(
+            operationKey = "collectContext",
+            elapsedMs = 48,
+            candidateItemCount = 4,
+            budgetAcceptedItemCount = 4,
+            finalItemCount = 4,
+            budgetStats = ContextCollectionBudgetStats(
+                filePaths = setOf("/repo/src/Main.kt"),
+                symbolItemCount = 0,
+                totalContentBytes = 240,
+            ),
+            tokenEstimate = 60,
+            tokenBudget = 8000,
+            maxFileItems = 10,
+            maxSymbolItems = 24,
+            maxContentBytes = 48_000,
+            maxCollectionTimeMs = 250,
+            wasTokenTrimmed = false,
+            budgetDropSummary = "none",
+            skippedStages = emptyList(),
+            cacheView = ContextCollectionCacheTelemetry(
+                runOutcomes = listOf(
+                    ContextCollectionStageCacheOutcome(stage = "codeGraph", outcome = "hit"),
+                    ContextCollectionStageCacheOutcome(stage = "relatedFiles", outcome = "hit"),
+                    ContextCollectionStageCacheOutcome(stage = "projectStructure", outcome = "hit"),
+                ),
+            ),
+            baselineComparison = ContextCollectionBaselineComparison(
+                phase = "warm",
+                coldElapsedMs = 180,
+                warmElapsedMs = 48,
+                savedMs = 132,
+                savedPercent = 73,
+                firstWarmAfterCold = true,
+            ),
+        )
+
+        assertTrue(shouldEmitContextTelemetryInfo(telemetry))
+    }
+
+    @Test
+    fun `shouldEmitContextTelemetryInfo should suppress repeated warm runs without new cold baseline`() {
+        val telemetry = ContextCollectionTelemetry(
+            operationKey = "collectContext",
+            elapsedMs = 44,
+            candidateItemCount = 4,
+            budgetAcceptedItemCount = 4,
+            finalItemCount = 4,
+            budgetStats = ContextCollectionBudgetStats(
+                filePaths = setOf("/repo/src/Main.kt"),
+                symbolItemCount = 0,
+                totalContentBytes = 240,
+            ),
+            tokenEstimate = 60,
+            tokenBudget = 8000,
+            maxFileItems = 10,
+            maxSymbolItems = 24,
+            maxContentBytes = 48_000,
+            maxCollectionTimeMs = 250,
+            wasTokenTrimmed = false,
+            budgetDropSummary = "none",
+            skippedStages = emptyList(),
+            cacheView = ContextCollectionCacheTelemetry(
+                runOutcomes = listOf(
+                    ContextCollectionStageCacheOutcome(stage = "codeGraph", outcome = "hit"),
+                    ContextCollectionStageCacheOutcome(stage = "relatedFiles", outcome = "hit"),
+                    ContextCollectionStageCacheOutcome(stage = "projectStructure", outcome = "hit"),
+                ),
+            ),
+            baselineComparison = ContextCollectionBaselineComparison(
+                phase = "warm",
+                coldElapsedMs = 180,
+                warmElapsedMs = 44,
+                savedMs = 136,
+                savedPercent = 76,
+                firstWarmAfterCold = false,
+            ),
+        )
+
+        assertFalse(shouldEmitContextTelemetryInfo(telemetry))
     }
 
     @Test

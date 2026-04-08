@@ -11,25 +11,47 @@ class ContextCollector(private val project: Project) {
     private val logger = thisLogger()
 
     private var codeGraphSnapshotProvider: () -> Result<CodeGraphSnapshot> = defaultCodeGraphSnapshotProvider(project)
+    private var codeGraphCacheStatsProvider: () -> CodeGraphCacheStats? = defaultCodeGraphCacheStatsProvider(project)
     private var relatedFilesProvider: () -> Result<List<ContextItem>> = defaultRelatedFilesProvider(project)
+    private var relatedFileCacheStatsProvider: () -> RelatedFileCacheStats? = defaultRelatedFileCacheStatsProvider(project)
     private var projectStructureProvider: () -> Result<ContextItem?> = defaultProjectStructureProvider(project)
+    private var projectStructureCacheStatsProvider: () -> ProjectStructureCacheStats? =
+        defaultProjectStructureCacheStatsProvider(project)
     private var nanoTimeProvider: () -> Long = System::nanoTime
+    private var baselineTracker: ContextCollectionBaselineTracker = ContextCollectionBaselineTracker()
+    private var telemetryConsumer: (ContextCollectionTelemetry) -> Unit = { telemetry ->
+        logCollectionTelemetry(telemetry)
+    }
 
     internal constructor(
         project: Project,
         codeGraphSnapshotProvider: () -> Result<CodeGraphSnapshot> = defaultCodeGraphSnapshotProvider(project),
+        codeGraphCacheStatsProvider: () -> CodeGraphCacheStats? = defaultCodeGraphCacheStatsProvider(project),
         relatedFilesProvider: () -> Result<List<ContextItem>> = defaultRelatedFilesProvider(project),
+        relatedFileCacheStatsProvider: () -> RelatedFileCacheStats? = defaultRelatedFileCacheStatsProvider(project),
         projectStructureProvider: () -> Result<ContextItem?> = defaultProjectStructureProvider(project),
+        projectStructureCacheStatsProvider: () -> ProjectStructureCacheStats? =
+            defaultProjectStructureCacheStatsProvider(project),
         nanoTimeProvider: () -> Long = System::nanoTime,
+        baselineTracker: ContextCollectionBaselineTracker = ContextCollectionBaselineTracker(),
+        telemetryConsumer: ((ContextCollectionTelemetry) -> Unit)? = null,
     ) : this(project) {
         this.codeGraphSnapshotProvider = codeGraphSnapshotProvider
+        this.codeGraphCacheStatsProvider = codeGraphCacheStatsProvider
         this.relatedFilesProvider = relatedFilesProvider
+        this.relatedFileCacheStatsProvider = relatedFileCacheStatsProvider
         this.projectStructureProvider = projectStructureProvider
+        this.projectStructureCacheStatsProvider = projectStructureCacheStatsProvider
         this.nanoTimeProvider = nanoTimeProvider
+        this.baselineTracker = baselineTracker
+        telemetryConsumer?.let {
+            this.telemetryConsumer = it
+        }
     }
 
     fun collectContext(config: ContextConfig = ContextConfig()): ContextSnapshot {
         val startedAtNanos = nanoTimeProvider()
+        val cacheTelemetryBefore = captureCacheTelemetry(config)
         val skippedStages = mutableListOf<String>()
         val autoItems = collectAutomaticItems(
             config = config,
@@ -42,6 +64,7 @@ class ContextCollector(private val project: Project) {
             items = autoItems,
             config = config,
             startedAtNanos = startedAtNanos,
+            cacheTelemetryBefore = cacheTelemetryBefore,
             skippedStages = skippedStages,
         )
     }
@@ -51,6 +74,7 @@ class ContextCollector(private val project: Project) {
         config: ContextConfig = ContextConfig(),
     ): ContextSnapshot {
         val startedAtNanos = nanoTimeProvider()
+        val cacheTelemetryBefore = captureCacheTelemetry(config)
         val skippedStages = mutableListOf<String>()
         val autoItems = collectAutomaticItems(
             config = config,
@@ -64,6 +88,7 @@ class ContextCollector(private val project: Project) {
             items = allItems,
             config = config,
             startedAtNanos = startedAtNanos,
+            cacheTelemetryBefore = cacheTelemetryBefore,
             skippedStages = skippedStages,
         )
     }
@@ -159,6 +184,7 @@ class ContextCollector(private val project: Project) {
         items: List<ContextItem>,
         config: ContextConfig,
         startedAtNanos: Long,
+        cacheTelemetryBefore: ContextCollectionCacheTelemetry?,
         skippedStages: MutableList<String>,
     ): ContextSnapshot {
         val prioritizedItems = applyGraphAwarePrioritization(
@@ -172,11 +198,21 @@ class ContextCollector(private val project: Project) {
             budgetResult.items,
             config.tokenBudget,
         )
+        val elapsedMs = elapsedMillisSince(startedAtNanos)
+        val cacheTelemetry = ContextCollectionBaselineCoordinator.attachRunOutcomes(
+            before = cacheTelemetryBefore,
+            after = captureCacheTelemetry(config),
+        )
+        val baselineComparison = baselineTracker.record(
+            scenarioKey = ContextCollectionBaselineCoordinator.scenarioKey(operationKey, config),
+            elapsedMs = elapsedMs,
+            phase = ContextCollectionBaselineCoordinator.determinePhase(cacheTelemetry),
+        )
 
-        logCollectionTelemetry(
-            telemetry = ContextCollectionTelemetry(
+        telemetryConsumer(
+            ContextCollectionTelemetry(
                 operationKey = operationKey,
-                elapsedMs = elapsedMillisSince(startedAtNanos),
+                elapsedMs = elapsedMs,
                 candidateItemCount = prioritizedItems.size,
                 budgetAcceptedItemCount = budgetResult.items.size,
                 finalItemCount = snapshot.items.size,
@@ -190,6 +226,8 @@ class ContextCollector(private val project: Project) {
                 wasTokenTrimmed = snapshot.wasTrimmed,
                 budgetDropSummary = budgetResult.dropSummary(),
                 skippedStages = skippedStages.toList(),
+                cacheView = cacheTelemetry,
+                baselineComparison = baselineComparison,
             ),
         )
 
@@ -241,9 +279,7 @@ class ContextCollector(private val project: Project) {
         val severity = determineContextTelemetrySeverity(telemetry.elapsedMs)
         val shouldLogInfo =
             severity == ContextTelemetrySeverity.INFO ||
-                telemetry.wasTokenTrimmed ||
-                telemetry.budgetDropSummary != "none" ||
-                telemetry.skippedStages.isNotEmpty()
+                shouldEmitContextTelemetryInfo(telemetry)
         val message = "ContextCollector: ${telemetry.summary()}"
         when {
             severity == ContextTelemetrySeverity.WARN -> logger.warn(message)
@@ -255,11 +291,40 @@ class ContextCollector(private val project: Project) {
         return (nanoTimeProvider() - startedAtNanos) / 1_000_000
     }
 
+    private fun captureCacheTelemetry(config: ContextConfig): ContextCollectionCacheTelemetry? {
+        val cacheTelemetry = ContextCollectionCacheTelemetry(
+            codeGraph = if (config.preferGraphRelatedContext) {
+                codeGraphCacheStatsProvider()
+            } else {
+                null
+            },
+            relatedFiles = if (config.includeImportDependencies) {
+                relatedFileCacheStatsProvider()
+            } else {
+                null
+            },
+            projectStructure = if (config.includeProjectStructure) {
+                projectStructureCacheStatsProvider()
+            } else {
+                null
+            },
+        )
+        return cacheTelemetry.takeIf {
+            it.codeGraph != null || it.relatedFiles != null || it.projectStructure != null
+        }
+    }
+
     companion object {
         private fun defaultCodeGraphSnapshotProvider(project: Project): () -> Result<CodeGraphSnapshot> = {
             runCatching {
                 CodeGraphService.getInstance(project).buildFromActiveEditor().getOrThrow()
             }
+        }
+
+        private fun defaultCodeGraphCacheStatsProvider(project: Project): () -> CodeGraphCacheStats? = {
+            runCatching {
+                CodeGraphService.getInstance(project).cacheStatsSnapshot()
+            }.getOrNull()
         }
 
         private fun defaultRelatedFilesProvider(project: Project): () -> Result<List<ContextItem>> = {
@@ -268,10 +333,22 @@ class ContextCollector(private val project: Project) {
             }
         }
 
+        private fun defaultRelatedFileCacheStatsProvider(project: Project): () -> RelatedFileCacheStats? = {
+            runCatching {
+                RelatedFileDiscovery.getInstance(project).cacheStatsSnapshot()
+            }.getOrNull()
+        }
+
         private fun defaultProjectStructureProvider(project: Project): () -> Result<ContextItem?> = {
             runCatching {
                 ProjectStructureScanner.getInstance(project).getProjectStructureContext()
             }
+        }
+
+        private fun defaultProjectStructureCacheStatsProvider(project: Project): () -> ProjectStructureCacheStats? = {
+            runCatching {
+                ProjectStructureScanner.getInstance(project).cacheStatsSnapshot()
+            }.getOrNull()
         }
 
         fun getInstance(project: Project): ContextCollector {

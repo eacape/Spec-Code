@@ -26,6 +26,25 @@ internal fun determineContextTelemetrySeverity(
     }
 }
 
+internal fun shouldEmitContextTelemetryInfo(telemetry: ContextCollectionTelemetry): Boolean {
+    if (telemetry.wasTokenTrimmed) {
+        return true
+    }
+    if (telemetry.budgetDropSummary != "none") {
+        return true
+    }
+    if (telemetry.skippedStages.isNotEmpty()) {
+        return true
+    }
+    if (telemetry.cacheView?.runOutcomes.orEmpty().any { outcome ->
+            outcome.outcome == ContextCollectionStageCacheOutcomeKind.MISS.wireName
+        }
+    ) {
+        return true
+    }
+    return telemetry.baselineComparison?.shouldEmitWarmInsight() == true
+}
+
 internal data class ProjectStructureCacheStats(
     val hitCount: Long,
     val missCount: Long,
@@ -78,6 +97,92 @@ internal data class CodeGraphCacheStats(
     }
 }
 
+internal data class RelatedFileCacheStats(
+    val hitCount: Long,
+    val missCount: Long,
+    val lastInvalidationReason: String,
+) {
+    val totalRequests: Long
+        get() = hitCount + missCount
+
+    fun hitRatePercent(): Int {
+        if (totalRequests <= 0L) {
+            return 0
+        }
+        return ((hitCount.toDouble() / totalRequests.toDouble()) * 100.0).roundToInt()
+    }
+
+    fun shouldEmitPeriodicHitLog(
+        logEveryHits: Long = ContextTelemetryThresholds.CACHE_HIT_LOG_INTERVAL,
+    ): Boolean {
+        return hitCount > 0L && logEveryHits > 0L && hitCount % logEveryHits == 0L
+    }
+
+    fun summary(): String {
+        return "cacheHits=$hitCount, cacheMisses=$missCount, hitRate=${hitRatePercent()}%, lastInvalidation=$lastInvalidationReason"
+    }
+}
+
+internal data class ContextCollectionCacheTelemetry(
+    val codeGraph: CodeGraphCacheStats? = null,
+    val relatedFiles: RelatedFileCacheStats? = null,
+    val projectStructure: ProjectStructureCacheStats? = null,
+    val runOutcomes: List<ContextCollectionStageCacheOutcome> = emptyList(),
+) {
+    fun summary(): String {
+        val sections = buildList {
+            codeGraph?.let { add("codeGraph{${it.summary()}}") }
+            relatedFiles?.let { add("relatedFiles{${it.summary()}}") }
+            projectStructure?.let { add("projectStructure{${it.summary()}}") }
+        }
+        val cacheSummary = if (sections.isEmpty()) {
+            "none"
+        } else {
+            sections.joinToString(separator = ", ")
+        }
+        val runOutcomeSummary = if (runOutcomes.isEmpty()) {
+            "none"
+        } else {
+            runOutcomes.joinToString(separator = "|") { outcome -> outcome.summary() }
+        }
+        return "$cacheSummary, runOutcomes=$runOutcomeSummary"
+    }
+}
+
+internal data class RelatedFileDiscoveryTelemetry(
+    val currentFileName: String,
+    val language: String,
+    val heuristicReferenceCount: Int,
+    val heuristicResolvedCount: Int,
+    val semanticResolvedCount: Int,
+    val finalItemCount: Int,
+    val unresolvedReferences: List<String>,
+    val skippedLayers: List<String>,
+) {
+    fun summary(): String {
+        val unresolvedSummary = if (unresolvedReferences.isEmpty()) {
+            "none"
+        } else {
+            unresolvedReferences.take(3).joinToString(separator = "|")
+        }
+        val skippedSummary = if (skippedLayers.isEmpty()) {
+            "none"
+        } else {
+            skippedLayers.joinToString(separator = "|")
+        }
+        return buildString {
+            append("file=").append(currentFileName)
+            append(", language=").append(language)
+            append(", heuristicRefs=").append(heuristicReferenceCount)
+            append(", heuristicResolved=").append(heuristicResolvedCount)
+            append(", semanticResolved=").append(semanticResolvedCount)
+            append(", finalItems=").append(finalItemCount)
+            append(", unresolved=").append(unresolvedSummary)
+            append(", skippedLayers=").append(skippedSummary)
+        }
+    }
+}
+
 internal data class ContextCollectionTelemetry(
     val operationKey: String,
     val elapsedMs: Long,
@@ -94,6 +199,8 @@ internal data class ContextCollectionTelemetry(
     val wasTokenTrimmed: Boolean,
     val budgetDropSummary: String,
     val skippedStages: List<String>,
+    val cacheView: ContextCollectionCacheTelemetry? = null,
+    val baselineComparison: ContextCollectionBaselineComparison? = null,
 ) {
     fun summary(): String {
         val stageSummary = if (skippedStages.isEmpty()) {
@@ -115,6 +222,8 @@ internal data class ContextCollectionTelemetry(
             append(", tokenTrimmed=").append(wasTokenTrimmed)
             append(", budgetDrops=").append(budgetDropSummary)
             append(", skippedStages=").append(stageSummary)
+            append(", cacheView=").append(cacheView?.summary() ?: "none")
+            append(", baseline=").append(baselineComparison?.summary() ?: "none")
         }
     }
 }

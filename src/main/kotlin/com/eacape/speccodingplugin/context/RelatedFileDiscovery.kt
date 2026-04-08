@@ -1,139 +1,298 @@
 package com.eacape.speccodingplugin.context
 
 import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.Service
+import com.intellij.openapi.components.service
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
-import java.nio.file.Paths
+import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.openapi.vfs.newvfs.BulkFileListener
+import com.intellij.openapi.vfs.newvfs.events.VFileCopyEvent
+import com.intellij.openapi.vfs.newvfs.events.VFileCreateEvent
+import com.intellij.openapi.vfs.newvfs.events.VFileDeleteEvent
+import com.intellij.openapi.vfs.newvfs.events.VFileEvent
+import com.intellij.openapi.vfs.newvfs.events.VFileMoveEvent
+import com.intellij.openapi.vfs.newvfs.events.VFilePropertyChangeEvent
+import java.nio.file.InvalidPathException
+import java.nio.file.Path
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
- * 相关文件发现服务（Project-level Service）
- * 通过解析 import 语句发现当前文件的依赖文件
+ * 相关文件发现服务（Project-level Service）。
+ * 当前先显式区分文本启发式层和未来语义层，避免两类策略继续混在同一个 service 里增长。
  */
 @Service(Service.Level.PROJECT)
-class RelatedFileDiscovery(private val project: Project) {
+class RelatedFileDiscovery(private val project: Project) : Disposable {
+    private val logger = thisLogger()
+    private val projectRootPath: Path? = runCatching {
+        project.basePath
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?.let { Path.of(it).toAbsolutePath().normalize() }
+    }.getOrNull()
+    private var semanticResolver: RelatedFileSemanticResolver = RelatedFileSemanticResolver.unavailable()
+    private val cachedResults = ConcurrentHashMap<String, CachedRelatedFileDiscoveryResult>()
 
-    /**
-     * 从当前编辑器文件中发现相关文件
-     */
+    @Volatile
+    private var lastInvalidationReason: String = "cold-start"
+
+    private val cacheHitCount = AtomicLong(0)
+    private val cacheMissCount = AtomicLong(0)
+
+    private data class ActiveEditorDiscoveryRequest(
+        val filePath: String,
+        val fileName: String,
+        val content: String,
+        val documentModificationStamp: Long,
+        val context: RelatedFileDiscoveryContext,
+    )
+
+    private data class CachedRelatedFileDiscoveryResult(
+        val result: RelatedFileDiscoveryResult,
+        val documentModificationStamp: Long,
+    )
+
+    init {
+        subscribeToStructureChanges()
+    }
+
+    internal constructor(
+        project: Project,
+        semanticResolver: RelatedFileSemanticResolver = RelatedFileSemanticResolver.unavailable(),
+    ) : this(project) {
+        this.semanticResolver = semanticResolver
+    }
+
     fun discoverRelatedFiles(): List<ContextItem> {
-        val editor = getActiveEditor() ?: return emptyList()
-        val virtualFile = editor.virtualFile ?: return emptyList()
-
-        val content = ReadAction.compute<String, Throwable> {
-            editor.document.text
-        }
-
-        val imports = parseImports(content)
-        val basePath = project.basePath ?: return emptyList()
-
-        return imports.mapNotNull { importPath ->
-            resolveImportToFile(importPath, basePath)
-        }
+        return discoverRelatedFilesDetailed().items
     }
 
-    private fun parseImports(content: String): List<String> {
-        val results = mutableListOf<String>()
+    internal fun discoverRelatedFilesDetailed(): RelatedFileDiscoveryResult {
+        val request = resolveActiveEditorRequest() ?: return RelatedFileDiscoveryResult.empty()
+        var cacheStatus = "miss"
 
-        for (line in content.lines()) {
-            val trimmed = line.trim()
-
-            // Kotlin/Java: import com.example.Foo
-            KOTLIN_IMPORT.matchEntire(trimmed)?.let {
-                results.add(it.groupValues[1])
-                return@let
-            }
-
-            // TypeScript/JavaScript: import ... from '...'
-            TS_IMPORT.find(trimmed)?.let {
-                results.add(it.groupValues[1])
-                return@let
-            }
-
-            // Python: from foo.bar import baz
-            PYTHON_FROM_IMPORT.matchEntire(trimmed)?.let {
-                results.add(it.groupValues[1])
-                return@let
-            }
-        }
-
-        return results
-    }
-
-    private fun resolveImportToFile(
-        importPath: String,
-        basePath: String,
-    ): ContextItem? {
-        // Try Kotlin/Java package path
-        val jvmPath = importPath.replace('.', '/')
-        val candidates = listOf(
-            "$jvmPath.kt",
-            "$jvmPath.java",
-            "$importPath.ts",
-            "$importPath.tsx",
-            "$importPath.js",
-            "$importPath.py",
-            "${importPath.replace('.', '/')}.py",
-        )
-
-        for (candidate in candidates) {
-            val resolved = findInSourceRoots(candidate, basePath)
-            if (resolved != null) {
-                return ContextItem(
-                    type = ContextType.IMPORT_DEPENDENCY,
-                    label = resolved.name,
-                    content = "",
-                    filePath = resolved.path,
-                    priority = 40,
+        cachedResults[request.filePath]?.let { cached ->
+            if (cached.documentModificationStamp == request.documentModificationStamp) {
+                val hitCount = cacheHitCount.incrementAndGet()
+                logCacheHit(
+                    request = request,
+                    cacheStats = currentCacheStats(hitCount = hitCount),
                 )
+                return cached.result
             }
+            cacheStatus = "stale-document"
+            invalidateCacheEntry(
+                filePath = request.filePath,
+                reason = "document-change:${request.fileName}",
+            )
         }
 
-        return null
+        val missCount = cacheMissCount.incrementAndGet()
+
+        val heuristicResult = RelatedFileDiscoveryCoordinator.discoverHeuristicLayer(
+            content = request.content,
+            context = request.context,
+            resolveFile = ::resolveExistingFile,
+        )
+        val semanticResult = semanticResolver.resolve(request.context)
+        val result = RelatedFileDiscoveryCoordinator.merge(heuristicResult, semanticResult)
+        cachedResults[request.filePath] = CachedRelatedFileDiscoveryResult(
+            result = result,
+            documentModificationStamp = request.documentModificationStamp,
+        )
+        logDiscoveryTelemetry(
+            currentFileName = request.fileName,
+            language = request.context.language,
+            result = result,
+            cacheStatus = cacheStatus,
+            cacheStats = currentCacheStats(missCount = missCount),
+        )
+        return result
     }
 
-    private fun findInSourceRoots(
-        relativePath: String,
-        basePath: String,
-    ): com.intellij.openapi.vfs.VirtualFile? {
-        val sourceRoots = listOf(
-            "src/main/kotlin",
-            "src/main/java",
-            "src",
-            "lib",
-            "",
-        )
+    internal fun cacheStatsSnapshot(): RelatedFileCacheStats = currentCacheStats()
 
-        for (root in sourceRoots) {
-            val fullPath = Paths.get(basePath, root, relativePath)
-                .normalize().toString()
-            val vf = LocalFileSystem.getInstance()
-                .findFileByPath(fullPath)
-            if (vf != null && !vf.isDirectory) {
-                return vf
-            }
+    override fun dispose() = Unit
+
+    private fun resolveExistingFile(candidatePath: Path): RelatedFileResolvedFile? {
+        val virtualFile = LocalFileSystem.getInstance()
+            .findFileByPath(candidatePath.toString())
+            ?: return null
+        if (virtualFile.isDirectory) {
+            return null
         }
+        return RelatedFileResolvedFile(
+            path = virtualFile.path,
+            name = virtualFile.name,
+        )
+    }
 
-        return null
+    private fun logDiscoveryTelemetry(
+        currentFileName: String,
+        language: RelatedFileDiscoveryLanguage,
+        result: RelatedFileDiscoveryResult,
+        cacheStatus: String,
+        cacheStats: RelatedFileCacheStats,
+    ) {
+        if (
+            result.heuristicReferenceCount == 0 &&
+            result.items.isEmpty() &&
+            result.skippedLayers.isEmpty()
+        ) {
+            return
+        }
+        logger.info(
+            "RelatedFileDiscovery: ${result.telemetry(currentFileName, language).summary()}, " +
+                "cacheStatus=$cacheStatus, ${cacheStats.summary()}",
+        )
+    }
+
+    private fun logCacheHit(
+        request: ActiveEditorDiscoveryRequest,
+        cacheStats: RelatedFileCacheStats,
+    ) {
+        if (!cacheStats.shouldEmitPeriodicHitLog()) {
+            return
+        }
+        logger.info(
+            "RelatedFileDiscovery cache hit: file=${request.fileName}, path=${request.filePath}, " +
+                "language=${request.context.language.wireName}, ${cacheStats.summary()}",
+        )
+    }
+
+    private fun resolveActiveEditorRequest(): ActiveEditorDiscoveryRequest? {
+        val editor = getActiveEditor() ?: return null
+        return ReadAction.compute<ActiveEditorDiscoveryRequest?, Throwable> {
+            val virtualFile = editor.virtualFile ?: return@compute null
+            val basePath = project.basePath ?: return@compute null
+            ActiveEditorDiscoveryRequest(
+                filePath = virtualFile.path,
+                fileName = virtualFile.name,
+                content = editor.document.text,
+                documentModificationStamp = editor.document.modificationStamp,
+                context = RelatedFileDiscoveryContext(
+                    basePath = Path.of(basePath),
+                    activeFilePath = Path.of(virtualFile.path),
+                    language = RelatedFileDiscoveryLanguage.fromFileName(virtualFile.name),
+                ),
+            )
+        }
     }
 
     private fun getActiveEditor(): Editor? {
-        return FileEditorManager.getInstance(project)
-            .selectedTextEditor
+        return FileEditorManager.getInstance(project).selectedTextEditor
+    }
+
+    private fun currentCacheStats(
+        hitCount: Long = cacheHitCount.get(),
+        missCount: Long = cacheMissCount.get(),
+    ): RelatedFileCacheStats {
+        return RelatedFileCacheStats(
+            hitCount = hitCount,
+            missCount = missCount,
+            lastInvalidationReason = lastInvalidationReason,
+        )
+    }
+
+    private fun invalidateCache(reason: String) {
+        val hadCache = cachedResults.isNotEmpty()
+        cachedResults.clear()
+        lastInvalidationReason = reason
+        if (hadCache) {
+            logger.info("RelatedFileDiscovery cache invalidated: reason=$reason, ${currentCacheStats().summary()}")
+        }
+    }
+
+    private fun invalidateCacheEntry(
+        filePath: String,
+        reason: String,
+    ) {
+        if (cachedResults.remove(filePath) != null) {
+            lastInvalidationReason = reason
+        }
+    }
+
+    private fun subscribeToStructureChanges() {
+        if (projectRootPath == null) {
+            return
+        }
+        project.messageBus.connect(this).subscribe(
+            VirtualFileManager.VFS_CHANGES,
+            object : BulkFileListener {
+                override fun after(events: List<VFileEvent>) {
+                    val reason = firstRelevantStructureChangeReason(events) ?: return
+                    invalidateCache(reason)
+                }
+            },
+        )
+    }
+
+    private fun firstRelevantStructureChangeReason(events: List<VFileEvent>): String? {
+        val root = projectRootPath ?: return null
+        return events.asSequence()
+            .mapNotNull { event -> structureChangeReason(event, root) }
+            .firstOrNull()
+    }
+
+    private fun structureChangeReason(event: VFileEvent, root: Path): String? {
+        val reasonPrefix = when (event) {
+            is VFileCreateEvent -> "vfs-create"
+            is VFileDeleteEvent -> "vfs-delete"
+            is VFileMoveEvent -> "vfs-move"
+            is VFileCopyEvent -> "vfs-copy"
+            is VFilePropertyChangeEvent -> if (event.isRename) "vfs-rename" else null
+            else -> null
+        } ?: return null
+
+        val relativePath = affectedPathsForEvent(event)
+            .asSequence()
+            .mapNotNull { rawPath -> relativePathWithinProject(rawPath, root) }
+            .firstOrNull()
+            ?: return null
+
+        return "$reasonPrefix:$relativePath"
+    }
+
+    private fun affectedPathsForEvent(event: VFileEvent): List<String> {
+        return when (event) {
+            is VFileMoveEvent -> listOf(event.oldPath, event.newPath)
+            is VFilePropertyChangeEvent -> listOf(event.oldPath, event.newPath)
+            else -> listOf(event.path)
+        }
+    }
+
+    private fun relativePathWithinProject(rawPath: String, root: Path): String? {
+        val trimmed = rawPath.trim()
+        if (trimmed.isEmpty()) {
+            return null
+        }
+
+        val resolved = try {
+            Path.of(trimmed).toAbsolutePath().normalize()
+        } catch (_: InvalidPathException) {
+            return null
+        }
+        if (!resolved.startsWith(root)) {
+            return null
+        }
+
+        val relativePath = root.relativize(resolved)
+            .joinToString(separator = "/") { segment -> segment.toString() }
+            .trim()
+        if (relativePath.isEmpty() || relativePath == ".") {
+            return null
+        }
+        return relativePath
     }
 
     companion object {
-        private val KOTLIN_IMPORT =
-            Regex("""^import\s+([\w.]+)""")
-        private val TS_IMPORT =
-            Regex("""from\s+['"]([^'"]+)['"]""")
-        private val PYTHON_FROM_IMPORT =
-            Regex("""^from\s+([\w.]+)\s+import""")
-
         fun getInstance(project: Project): RelatedFileDiscovery {
-            return project.getService(RelatedFileDiscovery::class.java)
+            return project.service()
         }
     }
 }

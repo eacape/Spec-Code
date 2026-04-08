@@ -426,6 +426,134 @@ class ContextCollectorTest {
         assertEquals(listOf("selection", "scope", "file"), snapshot.items.map { it.label })
     }
 
+    @Test
+    fun `collectContext should include enabled stage cache stats in telemetry`() {
+        every { EditorContextProvider.getSelectedCodeContext(project) } returns null
+        every { EditorContextProvider.getContainingScopeContext(project) } returns null
+        every { EditorContextProvider.getCurrentFileContext(project) } returns null
+
+        var capturedTelemetry: ContextCollectionTelemetry? = null
+        val collector = ContextCollector(
+            project = project,
+            relatedFilesProvider = { Result.success(emptyList()) },
+            projectStructureProvider = { Result.success(null) },
+            codeGraphCacheStatsProvider = {
+                CodeGraphCacheStats(
+                    hitCount = 2,
+                    missCount = 1,
+                    lastInvalidationReason = "psi-change:Main.kt",
+                )
+            },
+            relatedFileCacheStatsProvider = {
+                RelatedFileCacheStats(
+                    hitCount = 3,
+                    missCount = 1,
+                    lastInvalidationReason = "document-change:main.ts",
+                )
+            },
+            projectStructureCacheStatsProvider = {
+                ProjectStructureCacheStats(
+                    hitCount = 4,
+                    missCount = 2,
+                    lastInvalidationReason = "vfs-create:docs/guide.md",
+                )
+            },
+            telemetryConsumer = { telemetry -> capturedTelemetry = telemetry },
+        )
+
+        collector.collectContext(
+            ContextConfig(
+                tokenBudget = 200,
+                includeSelectedCode = false,
+                includeContainingScope = false,
+                includeCurrentFile = false,
+                includeImportDependencies = true,
+                includeProjectStructure = true,
+                preferGraphRelatedContext = true,
+            ),
+        )
+
+        val telemetry = capturedTelemetry ?: error("Expected telemetry to be captured")
+        val summary = telemetry.summary()
+
+        assertTrue(summary.contains("cacheView=codeGraph{cacheHits=2"))
+        assertTrue(summary.contains("relatedFiles{cacheHits=3"))
+        assertTrue(summary.contains("projectStructure{cacheHits=4"))
+    }
+
+    @Test
+    fun `collectContext should compare warm run against previous cold run in telemetry`() {
+        every { EditorContextProvider.getSelectedCodeContext(project) } returns null
+        every { EditorContextProvider.getContainingScopeContext(project) } returns null
+        every { EditorContextProvider.getCurrentFileContext(project) } returns null
+
+        val relatedFileStats = ArrayDeque(
+            listOf(
+                RelatedFileCacheStats(
+                    hitCount = 0,
+                    missCount = 0,
+                    lastInvalidationReason = "cold-start",
+                ),
+                RelatedFileCacheStats(
+                    hitCount = 0,
+                    missCount = 1,
+                    lastInvalidationReason = "document-change:main.ts",
+                ),
+                RelatedFileCacheStats(
+                    hitCount = 0,
+                    missCount = 1,
+                    lastInvalidationReason = "document-change:main.ts",
+                ),
+                RelatedFileCacheStats(
+                    hitCount = 1,
+                    missCount = 1,
+                    lastInvalidationReason = "document-change:main.ts",
+                ),
+            ),
+        )
+        val capturedTelemetries = mutableListOf<ContextCollectionTelemetry>()
+        val collector = ContextCollector(
+            project = project,
+            relatedFilesProvider = { Result.success(emptyList()) },
+            relatedFileCacheStatsProvider = { relatedFileStats.removeFirst() },
+            nanoTimeProvider = sequenceNanoTimeProvider(
+                0L,
+                10_000_000L,
+                320_000_000L,
+                1_000_000_000L,
+                1_010_000_000L,
+                1_090_000_000L,
+            ),
+            telemetryConsumer = capturedTelemetries::add,
+        )
+
+        repeat(2) {
+            collector.collectContext(
+                ContextConfig(
+                    tokenBudget = 200,
+                    includeSelectedCode = false,
+                    includeContainingScope = false,
+                    includeCurrentFile = false,
+                    includeImportDependencies = true,
+                    includeProjectStructure = false,
+                    preferGraphRelatedContext = false,
+                    maxCollectionTimeMs = 500,
+                ),
+            )
+        }
+
+        val coldRun = capturedTelemetries.first()
+        val warmRun = capturedTelemetries.last()
+
+        assertEquals(listOf("relatedFiles:miss"), coldRun.cacheView?.runOutcomes?.map { it.summary() })
+        assertEquals("cold", coldRun.baselineComparison?.phase)
+        assertEquals(listOf("relatedFiles:hit"), warmRun.cacheView?.runOutcomes?.map { it.summary() })
+        assertEquals("warm", warmRun.baselineComparison?.phase)
+        assertEquals(coldRun.elapsedMs, warmRun.baselineComparison?.coldElapsedMs)
+        assertEquals(warmRun.elapsedMs, warmRun.baselineComparison?.warmElapsedMs)
+        assertTrue((warmRun.baselineComparison?.savedPercent ?: 0) > 0)
+    }
+
     private fun makeItem(
         type: ContextType,
         label: String,
