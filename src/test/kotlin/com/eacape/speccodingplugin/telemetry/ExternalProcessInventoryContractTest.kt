@@ -92,12 +92,12 @@ private object ExternalProcessInventoryContract {
             summary = "VERIFY command runtime with timeout and split stdout/stderr truncation handling.",
         ),
         ExternalProcessInventoryRule(
-            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanelWorkflowCommandRunner.kt",
+            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/core/WorkflowCommandProcessRuntime.kt",
             category = ExternalProcessCategory.WORKFLOW,
             occurrenceCount = 1,
             threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_ONLY,
-            mainThreadRisk = ExternalProcessMainThreadRisk.HIGH,
-            summary = "Workflow shell command runtime extracted behind a UI-owned runner, pending broader process unification.",
+            mainThreadRisk = ExternalProcessMainThreadRisk.MEDIUM,
+            summary = "Shared workflow shell command runtime with stop/dispose semantics extracted out of the UI runner.",
         ),
     )
 
@@ -203,22 +203,12 @@ class ExternalProcessInventoryContractTest {
     }
 
     @Test
-    fun `ui owned process launches should stay marked as high main thread risk`() {
+    fun `ui package should not own raw ProcessBuilder launches`() {
         val uiOwnedRules = ExternalProcessInventoryContract.rules.filter { "/ui/" in it.relativePath }
-        val nonHighRisk = uiOwnedRules.filter { it.mainThreadRisk != ExternalProcessMainThreadRisk.HIGH }
 
         assertTrue(
-            uiOwnedRules.isNotEmpty(),
-            "Expected at least one UI-owned ProcessBuilder inventory rule.",
-        )
-        assertTrue(
-            nonHighRisk.isEmpty(),
-            buildString {
-                appendLine("UI-owned external process entry points must stay HIGH main-thread risk until they are extracted out of Swing panels.")
-                nonHighRisk.forEach { rule ->
-                    appendLine("- ${rule.relativePath} -> ${rule.mainThreadRisk.label}")
-                }
-            },
+            uiOwnedRules.isEmpty(),
+            "Raw ProcessBuilder launches should no longer live under src/main/kotlin/.../ui. Remaining UI-owned rules: ${uiOwnedRules.joinToString { it.relativePath }}",
         )
     }
 }

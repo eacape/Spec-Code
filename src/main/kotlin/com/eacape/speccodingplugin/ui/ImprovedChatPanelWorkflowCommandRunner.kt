@@ -1,11 +1,10 @@
 package com.eacape.speccodingplugin.ui
 
-import com.eacape.speccodingplugin.core.ManagedMergedOutputProcess
+import com.eacape.speccodingplugin.core.WorkflowCommandProcessRunResult
+import com.eacape.speccodingplugin.core.WorkflowCommandProcessRuntime
+import com.eacape.speccodingplugin.core.WorkflowCommandProcessStopResult
 import java.io.File
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 
 internal sealed interface ImprovedChatPanelWorkflowCommandRunOutcome {
     data class Completed(
@@ -41,123 +40,90 @@ internal data class ImprovedChatPanelWorkflowCommandExecutionResult(
     val outputTruncated: Boolean = false,
 )
 
-internal class ImprovedChatPanelWorkflowCommandRunner(
+internal class ImprovedChatPanelWorkflowCommandRunner private constructor(
     private val workingDirectory: File? = null,
-    val timeoutSeconds: Long = DEFAULT_TIMEOUT_SECONDS,
-    private val joinTimeoutMillis: Long = DEFAULT_JOIN_TIMEOUT_MILLIS,
-    private val stopGraceSeconds: Long = DEFAULT_STOP_GRACE_SECONDS,
-    val outputLimitChars: Int = DEFAULT_OUTPUT_MAX_CHARS,
-    private val processStarter: (List<String>, File?) -> Process = { command, directory ->
-        ProcessBuilder(command)
-            .directory(directory)
-            .redirectErrorStream(true)
-            .start()
-    },
-    private val shellCommandBuilder: (String) -> List<String> = { command ->
-        buildShellCommand(command)
-    },
+    val timeoutSeconds: Long,
+    val outputLimitChars: Int,
+    private val processRuntime: WorkflowCommandProcessRuntime,
+    private val shellCommandBuilder: (String) -> List<String>,
 ) {
 
-    private val runningCommands = ConcurrentHashMap<String, RunningWorkflowCommand>()
+    internal constructor(
+        workingDirectory: File? = null,
+        timeoutSeconds: Long = DEFAULT_TIMEOUT_SECONDS,
+        joinTimeoutMillis: Long = DEFAULT_JOIN_TIMEOUT_MILLIS,
+        stopGraceSeconds: Long = DEFAULT_STOP_GRACE_SECONDS,
+        outputLimitChars: Int = DEFAULT_OUTPUT_MAX_CHARS,
+        processStarter: ((List<String>, File?) -> Process)? = null,
+        shellCommandBuilder: (String) -> List<String> = { command ->
+            buildShellCommand(command)
+        },
+    ) : this(
+        workingDirectory = workingDirectory,
+        timeoutSeconds = timeoutSeconds,
+        outputLimitChars = outputLimitChars,
+        processRuntime = createProcessRuntime(
+            processStarter = processStarter,
+            outputLimitChars = outputLimitChars,
+            joinTimeoutMillis = joinTimeoutMillis,
+            stopGraceSeconds = stopGraceSeconds,
+        ),
+        shellCommandBuilder = shellCommandBuilder,
+    )
 
     fun isRunning(command: String): Boolean {
-        val running = runningCommands[command] ?: return false
-        if (running.handle.process.isAlive) {
-            return true
-        }
-        runningCommands.remove(command, running)
-        return false
+        return processRuntime.isRunning(command)
     }
 
     fun execute(
         command: String,
         onStarted: (() -> Unit)? = null,
     ): ImprovedChatPanelWorkflowCommandRunOutcome {
-        val started = try {
-            start(command)
-        } catch (_: CommandAlreadyRunningException) {
-            return ImprovedChatPanelWorkflowCommandRunOutcome.AlreadyRunning
-        } catch (error: Exception) {
-            return ImprovedChatPanelWorkflowCommandRunOutcome.FailedToStart(
-                error.message ?: error::class.java.simpleName,
+        return when (
+            val outcome = processRuntime.execute(
+                commandKey = command,
+                launchCommand = shellCommandBuilder(command),
+                workingDirectory = workingDirectory,
+                timeoutSeconds = timeoutSeconds,
+                onStarted = onStarted,
             )
+        ) {
+            WorkflowCommandProcessRunResult.AlreadyRunning ->
+                ImprovedChatPanelWorkflowCommandRunOutcome.AlreadyRunning
+            is WorkflowCommandProcessRunResult.FailedToStart ->
+                ImprovedChatPanelWorkflowCommandRunOutcome.FailedToStart(outcome.errorMessage)
+            is WorkflowCommandProcessRunResult.Completed ->
+                ImprovedChatPanelWorkflowCommandRunOutcome.Completed(
+                    ImprovedChatPanelWorkflowCommandExecutionResult(
+                        success = !outcome.result.timedOut &&
+                            !outcome.result.stoppedByUser &&
+                            outcome.result.exitCode == 0,
+                        exitCode = outcome.result.exitCode,
+                        output = outcome.result.output,
+                        timedOut = outcome.result.timedOut,
+                        stoppedByUser = outcome.result.stoppedByUser,
+                        outputTruncated = outcome.result.outputTruncated,
+                    ),
+                )
         }
-        onStarted?.invoke()
-        val completion = started.handle.awaitCompletion(
-            timeout = timeoutSeconds,
-            timeoutUnit = TimeUnit.SECONDS,
-            joinTimeoutMillis = joinTimeoutMillis,
-            timeoutDestroyWait = TIMEOUT_DESTROY_WAIT_SECONDS,
-            timeoutDestroyWaitUnit = TimeUnit.SECONDS,
-        )
-        runningCommands.remove(command, started)
-        return ImprovedChatPanelWorkflowCommandRunOutcome.Completed(
-            ImprovedChatPanelWorkflowCommandExecutionResult(
-                success = !completion.timedOut && !completion.stoppedByUser && completion.exitCode == 0,
-                exitCode = completion.exitCode,
-                output = completion.output,
-                timedOut = completion.timedOut,
-                stoppedByUser = completion.stoppedByUser,
-                outputTruncated = completion.outputTruncated,
-            ),
-        )
     }
 
     fun stop(command: String): ImprovedChatPanelWorkflowCommandStopOutcome {
-        val running = runningCommands[command] ?: return ImprovedChatPanelWorkflowCommandStopOutcome.NotRunning
-        if (!running.handle.process.isAlive) {
-            runningCommands.remove(command, running)
-            return ImprovedChatPanelWorkflowCommandStopOutcome.NotRunning
-        }
-        if (!running.handle.stopRequested.compareAndSet(false, true)) {
-            return ImprovedChatPanelWorkflowCommandStopOutcome.AlreadyStopping
-        }
-        return runCatching {
-            running.handle.destroy(stopGraceSeconds, TimeUnit.SECONDS)
-            ImprovedChatPanelWorkflowCommandStopOutcome.Stopping
-        }.getOrElse { error ->
-            ImprovedChatPanelWorkflowCommandStopOutcome.Failed(error)
+        return when (val outcome = processRuntime.stop(command)) {
+            WorkflowCommandProcessStopResult.AlreadyStopping ->
+                ImprovedChatPanelWorkflowCommandStopOutcome.AlreadyStopping
+            is WorkflowCommandProcessStopResult.Failed ->
+                ImprovedChatPanelWorkflowCommandStopOutcome.Failed(outcome.error)
+            WorkflowCommandProcessStopResult.NotRunning ->
+                ImprovedChatPanelWorkflowCommandStopOutcome.NotRunning
+            WorkflowCommandProcessStopResult.Stopping ->
+                ImprovedChatPanelWorkflowCommandStopOutcome.Stopping
         }
     }
 
     fun dispose() {
-        runningCommands.values.forEach { running ->
-            runCatching {
-                running.handle.dispose()
-            }
-        }
-        runningCommands.clear()
+        processRuntime.dispose()
     }
-
-    private fun start(command: String): RunningWorkflowCommand {
-        val process = processStarter(shellCommandBuilder(command), workingDirectory)
-        val handle = ManagedMergedOutputProcess.start(
-            process = process,
-            outputLimitChars = outputLimitChars,
-            threadName = "workflow-command-output-${command.hashCode()}",
-            stopRequested = AtomicBoolean(false),
-        )
-        val running = RunningWorkflowCommand(
-            command = command,
-            handle = handle,
-        )
-        val previous = runningCommands.putIfAbsent(command, running)
-        if (previous != null && previous.handle.process.isAlive) {
-            process.destroyForcibly()
-            throw CommandAlreadyRunningException()
-        }
-        if (previous != null && !previous.handle.process.isAlive) {
-            runningCommands[command] = running
-        }
-        return running
-    }
-
-    private data class RunningWorkflowCommand(
-        val command: String,
-        val handle: ManagedMergedOutputProcess,
-    )
-
-    private class CommandAlreadyRunningException : IllegalStateException("Command already running")
 
     companion object {
         const val DEFAULT_TIMEOUT_SECONDS = 1800L
@@ -166,6 +132,27 @@ internal class ImprovedChatPanelWorkflowCommandRunner(
         private const val DEFAULT_JOIN_TIMEOUT_MILLIS = 2000L
         private const val DEFAULT_STOP_GRACE_SECONDS = 3L
         private const val TIMEOUT_DESTROY_WAIT_SECONDS = 2L
+
+        private fun createProcessRuntime(
+            processStarter: ((List<String>, File?) -> Process)?,
+            outputLimitChars: Int,
+            joinTimeoutMillis: Long,
+            stopGraceSeconds: Long,
+        ): WorkflowCommandProcessRuntime {
+            val delegate = processStarter ?: return WorkflowCommandProcessRuntime(
+                outputLimitChars = outputLimitChars,
+                outputJoinTimeoutMillis = joinTimeoutMillis,
+                stopGraceSeconds = stopGraceSeconds,
+                forceDestroyWaitSeconds = TIMEOUT_DESTROY_WAIT_SECONDS,
+            )
+            return WorkflowCommandProcessRuntime(
+                processStarter = { directory, command -> delegate(command, directory) },
+                outputLimitChars = outputLimitChars,
+                outputJoinTimeoutMillis = joinTimeoutMillis,
+                stopGraceSeconds = stopGraceSeconds,
+                forceDestroyWaitSeconds = TIMEOUT_DESTROY_WAIT_SECONDS,
+            )
+        }
 
         private fun buildShellCommand(command: String): List<String> {
             return if (System.getProperty("os.name").lowercase(Locale.ROOT).contains("win")) {
