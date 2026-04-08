@@ -46,4 +46,8 @@ data class ContextConfig(
     val includeImportDependencies: Boolean = false,
     val includeProjectStructure: Boolean = false,
     val preferGraphRelatedContext: Boolean = true,
+    val maxFileItems: Int = 10,
+    val maxSymbolItems: Int = 24,
+    val maxContentBytes: Int = 48_000,
+    val maxCollectionTimeMs: Long = 250,
 )

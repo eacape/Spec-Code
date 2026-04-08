@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import java.util.ArrayDeque
 
 class ContextCollectorTest {
 
@@ -140,7 +141,10 @@ class ContextCollectorTest {
         every { EditorContextProvider.getContainingScopeContext(project) } returns null
         every { EditorContextProvider.getCurrentFileContext(project) } returns null
 
-        val collector = ContextCollector(project) { Result.success(codeGraphSnapshot()) }
+        val collector = ContextCollector(
+            project = project,
+            codeGraphSnapshotProvider = { Result.success(codeGraphSnapshot()) },
+        )
         val unrelated = ContextItem(
             type = ContextType.REFERENCED_FILE,
             label = "Other.kt",
@@ -179,7 +183,10 @@ class ContextCollectorTest {
         every { EditorContextProvider.getContainingScopeContext(project) } returns null
         every { EditorContextProvider.getCurrentFileContext(project) } returns null
 
-        val collector = ContextCollector(project) { Result.success(codeGraphSnapshot()) }
+        val collector = ContextCollector(
+            project = project,
+            codeGraphSnapshotProvider = { Result.success(codeGraphSnapshot()) },
+        )
         val unrelated = ContextItem(
             type = ContextType.REFERENCED_FILE,
             label = "Other.kt",
@@ -212,20 +219,240 @@ class ContextCollectorTest {
         assertEquals("Other.kt", snapshot.items.first().label)
     }
 
+    @Test
+    fun `collectForItems should enforce layered file symbol and byte budgets`() {
+        every { EditorContextProvider.getSelectedCodeContext(project) } returns null
+        every { EditorContextProvider.getContainingScopeContext(project) } returns null
+        every { EditorContextProvider.getCurrentFileContext(project) } returns null
+
+        val collector = ContextCollector(project)
+        val oversizedFile = ContextItem(
+            type = ContextType.REFERENCED_FILE,
+            label = "Oversized.kt",
+            content = "x".repeat(96),
+            filePath = "/repo/src/Oversized.kt",
+            priority = 100,
+            tokenEstimate = 24,
+        )
+        val acceptedFile = ContextItem(
+            type = ContextType.REFERENCED_FILE,
+            label = "Accepted.kt",
+            content = "x".repeat(24),
+            filePath = "/repo/src/Accepted.kt",
+            priority = 90,
+            tokenEstimate = 6,
+        )
+        val acceptedSymbol = ContextItem(
+            type = ContextType.REFERENCED_SYMBOL,
+            label = "run",
+            content = "x".repeat(20),
+            priority = 80,
+            tokenEstimate = 5,
+        )
+        val skippedSymbol = ContextItem(
+            type = ContextType.REFERENCED_SYMBOL,
+            label = "render",
+            content = "x".repeat(12),
+            priority = 70,
+            tokenEstimate = 3,
+        )
+
+        val snapshot = collector.collectForItems(
+            explicitItems = listOf(oversizedFile, acceptedFile, acceptedSymbol, skippedSymbol),
+            config = ContextConfig(
+                tokenBudget = 200,
+                includeSelectedCode = false,
+                includeContainingScope = false,
+                includeCurrentFile = false,
+                preferGraphRelatedContext = false,
+                maxFileItems = 1,
+                maxSymbolItems = 1,
+                maxContentBytes = 80,
+                maxCollectionTimeMs = 1_000,
+            ),
+        )
+
+        assertEquals(listOf("Accepted.kt", "run"), snapshot.items.map { it.label })
+        assertEquals(11, snapshot.totalTokenEstimate)
+    }
+
+    @Test
+    fun `collectForItems should skip project structure when explicit files already exhaust file budget`() {
+        every { EditorContextProvider.getSelectedCodeContext(project) } returns null
+        every { EditorContextProvider.getContainingScopeContext(project) } returns null
+        every { EditorContextProvider.getCurrentFileContext(project) } returns null
+
+        var projectStructureCalls = 0
+        val collector = ContextCollector(
+            project = project,
+            codeGraphSnapshotProvider = { Result.success(codeGraphSnapshot()) },
+            projectStructureProvider = {
+                projectStructureCalls += 1
+                Result.success(
+                    makeItem(
+                        type = ContextType.PROJECT_STRUCTURE,
+                        label = "Project Structure",
+                        priority = 30,
+                        filePath = "/repo",
+                    ),
+                )
+            },
+        )
+        val explicitFile = ContextItem(
+            type = ContextType.REFERENCED_FILE,
+            label = "Explicit.kt",
+            content = "x".repeat(24),
+            filePath = "/repo/src/Explicit.kt",
+            priority = 95,
+            tokenEstimate = 6,
+        )
+
+        val snapshot = collector.collectForItems(
+            explicitItems = listOf(explicitFile),
+            config = ContextConfig(
+                tokenBudget = 200,
+                includeSelectedCode = false,
+                includeContainingScope = false,
+                includeCurrentFile = false,
+                includeProjectStructure = true,
+                preferGraphRelatedContext = false,
+                maxFileItems = 1,
+                maxCollectionTimeMs = 1_000,
+            ),
+        )
+
+        assertEquals(0, projectStructureCalls)
+        assertEquals(listOf("Explicit.kt"), snapshot.items.map { it.label })
+    }
+
+    @Test
+    fun `collectContext should skip optional providers when time budget is already exhausted`() {
+        every { EditorContextProvider.getSelectedCodeContext(project) } returns null
+        every { EditorContextProvider.getContainingScopeContext(project) } returns null
+        every { EditorContextProvider.getCurrentFileContext(project) } returns null
+
+        var relatedFilesCalls = 0
+        var projectStructureCalls = 0
+        val collector = ContextCollector(
+            project = project,
+            relatedFilesProvider = {
+                relatedFilesCalls += 1
+                Result.success(
+                    listOf(
+                        makeItem(
+                            type = ContextType.IMPORT_DEPENDENCY,
+                            label = "Dependency.kt",
+                            priority = 40,
+                            filePath = "/repo/src/Dependency.kt",
+                        ),
+                    ),
+                )
+            },
+            projectStructureProvider = {
+                projectStructureCalls += 1
+                Result.success(
+                    makeItem(
+                        type = ContextType.PROJECT_STRUCTURE,
+                        label = "Project Structure",
+                        priority = 30,
+                        filePath = "/repo",
+                    ),
+                )
+            },
+            nanoTimeProvider = sequenceNanoTimeProvider(
+                0L,
+                300_000_000L,
+                300_000_000L,
+                300_000_000L,
+            ),
+        )
+
+        val snapshot = collector.collectContext(
+            ContextConfig(
+                tokenBudget = 200,
+                includeSelectedCode = false,
+                includeContainingScope = false,
+                includeCurrentFile = false,
+                includeImportDependencies = true,
+                includeProjectStructure = true,
+                preferGraphRelatedContext = false,
+                maxCollectionTimeMs = 200,
+            ),
+        )
+
+        assertTrue(snapshot.items.isEmpty())
+        assertEquals(0, relatedFilesCalls)
+        assertEquals(0, projectStructureCalls)
+    }
+
+    @Test
+    fun `collectContext should not build graph when there are no graph eligible items`() {
+        every { EditorContextProvider.getSelectedCodeContext(project) } returns makeItem(
+            type = ContextType.SELECTED_CODE,
+            label = "selection",
+            priority = 90,
+        )
+        every { EditorContextProvider.getContainingScopeContext(project) } returns makeItem(
+            type = ContextType.CONTAINING_SCOPE,
+            label = "scope",
+            priority = 80,
+        )
+        every { EditorContextProvider.getCurrentFileContext(project) } returns makeItem(
+            type = ContextType.CURRENT_FILE,
+            label = "file",
+            priority = 70,
+        )
+
+        var graphBuildCalls = 0
+        val collector = ContextCollector(
+            project = project,
+            codeGraphSnapshotProvider = {
+                graphBuildCalls += 1
+                Result.success(codeGraphSnapshot())
+            },
+        )
+
+        val snapshot = collector.collectContext(
+            ContextConfig(
+                tokenBudget = 200,
+                includeSelectedCode = true,
+                includeContainingScope = true,
+                includeCurrentFile = true,
+                preferGraphRelatedContext = true,
+            ),
+        )
+
+        assertEquals(0, graphBuildCalls)
+        assertEquals(listOf("selection", "scope", "file"), snapshot.items.map { it.label })
+    }
+
     private fun makeItem(
         type: ContextType,
         label: String,
         priority: Int,
         tokenEstimate: Int = 25,
+        filePath: String = "/tmp/$label",
     ): ContextItem {
         return ContextItem(
             type = type,
             label = label,
             content = "x".repeat(tokenEstimate * 4),
-            filePath = "/tmp/$label",
+            filePath = filePath,
             priority = priority,
             tokenEstimate = tokenEstimate,
         )
+    }
+
+    private fun sequenceNanoTimeProvider(vararg values: Long): () -> Long {
+        val queue = ArrayDeque(values.toList())
+        val lastValue = values.lastOrNull() ?: 0L
+        return {
+            if (queue.isEmpty()) {
+                lastValue
+            } else {
+                queue.removeFirst()
+            }
+        }
     }
 
     private fun codeGraphSnapshot(): CodeGraphSnapshot {

@@ -52,6 +52,73 @@ internal data class ProjectStructureCacheStats(
     }
 }
 
+internal data class CodeGraphCacheStats(
+    val hitCount: Long,
+    val missCount: Long,
+    val lastInvalidationReason: String,
+) {
+    val totalRequests: Long
+        get() = hitCount + missCount
+
+    fun hitRatePercent(): Int {
+        if (totalRequests <= 0L) {
+            return 0
+        }
+        return ((hitCount.toDouble() / totalRequests.toDouble()) * 100.0).roundToInt()
+    }
+
+    fun shouldEmitPeriodicHitLog(
+        logEveryHits: Long = ContextTelemetryThresholds.CACHE_HIT_LOG_INTERVAL,
+    ): Boolean {
+        return hitCount > 0L && logEveryHits > 0L && hitCount % logEveryHits == 0L
+    }
+
+    fun summary(): String {
+        return "cacheHits=$hitCount, cacheMisses=$missCount, hitRate=${hitRatePercent()}%, lastInvalidation=$lastInvalidationReason"
+    }
+}
+
+internal data class ContextCollectionTelemetry(
+    val operationKey: String,
+    val elapsedMs: Long,
+    val candidateItemCount: Int,
+    val budgetAcceptedItemCount: Int,
+    val finalItemCount: Int,
+    val budgetStats: ContextCollectionBudgetStats,
+    val tokenEstimate: Int,
+    val tokenBudget: Int,
+    val maxFileItems: Int,
+    val maxSymbolItems: Int,
+    val maxContentBytes: Int,
+    val maxCollectionTimeMs: Long,
+    val wasTokenTrimmed: Boolean,
+    val budgetDropSummary: String,
+    val skippedStages: List<String>,
+) {
+    fun summary(): String {
+        val stageSummary = if (skippedStages.isEmpty()) {
+            "none"
+        } else {
+            skippedStages.joinToString(separator = "|")
+        }
+        return buildString {
+            append("operation=").append(operationKey)
+            append(", elapsedMs=").append(elapsedMs).append("/").append(maxCollectionTimeMs)
+            append(", candidateItems=").append(candidateItemCount)
+            append(", budgetAcceptedItems=").append(budgetAcceptedItemCount)
+            append(", finalItems=").append(finalItemCount)
+            append(", ").append(budgetStats.summary())
+            append("/limits(files=").append(maxFileItems)
+            append(", symbols=").append(maxSymbolItems)
+            append(", bytes=").append(maxContentBytes).append(")")
+            append(", tokens=").append(tokenEstimate).append("/").append(tokenBudget)
+            append(", tokenTrimmed=").append(wasTokenTrimmed)
+            append(", budgetDrops=").append(budgetDropSummary)
+            append(", skippedStages=").append(stageSummary)
+        }
+    }
+}
+
 internal data class CodeGraphBuildTelemetry(
     val rootFilePath: String?,
     val rootFileName: String?,

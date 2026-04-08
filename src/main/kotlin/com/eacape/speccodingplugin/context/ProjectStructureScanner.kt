@@ -2,19 +2,36 @@ package com.eacape.speccodingplugin.context
 
 import com.eacape.speccodingplugin.telemetry.SlowPathBaselineSample
 import com.eacape.speccodingplugin.telemetry.emitSlowPathBaseline
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.openapi.vfs.newvfs.BulkFileListener
+import com.intellij.openapi.vfs.newvfs.events.VFileCopyEvent
+import com.intellij.openapi.vfs.newvfs.events.VFileCreateEvent
+import com.intellij.openapi.vfs.newvfs.events.VFileDeleteEvent
+import com.intellij.openapi.vfs.newvfs.events.VFileEvent
+import com.intellij.openapi.vfs.newvfs.events.VFileMoveEvent
+import com.intellij.openapi.vfs.newvfs.events.VFilePropertyChangeEvent
+import java.nio.file.InvalidPathException
+import java.nio.file.Path
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 @Service(Service.Level.PROJECT)
-class ProjectStructureScanner(private val project: Project) {
+class ProjectStructureScanner(private val project: Project) : Disposable {
     private val logger = thisLogger()
+    private val projectRootPath: Path? = runCatching {
+        project.basePath
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?.let { Path.of(it).toAbsolutePath().normalize() }
+    }.getOrNull()
 
-    @Volatile
-    private var cachedTree: String? = null
+    private val cachedTreesByDepth = ConcurrentHashMap<Int, String>()
 
     @Volatile
     private var lastInvalidationReason: String = "cold-start"
@@ -28,8 +45,12 @@ class ProjectStructureScanner(private val project: Project) {
         var truncatedDirectoryCount: Int = 0,
     )
 
+    init {
+        subscribeToProjectStructureChanges()
+    }
+
     fun getProjectTree(maxDepth: Int = 4): String {
-        cachedTree?.let { cached ->
+        cachedTreesByDepth[maxDepth]?.let { cached ->
             val hitCount = cacheHitCount.incrementAndGet()
             val cacheStats = currentCacheStats(hitCount = hitCount)
             if (cacheStats.shouldEmitPeriodicHitLog()) {
@@ -52,7 +73,7 @@ class ProjectStructureScanner(private val project: Project) {
         buildTree(baseDir, sb, "", maxDepth, 0, stats)
 
         val result = sb.toString().trimEnd()
-        cachedTree = result
+        cachedTreesByDepth[maxDepth] = result
         logTreeBuild(
             baseDir = baseDir,
             maxDepth = maxDepth,
@@ -105,13 +126,15 @@ class ProjectStructureScanner(private val project: Project) {
     }
 
     fun invalidateCache(reason: String = "manual") {
-        val hadCache = cachedTree != null
-        cachedTree = null
+        val hadCache = cachedTreesByDepth.isNotEmpty()
+        cachedTreesByDepth.clear()
         lastInvalidationReason = reason
         logger.info(
             "ProjectStructureScanner cache invalidated: reason=$reason, hadCache=$hadCache, ${currentCacheStats().summary()}",
         )
     }
+
+    override fun dispose() = Unit
 
     private fun buildTree(
         dir: VirtualFile,
@@ -201,6 +224,94 @@ class ProjectStructureScanner(private val project: Project) {
 
     private fun isIgnored(name: String): Boolean {
         return name in IGNORED_NAMES
+    }
+
+    private fun subscribeToProjectStructureChanges() {
+        if (projectRootPath == null) {
+            return
+        }
+        project.messageBus.connect(this).subscribe(
+            VirtualFileManager.VFS_CHANGES,
+            object : BulkFileListener {
+                override fun after(events: List<VFileEvent>) {
+                    val reason = firstRelevantStructureChangeReason(events) ?: return
+                    invalidateCache(reason = reason)
+                }
+            },
+        )
+    }
+
+    private fun firstRelevantStructureChangeReason(events: List<VFileEvent>): String? {
+        val root = projectRootPath ?: return null
+        return events.asSequence()
+            .mapNotNull { event -> structureChangeReason(event, root) }
+            .firstOrNull()
+    }
+
+    private fun structureChangeReason(event: VFileEvent, root: Path): String? {
+        val reasonPrefix = when (event) {
+            is VFileCreateEvent -> "vfs-create"
+            is VFileDeleteEvent -> "vfs-delete"
+            is VFileMoveEvent -> "vfs-move"
+            is VFileCopyEvent -> "vfs-copy"
+            is VFilePropertyChangeEvent -> {
+                if (event.isRename) {
+                    "vfs-rename"
+                } else {
+                    null
+                }
+            }
+            else -> null
+        } ?: return null
+
+        val affectedRelativePath = affectedPathsForEvent(event)
+            .asSequence()
+            .mapNotNull { candidatePath -> relativePathWithinProject(candidatePath, root) }
+            .firstOrNull { relativePath -> !isIgnoredPath(relativePath) }
+            ?: return null
+
+        return "$reasonPrefix:$affectedRelativePath"
+    }
+
+    private fun affectedPathsForEvent(event: VFileEvent): List<String> {
+        return when (event) {
+            is VFileMoveEvent -> listOf(event.oldPath, event.newPath)
+            is VFilePropertyChangeEvent -> listOf(event.oldPath, event.newPath)
+            else -> listOf(event.path)
+        }
+    }
+
+    private fun relativePathWithinProject(rawPath: String, root: Path): String? {
+        val trimmed = rawPath.trim()
+        if (trimmed.isEmpty()) {
+            return null
+        }
+
+        val resolved = try {
+            Path.of(trimmed).toAbsolutePath().normalize()
+        } catch (_: InvalidPathException) {
+            return null
+        }
+
+        if (!resolved.startsWith(root)) {
+            return null
+        }
+
+        val relativePath = root.relativize(resolved)
+            .joinToString(separator = "/") { segment -> segment.toString() }
+            .trim()
+        if (relativePath.isEmpty() || relativePath == ".") {
+            return null
+        }
+        return relativePath
+    }
+
+    private fun isIgnoredPath(relativePath: String): Boolean {
+        return relativePath
+            .replace('\\', '/')
+            .split('/')
+            .filter(String::isNotBlank)
+            .any(::isIgnored)
     }
 
     companion object {
