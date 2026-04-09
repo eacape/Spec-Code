@@ -78,3 +78,4 @@ logs/
 /.gradle-beta-entry-verify/
 /.gradle-spec-detail-verify/
 /.gradle-*/
+/.codex-validation-*/

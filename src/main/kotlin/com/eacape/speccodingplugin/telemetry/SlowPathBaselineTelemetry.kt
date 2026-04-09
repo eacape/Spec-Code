@@ -98,6 +98,15 @@ internal class SlowPathBaselineTracker(
             return null
         }
 
+        return snapshot()
+    }
+
+    @Synchronized
+    fun snapshot(): SlowPathBaselineSummary? {
+        if (samplesByOperation.isEmpty()) {
+            return null
+        }
+
         val topOperations = samplesByOperation.entries
             .map { (operation, samples) -> buildOperationBaseline(operation, samples) }
             .sortedWith(
@@ -114,6 +123,12 @@ internal class SlowPathBaselineTracker(
             trackedOperations = samplesByOperation.size,
             topOperations = topOperations,
         )
+    }
+
+    @Synchronized
+    fun clear() {
+        samplesByOperation.clear()
+        totalSamples = 0L
     }
 
     private fun buildOperationBaseline(
@@ -142,6 +157,14 @@ internal object RuntimeSlowPathBaselineRegistry {
 
     fun record(sample: SlowPathBaselineSample): SlowPathBaselineSummary? {
         return tracker.record(sample)
+    }
+
+    fun snapshot(): SlowPathBaselineSummary? {
+        return tracker.snapshot()
+    }
+
+    fun resetForTest() {
+        tracker.clear()
     }
 }
 

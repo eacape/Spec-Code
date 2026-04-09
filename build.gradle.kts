@@ -145,7 +145,10 @@ val oversizedSourceScopes = listOf(
 val platformTestJvmArgs = listOf(
     "--add-exports=java.desktop/sun.awt=ALL-UNNAMED",
     "--add-opens=java.desktop/sun.awt=ALL-UNNAMED",
+    "--add-opens=java.desktop/java.awt=ALL-UNNAMED",
+    "--add-opens=java.desktop/javax.swing=ALL-UNNAMED",
     "--add-opens=java.base/java.lang=ALL-UNNAMED",
+    "--add-opens=java.base/java.nio=ALL-UNNAMED",
 )
 
 val frozenUiHotspotBudgets = listOf(
@@ -311,6 +314,12 @@ tasks {
         systemProperty("idea.plugins.path", sandboxRoot.get().dir("plugins").asFile.absolutePath)
         systemProperty("idea.log.path", sandboxRoot.get().dir("log").asFile.absolutePath)
         systemProperty("java.io.tmpdir", sandboxRoot.get().dir("tmp").asFile.absolutePath)
+
+        doFirst {
+            listOf("system", "config", "plugins", "log", "tmp").forEach { relativeDir ->
+                sandboxRoot.get().dir(relativeDir).asFile.mkdirs()
+            }
+        }
 
         include(classNames.map(::classNameToClassFilePattern))
     }

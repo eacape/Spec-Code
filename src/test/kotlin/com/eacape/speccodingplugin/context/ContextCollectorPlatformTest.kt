@@ -1,5 +1,6 @@
 package com.eacape.speccodingplugin.context
 
+import com.eacape.speccodingplugin.telemetry.RuntimeSlowPathBaselineRegistry
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
@@ -10,55 +11,69 @@ import com.intellij.util.ui.UIUtil
 class ContextCollectorPlatformTest : BasePlatformTestCase() {
 
     fun `test collectContext should capture cold and first warm baseline on a medium fixture`() {
-        val mainFile = createMediumFixture()
-        openInEditor(mainFile)
+        RuntimeSlowPathBaselineRegistry.resetForTest()
+        try {
+            val mainFile = createMediumFixture()
+            openInEditor(mainFile)
 
-        val capturedTelemetries = mutableListOf<ContextCollectionTelemetry>()
-        val collector = ContextCollector(
-            project = project,
-            telemetryConsumer = capturedTelemetries::add,
-        )
-        val config = ContextConfig(
-            tokenBudget = 24_000,
-            includeSelectedCode = false,
-            includeContainingScope = false,
-            includeCurrentFile = true,
-            includeImportDependencies = true,
-            includeProjectStructure = true,
-            preferGraphRelatedContext = true,
-            maxFileItems = 96,
-            maxSymbolItems = 96,
-            maxContentBytes = 240_000,
-            maxCollectionTimeMs = 2_000,
-        )
+            val capturedTelemetries = mutableListOf<ContextCollectionTelemetry>()
+            val collector = ContextCollector(
+                project = project,
+                telemetryConsumer = capturedTelemetries::add,
+            )
+            val config = ContextConfig(
+                tokenBudget = 24_000,
+                includeSelectedCode = false,
+                includeContainingScope = false,
+                includeCurrentFile = true,
+                includeImportDependencies = true,
+                includeProjectStructure = true,
+                preferGraphRelatedContext = true,
+                maxFileItems = 96,
+                maxSymbolItems = 96,
+                maxContentBytes = 240_000,
+                maxCollectionTimeMs = 2_000,
+            )
 
-        repeat(3) {
-            collector.collectContext(config)
+            repeat(3) {
+                collector.collectContext(config)
+            }
+
+            val coldRun = capturedTelemetries[0]
+            val firstWarmRun = capturedTelemetries[1]
+            val secondWarmRun = capturedTelemetries[2]
+
+            assertEquals("cold", coldRun.baselineComparison?.phase)
+            assertEquals("warm", firstWarmRun.baselineComparison?.phase)
+            assertEquals("warm", secondWarmRun.baselineComparison?.phase)
+
+            assertStageOutcome(coldRun, stage = "codeGraph", expectedOutcome = "miss")
+            assertStageOutcome(coldRun, stage = "relatedFiles", expectedOutcome = "miss")
+            assertStageOutcome(coldRun, stage = "projectStructure", expectedOutcome = "miss")
+
+            assertStageOutcome(firstWarmRun, stage = "codeGraph", expectedOutcome = "hit")
+            assertStageOutcome(firstWarmRun, stage = "relatedFiles", expectedOutcome = "hit")
+            assertStageOutcome(firstWarmRun, stage = "projectStructure", expectedOutcome = "hit")
+
+            assertTrue(firstWarmRun.baselineComparison?.firstWarmAfterCold == true)
+            assertTrue(firstWarmRun.baselineComparison?.hasComparableBaseline() == true)
+            assertTrue(firstWarmRun.baselineComparison?.hasImprovement() == true)
+            assertTrue(shouldEmitContextTelemetryInfo(firstWarmRun))
+
+            assertTrue(secondWarmRun.baselineComparison?.firstWarmAfterCold == false)
+            assertFalse(shouldEmitContextTelemetryInfo(secondWarmRun))
+
+            val runtimeBaseline = RuntimeSlowPathBaselineRegistry.snapshot()
+            assertNotNull(runtimeBaseline)
+            assertEquals(3L, runtimeBaseline?.totalSamples)
+            assertEquals(1, runtimeBaseline?.trackedOperations)
+            val collectContextBaseline = runtimeBaseline?.topOperations?.singleOrNull()
+            assertNotNull(collectContextBaseline)
+            assertEquals("ContextCollector.collectContext", collectContextBaseline?.operationKey)
+            assertEquals(3, collectContextBaseline?.sampleCount)
+        } finally {
+            RuntimeSlowPathBaselineRegistry.resetForTest()
         }
-
-        val coldRun = capturedTelemetries[0]
-        val firstWarmRun = capturedTelemetries[1]
-        val secondWarmRun = capturedTelemetries[2]
-
-        assertEquals("cold", coldRun.baselineComparison?.phase)
-        assertEquals("warm", firstWarmRun.baselineComparison?.phase)
-        assertEquals("warm", secondWarmRun.baselineComparison?.phase)
-
-        assertStageOutcome(coldRun, stage = "codeGraph", expectedOutcome = "miss")
-        assertStageOutcome(coldRun, stage = "relatedFiles", expectedOutcome = "miss")
-        assertStageOutcome(coldRun, stage = "projectStructure", expectedOutcome = "miss")
-
-        assertStageOutcome(firstWarmRun, stage = "codeGraph", expectedOutcome = "hit")
-        assertStageOutcome(firstWarmRun, stage = "relatedFiles", expectedOutcome = "hit")
-        assertStageOutcome(firstWarmRun, stage = "projectStructure", expectedOutcome = "hit")
-
-        assertTrue(firstWarmRun.baselineComparison?.firstWarmAfterCold == true)
-        assertTrue(firstWarmRun.baselineComparison?.hasComparableBaseline() == true)
-        assertTrue(firstWarmRun.baselineComparison?.hasImprovement() == true)
-        assertTrue(shouldEmitContextTelemetryInfo(firstWarmRun))
-
-        assertTrue(secondWarmRun.baselineComparison?.firstWarmAfterCold == false)
-        assertFalse(shouldEmitContextTelemetryInfo(secondWarmRun))
     }
 
     private fun assertStageOutcome(

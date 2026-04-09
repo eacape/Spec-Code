@@ -44,8 +44,11 @@ class ContextCollector(private val project: Project) {
         this.projectStructureCacheStatsProvider = projectStructureCacheStatsProvider
         this.nanoTimeProvider = nanoTimeProvider
         this.baselineTracker = baselineTracker
-        telemetryConsumer?.let {
-            this.telemetryConsumer = it
+        telemetryConsumer?.let { customConsumer ->
+            this.telemetryConsumer = { telemetry ->
+                logCollectionTelemetry(telemetry)
+                customConsumer(telemetry)
+            }
         }
     }
 

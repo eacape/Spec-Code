@@ -1030,25 +1030,25 @@ class SpecWorkflowPanel(
         )
     }
 
-    private fun workspaceChipColors(tone: WorkspaceChipTone): WorkspaceChipColors {
+    private fun workspaceChipColors(tone: SpecWorkflowWorkspaceChipTone): WorkspaceChipColors {
         return when (tone) {
-            WorkspaceChipTone.INFO -> WorkspaceChipColors(
+            SpecWorkflowWorkspaceChipTone.INFO -> WorkspaceChipColors(
                 foreground = WORKSPACE_INFO_CHIP_FG,
             )
 
-            WorkspaceChipTone.SUCCESS -> WorkspaceChipColors(
+            SpecWorkflowWorkspaceChipTone.SUCCESS -> WorkspaceChipColors(
                 foreground = WORKSPACE_SUCCESS_CHIP_FG,
             )
 
-            WorkspaceChipTone.WARNING -> WorkspaceChipColors(
+            SpecWorkflowWorkspaceChipTone.WARNING -> WorkspaceChipColors(
                 foreground = WORKSPACE_WARNING_CHIP_FG,
             )
 
-            WorkspaceChipTone.ERROR -> WorkspaceChipColors(
+            SpecWorkflowWorkspaceChipTone.ERROR -> WorkspaceChipColors(
                 foreground = WORKSPACE_ERROR_CHIP_FG,
             )
 
-            WorkspaceChipTone.MUTED -> WorkspaceChipColors(
+            SpecWorkflowWorkspaceChipTone.MUTED -> WorkspaceChipColors(
                 foreground = WORKSPACE_MUTED_CHIP_FG,
             )
         }
@@ -2019,84 +2019,31 @@ class SpecWorkflowPanel(
             state = overviewState,
             workbenchState = workbenchState,
         )
-        workspaceSummaryTitleLabel.text = workflow.title.ifBlank { workflow.id }
-        val nextStageText = overviewState.nextStage
-            ?.let(SpecWorkflowOverviewPresenter::stageLabel)
-            ?: SpecCodingBundle.message("spec.toolwindow.overview.nextStage.none")
-        workspaceSummaryMetaLabel.text = buildString {
-            append(SpecCodingBundle.message("spec.toolwindow.overview.secondary.workflow"))
-            append(": ")
-            append(workflow.id)
-            append(" | ")
-            append(SpecCodingBundle.message("spec.toolwindow.overview.secondary.template"))
-            append(": ")
-            append(SpecWorkflowOverviewPresenter.templateLabel(workflow.template))
-            append(" | ")
-            append(SpecCodingBundle.message("spec.toolwindow.overview.secondary.next"))
-            append(": ")
-            append(nextStageText)
-        }
-        workspaceSummaryFocusLabel.text = guidance.headline
-        workspaceSummaryHintLabel.text = guidance.summary
+        val summaryPresentation = SpecWorkflowWorkspaceSummaryPresenter.build(
+            workflow = workflow,
+            overviewState = overviewState,
+            workbenchState = workbenchState,
+            guidance = guidance,
+            tasks = tasks,
+            verifyDeltaState = verifyDeltaState,
+            gateResult = gateResult,
+        )
+        workspaceSummaryTitleLabel.text = summaryPresentation.title
+        workspaceSummaryMetaLabel.text = summaryPresentation.meta
+        workspaceSummaryFocusLabel.text = summaryPresentation.focusTitle
+        workspaceSummaryHintLabel.text = summaryPresentation.focusSummary
 
-        updateWorkspaceMetric(
-            metric = workspaceStageMetric,
-            title = if (workbenchState.focusedStage == workbenchState.currentStage) {
-                SpecCodingBundle.message("spec.toolwindow.overview.currentStage")
-            } else {
-                SpecCodingBundle.message("spec.toolwindow.overview.secondary.focus")
-            },
-            value = buildStageChipText(workbenchState),
-            tone = when (workflow.status) {
-                WorkflowStatus.COMPLETED -> WorkspaceChipTone.SUCCESS
-                WorkflowStatus.PAUSED -> WorkspaceChipTone.WARNING
-                WorkflowStatus.FAILED -> WorkspaceChipTone.ERROR
-                WorkflowStatus.IN_PROGRESS -> WorkspaceChipTone.INFO
-            },
-        )
-        updateWorkspaceMetric(
-            metric = workspaceGateMetric,
-            title = SpecCodingBundle.message("spec.toolwindow.section.gate"),
-            value = buildGateChipText(gateResult),
-            tone = when (gateResult?.status) {
-                GateStatus.ERROR -> WorkspaceChipTone.ERROR
-                GateStatus.WARNING -> WorkspaceChipTone.WARNING
-                GateStatus.PASS -> WorkspaceChipTone.SUCCESS
-                null -> WorkspaceChipTone.MUTED
-            },
-        )
-        updateWorkspaceMetric(
-            metric = workspaceTasksMetric,
-            title = SpecCodingBundle.message("spec.toolwindow.tasks.title"),
-            value = buildTasksChipText(tasks),
-            tone = when {
-                tasks.any { it.status == TaskStatus.BLOCKED } -> WorkspaceChipTone.WARNING
-                tasks.isNotEmpty() && tasks.all { it.status == TaskStatus.COMPLETED } -> WorkspaceChipTone.SUCCESS
-                else -> WorkspaceChipTone.INFO
-            },
-        )
+        updateWorkspaceMetric(metric = workspaceStageMetric, presentation = summaryPresentation.stageMetric)
+        updateWorkspaceMetric(metric = workspaceGateMetric, presentation = summaryPresentation.gateMetric)
+        updateWorkspaceMetric(metric = workspaceTasksMetric, presentation = summaryPresentation.tasksMetric)
         updateLiveProgressRefreshTimer(tasks, liveProgressByTaskId)
-        updateWorkspaceMetric(
-            metric = workspaceVerifyMetric,
-            title = SpecCodingBundle.message("spec.toolwindow.section.verify"),
-            value = buildVerifyChipText(verifyDeltaState),
-            tone = when (verifyDeltaState.verificationHistory.firstOrNull()?.conclusion) {
-                VerificationConclusion.FAIL -> WorkspaceChipTone.ERROR
-                VerificationConclusion.WARN -> WorkspaceChipTone.WARNING
-                VerificationConclusion.PASS -> WorkspaceChipTone.SUCCESS
-                null -> WorkspaceChipTone.MUTED
-            },
-        )
+        updateWorkspaceMetric(metric = workspaceVerifyMetric, presentation = summaryPresentation.verifyMetric)
 
-        overviewSection.setSummary(
-            buildOverviewSectionSummary(overviewState, workbenchState, nextStageText),
-        )
-        tasksSection.setSummary(buildTasksSectionSummary(tasks))
-        gateSection.setSummary(buildGateSectionSummary(gateResult))
-        verifySection.setSummary(buildVerifySectionSummary(verifyDeltaState))
-        documentsSection.setSummary(
-            buildDocumentsSectionSummary(workbenchState),
-        )
+        overviewSection.setSummary(summaryPresentation.sectionSummaries.overview)
+        tasksSection.setSummary(summaryPresentation.sectionSummaries.tasks)
+        gateSection.setSummary(summaryPresentation.sectionSummaries.gate)
+        verifySection.setSummary(summaryPresentation.sectionSummaries.verify)
+        documentsSection.setSummary(summaryPresentation.sectionSummaries.documents)
         detailPanel.updateWorkbenchState(
             state = workbenchState,
             syncSelection = previousWorkbenchState?.focusedStage != workbenchState.focusedStage ||
@@ -2175,117 +2122,6 @@ class SpecWorkflowPanel(
         )
     }
 
-    private fun buildStageChipText(workbenchState: SpecWorkflowStageWorkbenchState): String {
-        val stageLabel = SpecWorkflowOverviewPresenter.stageLabel(workbenchState.focusedStage)
-        val checksText = "${workbenchState.progress.completedCheckCount}/${workbenchState.progress.totalCheckCount}"
-        val progressText = "${workbenchState.progress.stepIndex}/${workbenchState.progress.totalSteps}"
-        val stageStatus = SpecWorkflowOverviewPresenter.progressLabel(workbenchState.progress.stageStatus)
-        return if (workbenchState.focusedStage == workbenchState.currentStage) {
-            "$stageLabel / $checksText / $progressText / $stageStatus"
-        } else {
-            "$stageLabel / $checksText / $progressText"
-        }
-    }
-
-    private fun buildGateChipText(gateResult: GateResult?): String {
-        return when (gateResult?.status) {
-            GateStatus.PASS -> SpecCodingBundle.message("spec.toolwindow.gate.status.pass")
-            GateStatus.WARNING -> SpecCodingBundle.message("spec.toolwindow.gate.status.warning")
-            GateStatus.ERROR -> SpecCodingBundle.message("spec.toolwindow.gate.status.error")
-            null -> SpecCodingBundle.message("spec.toolwindow.gate.status.unavailable")
-        }
-    }
-
-    private fun buildTasksChipText(tasks: List<StructuredTask>): String {
-        if (tasks.isEmpty()) {
-            return "0/0"
-        }
-        val completed = tasks.count { it.status == TaskStatus.COMPLETED }
-        return "$completed/${tasks.size}"
-    }
-
-    private fun buildOverviewSectionSummary(
-        overviewState: SpecWorkflowOverviewState,
-        workbenchState: SpecWorkflowStageWorkbenchState,
-        nextStageText: String,
-    ): String {
-        return buildString {
-            append(SpecWorkflowOverviewPresenter.stageLabel(workbenchState.focusedStage))
-            append(" | ")
-            append(workbenchState.progress.completedCheckCount)
-            append("/")
-            append(workbenchState.progress.totalCheckCount)
-            append(" ")
-            append(SpecCodingBundle.message("spec.toolwindow.overview.checks.short"))
-            append(" | ")
-            append(SpecCodingBundle.message("spec.toolwindow.overview.secondary.next"))
-            append(": ")
-            append(nextStageText)
-        }
-    }
-
-    private fun buildTasksSectionSummary(tasks: List<StructuredTask>): String {
-        if (tasks.isEmpty()) {
-            return SpecCodingBundle.message("spec.toolwindow.tasks.emptyForWorkflow")
-        }
-        val completed = tasks.count { it.status == TaskStatus.COMPLETED }
-        val blocked = tasks.count { it.status == TaskStatus.BLOCKED }
-        return SpecCodingBundle.message(
-            "spec.toolwindow.tasks.summary",
-            tasks.size,
-            completed,
-            blocked,
-        )
-    }
-
-    private fun buildGateSectionSummary(gateResult: GateResult?): String {
-        if (gateResult == null) {
-            return SpecCodingBundle.message("spec.toolwindow.gate.summary.none")
-        }
-        return SpecCodingBundle.message(
-            "spec.toolwindow.gate.summary",
-            gateResult.aggregation.errorCount,
-            gateResult.aggregation.warningCount,
-            gateResult.aggregation.totalViolationCount,
-        )
-    }
-
-    private fun buildVerifyChipText(state: SpecWorkflowVerifyDeltaState): String {
-        val runCount = state.verificationHistory.size
-        return "$runCount / ${verificationStatusText(state)}"
-    }
-
-    private fun buildVerifySectionSummary(state: SpecWorkflowVerifyDeltaState): String {
-        val latest = state.verificationHistory.firstOrNull()?.conclusion?.name
-            ?: SpecCodingBundle.message("spec.toolwindow.verifyDelta.status.pending")
-        return when {
-            !state.verifyEnabled -> SpecCodingBundle.message(
-                "spec.toolwindow.verifyDelta.summary.disabled",
-                state.baselineChoices.size,
-            )
-
-            state.verificationHistory.isEmpty() -> SpecCodingBundle.message(
-                "spec.toolwindow.verifyDelta.summary.noRuns",
-                state.baselineChoices.size,
-            )
-
-            else -> SpecCodingBundle.message(
-                "spec.toolwindow.verifyDelta.summary",
-                state.verificationHistory.size,
-                latest,
-                state.baselineChoices.size,
-            )
-        }
-    }
-
-    private fun buildDocumentsSectionSummary(workbenchState: SpecWorkflowStageWorkbenchState): String {
-        return buildString {
-            append(SpecWorkflowOverviewPresenter.stageLabel(workbenchState.focusedStage))
-            append(" | ")
-            append(workbenchState.artifactBinding.fileName ?: workbenchState.artifactBinding.title)
-        }
-    }
-
     private fun resolveWorkbenchState(
         workflow: SpecWorkflow,
         state: SpecWorkflowStageWorkbenchState,
@@ -2322,15 +2158,13 @@ class SpecWorkflowPanel(
 
     private fun updateWorkspaceMetric(
         metric: WorkspaceSummaryMetric,
-        title: String,
-        value: String,
-        tone: WorkspaceChipTone,
+        presentation: SpecWorkflowWorkspaceMetricPresentation,
     ) {
-        val colors = workspaceChipColors(tone)
-        metric.titleLabel.text = "$title:"
-        metric.valueLabel.text = value
+        val colors = workspaceChipColors(presentation.tone)
+        metric.titleLabel.text = "${presentation.title}:"
+        metric.valueLabel.text = presentation.value
         metric.valueLabel.foreground = colors.foreground
-        metric.root.isVisible = value.isNotBlank()
+        metric.root.isVisible = presentation.value.isNotBlank()
     }
 
     private fun clearWorkspaceMetric(metric: WorkspaceSummaryMetric) {
@@ -2344,27 +2178,6 @@ class SpecWorkflowPanel(
             SpecPhase.SPECIFY -> SpecCodingBundle.message("spec.detail.step.requirements")
             SpecPhase.DESIGN -> SpecCodingBundle.message("spec.detail.step.design")
             SpecPhase.IMPLEMENT -> SpecCodingBundle.message("spec.detail.step.taskList")
-        }
-    }
-
-    private fun workspaceWorkflowStatusText(status: WorkflowStatus): String {
-        return when (status) {
-            WorkflowStatus.IN_PROGRESS -> SpecCodingBundle.message("spec.workflow.status.inProgress")
-            WorkflowStatus.PAUSED -> SpecCodingBundle.message("spec.workflow.status.paused")
-            WorkflowStatus.COMPLETED -> SpecCodingBundle.message("spec.workflow.status.completed")
-            WorkflowStatus.FAILED -> SpecCodingBundle.message("spec.workflow.status.failed")
-        }
-    }
-
-    private fun verificationStatusText(state: SpecWorkflowVerifyDeltaState): String {
-        if (!state.verifyEnabled) {
-            return SpecCodingBundle.message("spec.toolwindow.verifyDelta.status.disabled")
-        }
-        return when (state.verificationHistory.firstOrNull()?.conclusion) {
-            VerificationConclusion.PASS -> SpecCodingBundle.message("spec.toolwindow.verifyDelta.status.pass")
-            VerificationConclusion.WARN -> SpecCodingBundle.message("spec.toolwindow.verifyDelta.status.warn")
-            VerificationConclusion.FAIL -> SpecCodingBundle.message("spec.toolwindow.verifyDelta.status.fail")
-            null -> SpecCodingBundle.message("spec.toolwindow.verifyDelta.status.pending")
         }
     }
 
@@ -4621,14 +4434,6 @@ class SpecWorkflowPanel(
                 onUpdated = onUpdated,
             )
         }
-    }
-
-    private enum class WorkspaceChipTone {
-        INFO,
-        SUCCESS,
-        WARNING,
-        ERROR,
-        MUTED,
     }
 
     private data class WorkspaceChipColors(

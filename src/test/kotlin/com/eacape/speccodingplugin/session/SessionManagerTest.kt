@@ -1,5 +1,6 @@
 package com.eacape.speccodingplugin.session
 
+import com.eacape.speccodingplugin.telemetry.RuntimeSlowPathBaselineRegistry
 import com.intellij.openapi.project.Project
 import io.mockk.every
 import io.mockk.mockk
@@ -28,6 +29,7 @@ class SessionManagerTest {
     fun setUp() {
         project = mockk(relaxed = true)
         every { project.basePath } returns tempDir.resolve("repo").toString()
+        RuntimeSlowPathBaselineRegistry.resetForTest()
 
         manager = SessionManager(
             project = project,
@@ -660,6 +662,34 @@ class SessionManagerTest {
 
         assertEquals(1, results.size)
         assertEquals("proposal-a", results.first().branchName)
+    }
+
+    @Test
+    fun `history query and restore operations should contribute to runtime slow path baselines`() {
+        val source = manager.createSession(title = "History Source").getOrThrow()
+        manager.addMessage(source.id, ConversationRole.USER, "ctx-1").getOrThrow()
+        val checkpoint = manager.addMessage(source.id, ConversationRole.ASSISTANT, "ctx-2").getOrThrow()
+        manager.addMessage(source.id, ConversationRole.USER, "ctx-3").getOrThrow()
+        val snapshot = manager.saveContextSnapshot(source.id, checkpoint.id, title = "checkpoint-a").getOrThrow()
+
+        manager.listMessages(source.id)
+        manager.searchSessions(query = "History", filter = SessionFilter.ALL, limit = 20)
+        manager.continueFromSnapshot(snapshot.id, branchName = "baseline-continue").getOrThrow()
+
+        val runtimeBaseline = RuntimeSlowPathBaselineRegistry.snapshot()
+
+        assertNotNull(runtimeBaseline)
+        assertEquals(5L, runtimeBaseline?.totalSamples)
+        assertEquals(3, runtimeBaseline?.trackedOperations)
+
+        val baselinesByOperation = runtimeBaseline
+            ?.topOperations
+            ?.associateBy { baseline -> baseline.operationKey }
+            .orEmpty()
+        assertEquals(3, baselinesByOperation.size)
+        assertEquals(3, baselinesByOperation["SessionManager.listMessages"]?.sampleCount)
+        assertEquals(1, baselinesByOperation["SessionManager.searchSessions"]?.sampleCount)
+        assertEquals(1, baselinesByOperation["SessionManager.continueFromSnapshot"]?.sampleCount)
     }
 
     private fun loadPersistedSessionRow(databasePath: Path, sessionId: String): PersistedSessionRow? {

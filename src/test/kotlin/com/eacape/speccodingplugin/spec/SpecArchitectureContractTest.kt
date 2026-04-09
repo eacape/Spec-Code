@@ -1,6 +1,7 @@
 package com.eacape.speccodingplugin.spec
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.nio.file.Files
@@ -202,6 +203,23 @@ class SpecArchitectureContractTest {
                 }
             },
         )
+    }
+
+    @Test
+    fun `SpecImplementStageReadiness should remain registered as a domain rule`() {
+        val rule = SpecArchitectureContract.ruleFor("SpecImplementStageReadiness.kt")
+
+        assertNotNull(rule)
+        assertEquals(SpecArchitectureContract.Layer.DOMAIN, rule?.layer)
+
+        val blockedPrefixes = SpecArchitectureContract.blockedImportPrefixesFor("SpecImplementStageReadiness.kt")
+        assertTrue(blockedPrefixes.contains("com.eacape.speccodingplugin.ui."))
+        assertTrue(blockedPrefixes.contains("com.eacape.speccodingplugin.window."))
+        assertTrue(blockedPrefixes.contains("com.intellij."))
+        assertTrue(blockedPrefixes.contains("com.eacape.speccodingplugin.core."))
+        assertTrue(blockedPrefixes.contains("com.eacape.speccodingplugin.hook."))
+        assertTrue(blockedPrefixes.contains("com.eacape.speccodingplugin.llm."))
+        assertTrue(blockedPrefixes.contains("kotlinx.coroutines."))
     }
 
     @Test

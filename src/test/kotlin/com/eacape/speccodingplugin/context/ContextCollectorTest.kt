@@ -1,5 +1,6 @@
 package com.eacape.speccodingplugin.context
 
+import com.eacape.speccodingplugin.telemetry.RuntimeSlowPathBaselineRegistry
 import com.intellij.openapi.project.Project
 import io.mockk.every
 import io.mockk.mockk
@@ -8,6 +9,7 @@ import io.mockk.unmockkObject
 import io.mockk.verify
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -23,11 +25,13 @@ class ContextCollectorTest {
         project = mockk(relaxed = true)
         collector = ContextCollector(project)
         mockkObject(EditorContextProvider)
+        RuntimeSlowPathBaselineRegistry.resetForTest()
     }
 
     @AfterEach
     fun tearDown() {
         unmockkObject(EditorContextProvider)
+        RuntimeSlowPathBaselineRegistry.resetForTest()
     }
 
     @Test
@@ -552,6 +556,49 @@ class ContextCollectorTest {
         assertEquals(coldRun.elapsedMs, warmRun.baselineComparison?.coldElapsedMs)
         assertEquals(warmRun.elapsedMs, warmRun.baselineComparison?.warmElapsedMs)
         assertTrue((warmRun.baselineComparison?.savedPercent ?: 0) > 0)
+    }
+
+    @Test
+    fun `collectContext should keep runtime slow path baseline when custom telemetry consumer is provided`() {
+        every { EditorContextProvider.getSelectedCodeContext(project) } returns null
+        every { EditorContextProvider.getContainingScopeContext(project) } returns null
+        every { EditorContextProvider.getCurrentFileContext(project) } returns null
+
+        var capturedTelemetry: ContextCollectionTelemetry? = null
+        val collector = ContextCollector(
+            project = project,
+            relatedFilesProvider = {
+                Result.success(
+                    listOf(
+                        makeItem(
+                            type = ContextType.IMPORT_DEPENDENCY,
+                            label = "dep",
+                            priority = 60,
+                            filePath = "/tmp/dep.kt",
+                        ),
+                    ),
+                )
+            },
+            telemetryConsumer = { telemetry -> capturedTelemetry = telemetry },
+        )
+
+        collector.collectContext(
+            ContextConfig(
+                tokenBudget = 200,
+                includeSelectedCode = false,
+                includeContainingScope = false,
+                includeCurrentFile = false,
+                includeImportDependencies = true,
+                includeProjectStructure = false,
+                preferGraphRelatedContext = false,
+            ),
+        )
+
+        assertNotNull(capturedTelemetry)
+        val runtimeBaseline = RuntimeSlowPathBaselineRegistry.snapshot()
+        assertNotNull(runtimeBaseline)
+        assertEquals(1L, runtimeBaseline?.totalSamples)
+        assertEquals(listOf("ContextCollector.collectContext"), runtimeBaseline?.topOperations?.map { it.operationKey })
     }
 
     private fun makeItem(
