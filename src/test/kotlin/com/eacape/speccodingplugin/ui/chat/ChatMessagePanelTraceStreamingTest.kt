@@ -329,6 +329,51 @@ class ChatMessagePanelTraceStreamingTest {
     }
 
     @Test
+    fun `finished trace-only assistant message should render fallback answer summary`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = """
+                        已完成 trace-only 执行结果正文兜底，结束后会显示本轮做了什么。
+                        - 更新了 ChatMessagePanel.kt 的 finished fallback 渲染路径。
+                        src/main/kotlin/com/eacape/speccodingplugin/ui/chat/ChatMessagePanel.kt:299
+                        At line:2 char:1
+                        model: gpt-5.3-codex
+                    """.trimIndent(),
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.finishMessage()
+        }
+
+        val renderedPanes = collectDescendants(panel)
+            .filterIsInstance<JTextPane>()
+            .toList()
+        assertTrue(
+            renderedPanes.size >= 2,
+            "Expected output card plus fallback answer pane for finished trace-only message",
+        )
+
+        val renderedText = renderedPanes.joinToString("\n") { textOf(it) }
+        assertTrue(renderedText.contains("已完成 trace-only 执行结果正文兜底"), renderedText)
+        assertTrue(renderedText.contains("更新了 ChatMessagePanel.kt 的 finished fallback 渲染路径"), renderedText)
+
+        runOnEdt { panel.setLightweightMode(true) }
+
+        val lightweightText = collectDescendants(panel)
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+        assertTrue(lightweightText.contains("已完成 trace-only 执行结果正文兜底"), lightweightText)
+        assertTrue(lightweightText.contains("更新了 ChatMessagePanel.kt 的 finished fallback 渲染路径"), lightweightText)
+        assertFalse(lightweightText.contains("src/main/kotlin/com/eacape/speccodingplugin/ui/chat/ChatMessagePanel.kt:299"))
+        assertFalse(lightweightText.contains("At line:2 char:1"))
+        assertFalse(lightweightText.contains("model: gpt-5.3-codex"))
+    }
+
+    @Test
     fun `assistant answer should render user reported comparison markdown table as html table`() {
         val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
         val markdown = """

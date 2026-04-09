@@ -296,7 +296,7 @@ open class ChatMessagePanel(
 
             val resolvedTraceSnapshot = resolveAssistantTraceSnapshot()
             if (resolvedTraceSnapshot.hasTrace) {
-                val answerContent = resolveAssistantAnswerContent(content)
+                val answerContent = resolveAssistantDisplayedAnswerContent(content, resolvedTraceSnapshot)
                 renderAssistantTraceContent(answerContent, resolvedTraceSnapshot, useStructured)
             } else if (useStructured) {
                 contentHost.removeAll()
@@ -356,6 +356,16 @@ open class ChatMessagePanel(
         cachedAssistantAnswerContent = extracted
         cachedAssistantAnswerVersion = contentVersion
         return extracted
+    }
+
+    private fun resolveAssistantDisplayedAnswerContent(
+        content: String,
+        traceSnapshot: StreamingTraceAssembler.TraceSnapshot,
+    ): String {
+        val answerContent = resolveAssistantAnswerContent(content)
+        if (answerContent.isNotBlank()) return answerContent
+        if (!messageFinished || !traceSnapshot.hasTrace) return answerContent
+        return resolveAssistantTraceFallbackContent(traceSnapshot)
     }
 
     private fun resolveTraceSnapshot(content: String): StreamingTraceAssembler.TraceSnapshot {
@@ -593,16 +603,132 @@ open class ChatMessagePanel(
             .replace("\r\n", "\n")
             .replace('\r', '\n')
             .trim()
-        if (normalized.isBlank()) return normalized
+        val assistantTraceSnapshot = if (role == MessageRole.ASSISTANT && messageFinished) {
+            resolveTraceSnapshot(content)
+        } else {
+            null
+        }
+        val assistantBaseContent = when {
+            role != MessageRole.ASSISTANT -> ""
+            assistantTraceSnapshot != null -> resolveAssistantDisplayedAnswerContent(content, assistantTraceSnapshot)
+            else -> resolveAssistantAnswerContent(content)
+        }
+        if (normalized.isBlank()) {
+            return toMarkdownPreview(assistantBaseContent, LIGHTWEIGHT_CONTENT_MAX_CHARS)
+        }
 
         val base = when (role) {
             MessageRole.ASSISTANT -> {
-                val answerOnly = extractAssistantAnswerContent(normalized).ifBlank { normalized }
+                val answerOnly = assistantBaseContent.ifBlank { normalized }
                 stripWorkflowSectionHeadings(answerOnly).ifBlank { answerOnly }
             }
             else -> normalized
         }
         return toMarkdownPreview(base, LIGHTWEIGHT_CONTENT_MAX_CHARS)
+    }
+
+    private fun resolveAssistantTraceFallbackContent(
+        traceSnapshot: StreamingTraceAssembler.TraceSnapshot,
+    ): String {
+        if (!messageFinished || !traceSnapshot.hasTrace) return ""
+
+        val outputFallback = resolveAssistantOutputFallbackContent(
+            traceSnapshot.items.filter { it.kind == ExecutionTimelineParser.Kind.OUTPUT },
+        )
+        if (outputFallback.isNotBlank()) return outputFallback
+
+        return resolveAssistantProcessFallbackContent(
+            traceSnapshot.items.filter { item ->
+                item.kind == ExecutionTimelineParser.Kind.TASK ||
+                    item.kind == ExecutionTimelineParser.Kind.VERIFY
+            },
+        )
+    }
+
+    private fun resolveAssistantOutputFallbackContent(
+        items: List<StreamingTraceAssembler.TraceItem>,
+    ): String {
+        if (items.isEmpty()) return ""
+
+        val mergedOutput = mergeOutputItemsForDisplay(
+            items = items,
+            filterLevel = OutputFilterLevel.ALL,
+        ).detail
+            .replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .trim()
+        if (mergedOutput.isBlank()) return ""
+
+        if (shouldUseRawOutputAsFallbackAnswer(mergedOutput)) {
+            return mergedOutput
+        }
+
+        val keyLines = selectKeyOutputLines(
+            mergedOutput
+                .lines()
+                .map { it.trim() }
+                .filter { it.isNotBlank() },
+        )
+        return keyLines.joinToString("\n").trim()
+    }
+
+    private fun shouldUseRawOutputAsFallbackAnswer(detail: String): Boolean {
+        if (detail.isBlank()) return false
+        val looksMarkdownLike = looksLikeMarkdown(detail, scanLimit = MARKDOWN_DETECTION_SCAN_LIMIT) ||
+            containsLoosePipeTableRows(detail, minConsecutiveRows = OUTPUT_FILTER_TABLE_BYPASS_MIN_ROWS)
+        if (!looksMarkdownLike) return false
+
+        val nonBlankLines = detail
+            .lines()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+        if (nonBlankLines.isEmpty()) return false
+
+        return nonBlankLines.all(::looksLikeAnswerFallbackMarkdownLine)
+    }
+
+    private fun looksLikeAnswerFallbackMarkdownLine(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.isBlank()) return false
+        if (looksLikeRawCodeOrPatchLine(trimmed) || looksLikeToolDiagnosticLine(trimmed)) return false
+        if (OUTPUT_METADATA_KEY_VALUE_REGEX.matches(trimmed)) return false
+        if (trimmed.startsWith("|")) return true
+
+        return MARKDOWN_HEADING_REGEX.matches(trimmed) ||
+            BLOCKQUOTE_LINE_REGEX.matches(trimmed) ||
+            UNORDERED_LIST_ITEM_REGEX.matches(trimmed) ||
+            ORDERED_LIST_ITEM_REGEX.matches(trimmed) ||
+            MARKDOWN_HORIZONTAL_RULE_REGEX.matches(trimmed) ||
+            MARKDOWN_INLINE_LINK_REGEX.containsMatchIn(trimmed) ||
+            trimmed.contains("**") ||
+            trimmed.contains('`') ||
+            looksLikeNarrativeOutputLine(trimmed)
+    }
+
+    private fun resolveAssistantProcessFallbackContent(
+        items: List<StreamingTraceAssembler.TraceItem>,
+    ): String {
+        if (items.isEmpty()) return ""
+
+        val lines = items
+            .asSequence()
+            .flatMap { it.detail.lineSequence() }
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .filterNot { line ->
+                looksLikeRawCodeOrPatchLine(line) ||
+                    looksLikeToolDiagnosticLine(line) ||
+                    OUTPUT_METADATA_KEY_VALUE_REGEX.matches(line)
+            }
+            .filter { line ->
+                isLikelyWorkflowHeading(line) ||
+                    looksLikePostOutputNarrativeLine(line) ||
+                    looksLikeNarrativeOutputLine(line)
+            }
+            .distinct()
+            .take(OUTPUT_FILTER_MAX_LINES)
+            .toList()
+        return lines.joinToString("\n").trim()
     }
 
     private fun renderAssistantTraceContent(
