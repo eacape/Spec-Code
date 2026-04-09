@@ -1,5 +1,6 @@
 package com.eacape.speccodingplugin.ui.spec
 
+import com.eacape.speccodingplugin.SpecCodingBundle
 import com.eacape.speccodingplugin.engine.CliToolInfo
 import com.eacape.speccodingplugin.spec.WorkflowTemplate
 import com.eacape.speccodingplugin.ui.LocalEnvironmentReadiness
@@ -22,7 +23,9 @@ class SpecWorkflowFirstRunStatusCoordinatorTest {
                 lastSuccessWorkflowId = "wf-001",
                 lastSuccessArtifactFileName = "tasks.md",
                 lastAttemptAt = 1_000L,
-                lastSuccessAt = 2_000L,
+                lastSuccessAt = 121_000L,
+                firstAttemptAt = 1_000L,
+                firstSuccessAt = 121_000L,
             ),
         )
 
@@ -30,6 +33,15 @@ class SpecWorkflowFirstRunStatusCoordinatorTest {
         assertTrue(presentation.details.any { it.contains("1/1") })
         assertTrue(presentation.details.any { it.contains("wf-001") })
         assertTrue(presentation.details.any { it.contains("tasks.md") })
+        assertTrue(
+            presentation.details.any {
+                it == SpecCodingBundle.message(
+                    "spec.dialog.firstRun.status.detail.firstSuccessWithinTarget",
+                    "2:00",
+                    "5:00",
+                )
+            },
+        )
     }
 
     @Test
@@ -45,13 +57,56 @@ class SpecWorkflowFirstRunStatusCoordinatorTest {
                 lastSuccessArtifactFileName = null,
                 lastAttemptAt = 1_000L,
                 lastSuccessAt = null,
+                firstAttemptAt = 1_000L,
             ),
         )
 
         assertTrue(presentation.summary.isNotBlank())
         assertTrue(presentation.details.any { it.contains("0/1") })
-        assertTrue(presentation.details.any { it.contains("Full Spec") || it.contains("完整规格") })
+        assertTrue(
+            presentation.details.any {
+                it.contains(SpecWorkflowOverviewPresenter.templateLabel(WorkflowTemplate.FULL_SPEC))
+            },
+        )
         assertTrue(presentation.details.any { it.contains("tasks.md") })
+        assertTrue(
+            presentation.details.any {
+                it == SpecCodingBundle.message(
+                    "spec.dialog.firstRun.status.detail.targetPending",
+                    "tasks.md",
+                    "5:00",
+                )
+            },
+        )
+    }
+
+    @Test
+    fun `build should report when the first visible artifact exceeded the beta target`() {
+        val presentation = SpecWorkflowFirstRunStatusCoordinator.build(
+            readiness = readySnapshot(),
+            tracking = SpecWorkflowFirstRunTrackingSnapshot(
+                createAttemptCount = 1,
+                createSuccessCount = 1,
+                lastAttemptTemplate = WorkflowTemplate.QUICK_TASK,
+                lastSuccessTemplate = WorkflowTemplate.QUICK_TASK,
+                lastSuccessWorkflowId = "wf-002",
+                lastSuccessArtifactFileName = "tasks.md",
+                lastAttemptAt = 1_000L,
+                lastSuccessAt = 361_000L,
+                firstAttemptAt = 1_000L,
+                firstSuccessAt = 361_000L,
+            ),
+        )
+
+        assertTrue(
+            presentation.details.any {
+                it == SpecCodingBundle.message(
+                    "spec.dialog.firstRun.status.detail.firstSuccessOverTarget",
+                    "6:00",
+                    "5:00",
+                )
+            },
+        )
     }
 
     @Test
@@ -71,8 +126,19 @@ class SpecWorkflowFirstRunStatusCoordinatorTest {
         )
 
         assertTrue(presentation.summary.isNotBlank())
-        assertTrue(presentation.details.any { it.contains("Environment") || it.contains("环境") })
-        assertTrue(presentation.details.any { it.contains("blocked") || it.contains("阻塞") })
+        assertTrue(
+            presentation.details.any {
+                it == SpecCodingBundle.message(
+                    "spec.dialog.firstRun.status.detail.environment",
+                    SpecCodingBundle.message("spec.dialog.firstRun.status.environment.blocked"),
+                )
+            },
+        )
+        assertTrue(
+            presentation.details.any {
+                it == SpecCodingBundle.message("spec.dialog.firstRun.status.detail.nextBlocked")
+            },
+        )
     }
 
     private fun readySnapshot() = LocalEnvironmentReadiness.evaluate(

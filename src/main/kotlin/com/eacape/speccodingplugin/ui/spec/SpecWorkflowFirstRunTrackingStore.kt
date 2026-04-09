@@ -19,6 +19,8 @@ internal data class SpecWorkflowFirstRunTrackingSnapshot(
     val lastSuccessArtifactFileName: String?,
     val lastAttemptAt: Long?,
     val lastSuccessAt: Long?,
+    val firstAttemptAt: Long? = null,
+    val firstSuccessAt: Long? = null,
 )
 
 @Service(Service.Level.PROJECT)
@@ -36,15 +38,38 @@ internal class SpecWorkflowFirstRunTrackingStore :
 
     @Synchronized
     override fun loadState(state: FirstRunTrackingState) {
+        val normalizedAttemptCount = state.createAttemptCount.coerceAtLeast(0)
+        val normalizedSuccessCount = state.createSuccessCount.coerceAtLeast(0)
+        val normalizedLastAttemptAt = normalizeTimestamp(state.lastAttemptAt)
+        val normalizedLastSuccessAt = normalizeTimestamp(state.lastSuccessAt)
+        var normalizedFirstAttemptAt = normalizeTimestamp(state.firstAttemptAt)
+        var normalizedFirstSuccessAt = normalizeTimestamp(state.firstSuccessAt)
+        if (normalizedFirstAttemptAt <= 0L && normalizedAttemptCount > 0) {
+            normalizedFirstAttemptAt = normalizedLastAttemptAt
+                .takeIf { it > 0L }
+                ?: normalizedLastSuccessAt.takeIf { normalizedSuccessCount > 0 && it > 0L }
+                ?: 0L
+        }
+        if (normalizedFirstSuccessAt <= 0L && normalizedSuccessCount > 0) {
+            normalizedFirstSuccessAt = normalizedLastSuccessAt.takeIf { it > 0L } ?: 0L
+        }
+        if (normalizedFirstSuccessAt > 0L && normalizedFirstAttemptAt <= 0L) {
+            normalizedFirstAttemptAt = normalizedFirstSuccessAt
+        }
+        if (normalizedFirstSuccessAt > 0L && normalizedFirstAttemptAt > normalizedFirstSuccessAt) {
+            normalizedFirstAttemptAt = normalizedFirstSuccessAt
+        }
         this.state = state.copy(
-            createAttemptCount = state.createAttemptCount.coerceAtLeast(0),
-            createSuccessCount = state.createSuccessCount.coerceAtLeast(0),
+            createAttemptCount = normalizedAttemptCount,
+            createSuccessCount = normalizedSuccessCount,
             lastAttemptTemplate = normalizeTemplateName(state.lastAttemptTemplate),
             lastSuccessTemplate = normalizeTemplateName(state.lastSuccessTemplate),
             lastSuccessWorkflowId = normalizeText(state.lastSuccessWorkflowId),
             lastSuccessArtifactFileName = normalizeText(state.lastSuccessArtifactFileName),
-            lastAttemptAt = normalizeTimestamp(state.lastAttemptAt),
-            lastSuccessAt = normalizeTimestamp(state.lastSuccessAt),
+            firstAttemptAt = normalizedFirstAttemptAt,
+            firstSuccessAt = normalizedFirstSuccessAt,
+            lastAttemptAt = maxOf(normalizedLastAttemptAt, normalizedFirstAttemptAt),
+            lastSuccessAt = maxOf(normalizedLastSuccessAt, normalizedFirstSuccessAt),
             updatedAt = normalizeTimestamp(state.updatedAt),
         )
         if (this.state.createSuccessCount > this.state.createAttemptCount) {
@@ -52,6 +77,8 @@ internal class SpecWorkflowFirstRunTrackingStore :
         }
         this.state.updatedAt = maxOf(
             this.state.updatedAt,
+            this.state.firstAttemptAt,
+            this.state.firstSuccessAt,
             this.state.lastAttemptAt,
             this.state.lastSuccessAt,
         )
@@ -59,6 +86,8 @@ internal class SpecWorkflowFirstRunTrackingStore :
 
     @Synchronized
     fun snapshot(): SpecWorkflowFirstRunTrackingSnapshot {
+        val firstAttemptAt = state.firstAttemptAt.takeIf { it > 0L }
+        val firstSuccessAt = state.firstSuccessAt.takeIf { it > 0L }
         return SpecWorkflowFirstRunTrackingSnapshot(
             createAttemptCount = state.createAttemptCount,
             createSuccessCount = state.createSuccessCount,
@@ -68,6 +97,8 @@ internal class SpecWorkflowFirstRunTrackingStore :
             lastSuccessArtifactFileName = state.lastSuccessArtifactFileName,
             lastAttemptAt = state.lastAttemptAt.takeIf { it > 0L },
             lastSuccessAt = state.lastSuccessAt.takeIf { it > 0L },
+            firstAttemptAt = firstAttemptAt,
+            firstSuccessAt = firstSuccessAt,
         )
     }
 
@@ -80,8 +111,9 @@ internal class SpecWorkflowFirstRunTrackingStore :
         state = state.copy(
             createAttemptCount = state.createAttemptCount + 1,
             lastAttemptTemplate = template.name,
-            lastAttemptAt = timestamp,
-            updatedAt = timestamp,
+            firstAttemptAt = state.firstAttemptAt.takeIf { it > 0L } ?: timestamp,
+            lastAttemptAt = maxOf(state.lastAttemptAt, timestamp),
+            updatedAt = maxOf(state.updatedAt, timestamp),
         )
     }
 
@@ -95,17 +127,23 @@ internal class SpecWorkflowFirstRunTrackingStore :
         val timestamp = normalizeTimestamp(timestampMillis)
         val nextSuccessCount = state.createSuccessCount + 1
         val nextAttemptCount = maxOf(state.createAttemptCount, nextSuccessCount)
-        val shouldBackfillAttempt = state.lastAttemptAt <= 0L || state.lastAttemptTemplate.isNullOrBlank()
+        val normalizedFirstAttemptAt = when {
+            state.firstAttemptAt > 0L -> state.firstAttemptAt
+            state.lastAttemptAt > 0L -> state.lastAttemptAt
+            else -> timestamp
+        }
         state = state.copy(
             createAttemptCount = nextAttemptCount,
             createSuccessCount = nextSuccessCount,
-            lastAttemptTemplate = if (shouldBackfillAttempt) template.name else state.lastAttemptTemplate,
+            firstAttemptAt = normalizedFirstAttemptAt,
+            firstSuccessAt = state.firstSuccessAt.takeIf { it > 0L } ?: timestamp,
+            lastAttemptTemplate = state.lastAttemptTemplate?.takeIf { it.isNotBlank() } ?: template.name,
             lastSuccessTemplate = template.name,
             lastSuccessWorkflowId = normalizedWorkflowId,
             lastSuccessArtifactFileName = firstVisibleArtifact(template),
-            lastAttemptAt = if (shouldBackfillAttempt) timestamp else state.lastAttemptAt,
-            lastSuccessAt = timestamp,
-            updatedAt = timestamp,
+            lastAttemptAt = maxOf(state.lastAttemptAt, normalizedFirstAttemptAt),
+            lastSuccessAt = maxOf(state.lastSuccessAt, timestamp),
+            updatedAt = maxOf(state.updatedAt, timestamp),
         )
     }
 
@@ -116,12 +154,16 @@ internal class SpecWorkflowFirstRunTrackingStore :
         var lastSuccessTemplate: String? = null,
         var lastSuccessWorkflowId: String? = null,
         var lastSuccessArtifactFileName: String? = null,
+        var firstAttemptAt: Long = 0L,
+        var firstSuccessAt: Long = 0L,
         var lastAttemptAt: Long = 0L,
         var lastSuccessAt: Long = 0L,
         var updatedAt: Long = 0L,
     )
 
     companion object {
+        internal const val FIRST_VISIBLE_ARTIFACT_TARGET_MILLIS: Long = 5 * 60 * 1000L
+
         internal fun getInstance(project: Project): SpecWorkflowFirstRunTrackingStore = project.service()
 
         internal fun firstVisibleArtifact(template: WorkflowTemplate): String {

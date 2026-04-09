@@ -19,6 +19,7 @@ internal object SpecWorkflowFirstRunStatusCoordinator {
         readiness: LocalEnvironmentReadinessSnapshot,
         tracking: SpecWorkflowFirstRunTrackingSnapshot,
     ): SpecWorkflowFirstRunStatusPresentation {
+        val targetDisplay = formatDuration(SpecWorkflowFirstRunTrackingStore.FIRST_VISIBLE_ARTIFACT_TARGET_MILLIS)
         val environmentLabel = when {
             readiness.fullSpecReady -> SpecCodingBundle.message("spec.dialog.firstRun.status.environment.fullSpecReady")
             readiness.quickTaskReady -> SpecCodingBundle.message("spec.dialog.firstRun.status.environment.quickTaskReady")
@@ -35,11 +36,17 @@ internal object SpecWorkflowFirstRunStatusCoordinator {
         val summary = when {
             tracking.createSuccessCount > 0 -> {
                 buildLastSuccessLine(tracking)?.let(details::add)
+                buildFirstVisibleArtifactTimingLine(tracking, targetDisplay)?.let(details::add)
                 SpecCodingBundle.message("spec.dialog.firstRun.status.summary.complete")
             }
 
             readiness.quickTaskReady && tracking.createAttemptCount > 0 -> {
                 buildLastAttemptLine(tracking)?.let(details::add)
+                details += SpecCodingBundle.message(
+                    "spec.dialog.firstRun.status.detail.targetPending",
+                    SpecWorkflowFirstRunTrackingStore.firstVisibleArtifact(WorkflowTemplate.QUICK_TASK),
+                    targetDisplay,
+                )
                 details += SpecCodingBundle.message(
                     "spec.dialog.firstRun.status.detail.nextReady",
                     SpecWorkflowFirstRunTrackingStore.firstVisibleArtifact(WorkflowTemplate.QUICK_TASK),
@@ -48,6 +55,11 @@ internal object SpecWorkflowFirstRunStatusCoordinator {
             }
 
             readiness.quickTaskReady -> {
+                details += SpecCodingBundle.message(
+                    "spec.dialog.firstRun.status.detail.targetPending",
+                    SpecWorkflowFirstRunTrackingStore.firstVisibleArtifact(WorkflowTemplate.QUICK_TASK),
+                    targetDisplay,
+                )
                 details += SpecCodingBundle.message(
                     "spec.dialog.firstRun.status.detail.nextReady",
                     SpecWorkflowFirstRunTrackingStore.firstVisibleArtifact(WorkflowTemplate.QUICK_TASK),
@@ -90,9 +102,41 @@ internal object SpecWorkflowFirstRunStatusCoordinator {
         )
     }
 
+    private fun buildFirstVisibleArtifactTimingLine(
+        tracking: SpecWorkflowFirstRunTrackingSnapshot,
+        targetDisplay: String,
+    ): String? {
+        val durationMillis = firstVisibleArtifactDurationMillis(tracking) ?: return null
+        val durationDisplay = formatDuration(durationMillis)
+        val key = if (durationMillis <= SpecWorkflowFirstRunTrackingStore.FIRST_VISIBLE_ARTIFACT_TARGET_MILLIS) {
+            "spec.dialog.firstRun.status.detail.firstSuccessWithinTarget"
+        } else {
+            "spec.dialog.firstRun.status.detail.firstSuccessOverTarget"
+        }
+        return SpecCodingBundle.message(key, durationDisplay, targetDisplay)
+    }
+
+    private fun firstVisibleArtifactDurationMillis(tracking: SpecWorkflowFirstRunTrackingSnapshot): Long? {
+        val firstAttemptAt = tracking.firstAttemptAt ?: return null
+        val firstSuccessAt = tracking.firstSuccessAt ?: return null
+        return (firstSuccessAt - firstAttemptAt).takeIf { it >= 0L }
+    }
+
     private fun formatTimestamp(timestampMillis: Long): String {
         return timestampFormatter.format(
             Instant.ofEpochMilli(timestampMillis).atZone(ZoneId.systemDefault()),
         )
+    }
+
+    private fun formatDuration(durationMillis: Long): String {
+        val totalSeconds = durationMillis.coerceAtLeast(0L) / 1000L
+        val hours = totalSeconds / 3600L
+        val minutes = (totalSeconds % 3600L) / 60L
+        val seconds = totalSeconds % 60L
+        return if (hours > 0L) {
+            "%d:%02d:%02d".format(hours, minutes, seconds)
+        } else {
+            "%d:%02d".format(minutes, seconds)
+        }
     }
 }

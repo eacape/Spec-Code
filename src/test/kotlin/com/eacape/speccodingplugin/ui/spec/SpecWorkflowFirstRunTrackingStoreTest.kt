@@ -21,10 +21,12 @@ class SpecWorkflowFirstRunTrackingStoreTest {
         assertNull(snapshot.lastSuccessArtifactFileName)
         assertNull(snapshot.lastAttemptAt)
         assertNull(snapshot.lastSuccessAt)
+        assertNull(snapshot.firstAttemptAt)
+        assertNull(snapshot.firstSuccessAt)
     }
 
     @Test
-    fun `record workflow create attempt and success should capture latest workflow state`() {
+    fun `record workflow create success should preserve first-run timing while updating latest workflow state`() {
         val store = SpecWorkflowFirstRunTrackingStore()
 
         store.recordWorkflowCreateAttempt(
@@ -36,16 +38,27 @@ class SpecWorkflowFirstRunTrackingStoreTest {
             template = WorkflowTemplate.QUICK_TASK,
             timestampMillis = 2_000L,
         )
+        store.recordWorkflowCreateAttempt(
+            template = WorkflowTemplate.FULL_SPEC,
+            timestampMillis = 3_000L,
+        )
+        store.recordWorkflowCreateSuccess(
+            workflowId = "wf-002",
+            template = WorkflowTemplate.FULL_SPEC,
+            timestampMillis = 8_000L,
+        )
 
         val snapshot = store.snapshot()
-        assertEquals(1, snapshot.createAttemptCount)
-        assertEquals(1, snapshot.createSuccessCount)
-        assertEquals(WorkflowTemplate.QUICK_TASK, snapshot.lastAttemptTemplate)
-        assertEquals(WorkflowTemplate.QUICK_TASK, snapshot.lastSuccessTemplate)
-        assertEquals("wf-001", snapshot.lastSuccessWorkflowId)
-        assertEquals("tasks.md", snapshot.lastSuccessArtifactFileName)
-        assertEquals(1_000L, snapshot.lastAttemptAt)
-        assertEquals(2_000L, snapshot.lastSuccessAt)
+        assertEquals(2, snapshot.createAttemptCount)
+        assertEquals(2, snapshot.createSuccessCount)
+        assertEquals(1_000L, snapshot.firstAttemptAt)
+        assertEquals(2_000L, snapshot.firstSuccessAt)
+        assertEquals(WorkflowTemplate.FULL_SPEC, snapshot.lastAttemptTemplate)
+        assertEquals(WorkflowTemplate.FULL_SPEC, snapshot.lastSuccessTemplate)
+        assertEquals("wf-002", snapshot.lastSuccessWorkflowId)
+        assertEquals("requirements.md", snapshot.lastSuccessArtifactFileName)
+        assertEquals(3_000L, snapshot.lastAttemptAt)
+        assertEquals(8_000L, snapshot.lastSuccessAt)
     }
 
     @Test
@@ -73,7 +86,9 @@ class SpecWorkflowFirstRunTrackingStoreTest {
         assertEquals(WorkflowTemplate.FULL_SPEC, snapshot.lastSuccessTemplate)
         assertNull(snapshot.lastSuccessWorkflowId)
         assertNull(snapshot.lastSuccessArtifactFileName)
-        assertNull(snapshot.lastAttemptAt)
+        assertEquals(3_000L, snapshot.firstAttemptAt)
+        assertEquals(3_000L, snapshot.firstSuccessAt)
+        assertEquals(3_000L, snapshot.lastAttemptAt)
         assertEquals(3_000L, snapshot.lastSuccessAt)
     }
 }

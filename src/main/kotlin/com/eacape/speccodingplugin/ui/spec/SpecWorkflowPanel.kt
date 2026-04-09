@@ -116,6 +116,7 @@ class SpecWorkflowPanel(
     private val taskCoordinator = SwingPanelTaskCoordinator(
         isDisposed = { _isDisposed || project.isDisposed },
     )
+    private val workspacePresentationTelemetry = SpecWorkflowWorkspacePresentationTelemetryTracker(logger)
     private val loadCoordinator = SpecWorkflowPanelLoadCoordinator(
         reloadWorkflow = { workflowId -> specEngine.reloadWorkflow(workflowId) },
         parseTasks = { workflowId -> specTasksService.parse(workflowId) },
@@ -1989,6 +1990,7 @@ class SpecWorkflowPanel(
         verifyDeltaState: SpecWorkflowVerifyDeltaState,
         gateResult: GateResult?,
     ) {
+        val workspacePresentationStartedAt = workspacePresentationTelemetry.markStart()
         val previousWorkbenchState = currentWorkbenchState
         val workbenchState = resolveWorkbenchState(
             workflow = workflow,
@@ -2044,18 +2046,35 @@ class SpecWorkflowPanel(
         gateSection.setSummary(summaryPresentation.sectionSummaries.gate)
         verifySection.setSummary(summaryPresentation.sectionSummaries.verify)
         documentsSection.setSummary(summaryPresentation.sectionSummaries.documents)
-        detailPanel.updateWorkbenchState(
-            state = workbenchState,
-            syncSelection = previousWorkbenchState?.focusedStage != workbenchState.focusedStage ||
-                previousWorkbenchState?.currentStage != workbenchState.currentStage,
+        val shouldSyncWorkbenchSelection = previousWorkbenchState?.focusedStage != workbenchState.focusedStage ||
+            previousWorkbenchState?.currentStage != workbenchState.currentStage
+        val telemetryObservation = SpecWorkflowWorkspacePresentationObservation(
+            workflowId = workflow.id,
+            currentStage = workflow.currentStage,
+            focusedStage = workbenchState.focusedStage,
+            taskCount = tasks.size,
+            liveTaskCount = liveProgressByTaskId.size,
+            visibleSectionCount = workbenchState.visibleSections.size,
+            syncSelection = shouldSyncWorkbenchSelection,
         )
-        syncWorkbenchTaskSelection(
-            previousWorkbenchState = previousWorkbenchState,
-            workbenchState = workbenchState,
-        )
-        updateDocumentWorkspaceViewPresentation(workbenchState)
-        applyWorkspaceSectionVisibility(workbenchState)
-        applyWorkspaceSectionPreset(workflow, workbenchState)
+        try {
+            detailPanel.updateWorkbenchState(
+                state = workbenchState,
+                syncSelection = shouldSyncWorkbenchSelection,
+            )
+            syncWorkbenchTaskSelection(
+                previousWorkbenchState = previousWorkbenchState,
+                workbenchState = workbenchState,
+            )
+            updateDocumentWorkspaceViewPresentation(workbenchState)
+            applyWorkspaceSectionVisibility(workbenchState)
+            applyWorkspaceSectionPreset(workflow, workbenchState)
+        } finally {
+            workspacePresentationTelemetry.record(
+                startedAtNanos = workspacePresentationStartedAt,
+                observation = telemetryObservation,
+            )
+        }
     }
 
     private fun syncWorkbenchTaskSelection(
