@@ -33,7 +33,6 @@ class SpecWorkflowGateDetailsPanelUnitTest {
                 capturedSections = sections
                 true
             },
-            aiFillUnavailableReasonProvider = { null },
         )
 
         panel.updateGateResult(
@@ -60,6 +59,48 @@ class SpecWorkflowGateDetailsPanelUnitTest {
         assertTrue(panel.triggerQuickFixForTest(0, GateQuickFixKind.AI_FILL_MISSING_REQUIREMENTS_SECTIONS))
         assertEquals("wf-unit-ai-fill", capturedWorkflowId)
         assertEquals(payload.missingSections, capturedSections)
+    }
+
+    @Test
+    fun `selected quick fixes should allow injected ai repair route even when default provider probe is unavailable`() {
+        val payload = MissingRequirementsSectionsQuickFixPayload(
+            listOf(RequirementsSectionId.NON_FUNCTIONAL),
+        )
+        val panel = SpecWorkflowGateDetailsPanel(
+            project = project,
+            showHeader = true,
+            onAiFillRequested = { _, _ -> true },
+        )
+
+        panel.updateGateResult(
+            workflowId = "wf-unit-ai-route-enabled",
+            gateResult = GateResult.fromViolations(
+                listOf(
+                    Violation(
+                        ruleId = "stage-completion-checks",
+                        severity = GateStatus.ERROR,
+                        fileName = "requirements.md",
+                        line = 1,
+                        message = "Missing requirements sections",
+                        quickFixes = listOf(
+                            GateQuickFixDescriptor(
+                                kind = GateQuickFixKind.AI_FILL_MISSING_REQUIREMENTS_SECTIONS,
+                                payload = payload,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            refreshedAtMillis = 1_710_000_000_000,
+        )
+        panel.selectViolationForTest(0)
+
+        assertEquals(listOf(true), panel.selectedQuickFixEnabledStatesForTest())
+        assertFalse(
+            panel.selectedQuickFixPopupTextsForTest().single().contains(
+                "No real AI provider is available for section repair",
+            ),
+        )
     }
 
     @Test

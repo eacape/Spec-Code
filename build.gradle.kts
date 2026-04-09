@@ -1,5 +1,6 @@
-import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.gradle.api.GradleException
+import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
+import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.io.File
 import java.util.Locale
@@ -83,6 +84,11 @@ val phase3PackagePrefixes = listOf(
     "com.eacape.speccodingplugin.ui.worktree",
 )
 
+val compatibilityVerificationIdeTargets: List<Pair<IntelliJPlatformType, String>> = listOf(
+    IntelliJPlatformType.IntellijIdeaCommunity to "2024.2",
+    IntelliJPlatformType.IntellijIdeaUltimate to "2025.3",
+)
+
 data class OversizedSourceScope(
     val label: String,
     val directory: String,
@@ -143,12 +149,49 @@ val oversizedSourceScopes = listOf(
 )
 
 val platformTestJvmArgs = listOf(
+    "--add-exports=java.base/jdk.internal.vm=ALL-UNNAMED",
     "--add-exports=java.desktop/sun.awt=ALL-UNNAMED",
+    "--add-opens=java.base/java.io=ALL-UNNAMED",
     "--add-opens=java.desktop/sun.awt=ALL-UNNAMED",
+    "--add-opens=java.base/java.lang.ref=ALL-UNNAMED",
+    "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED",
+    "--add-opens=java.base/java.net=ALL-UNNAMED",
     "--add-opens=java.desktop/java.awt=ALL-UNNAMED",
+    "--add-opens=java.desktop/java.awt.dnd.peer=ALL-UNNAMED",
+    "--add-opens=java.desktop/java.awt.event=ALL-UNNAMED",
+    "--add-opens=java.desktop/java.awt.font=ALL-UNNAMED",
+    "--add-opens=java.desktop/java.awt.image=ALL-UNNAMED",
+    "--add-opens=java.desktop/java.awt.peer=ALL-UNNAMED",
     "--add-opens=java.desktop/javax.swing=ALL-UNNAMED",
+    "--add-opens=java.desktop/javax.swing.plaf.basic=ALL-UNNAMED",
+    "--add-opens=java.desktop/javax.swing.text=ALL-UNNAMED",
+    "--add-opens=java.desktop/javax.swing.text.html=ALL-UNNAMED",
     "--add-opens=java.base/java.lang=ALL-UNNAMED",
     "--add-opens=java.base/java.nio=ALL-UNNAMED",
+    "--add-opens=java.base/java.nio.charset=ALL-UNNAMED",
+    "--add-opens=java.base/java.text=ALL-UNNAMED",
+    "--add-opens=java.base/java.time=ALL-UNNAMED",
+    "--add-opens=java.base/java.util=ALL-UNNAMED",
+    "--add-opens=java.base/java.util.concurrent=ALL-UNNAMED",
+    "--add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED",
+    "--add-opens=java.base/java.util.concurrent.locks=ALL-UNNAMED",
+    "--add-opens=java.base/sun.net.dns=ALL-UNNAMED",
+    "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED",
+    "--add-opens=java.base/sun.nio.fs=ALL-UNNAMED",
+    "--add-opens=java.base/sun.security.ssl=ALL-UNNAMED",
+    "--add-opens=java.base/sun.security.util=ALL-UNNAMED",
+    "--add-opens=java.desktop/com.sun.java.swing=ALL-UNNAMED",
+    "--add-opens=java.desktop/sun.awt.datatransfer=ALL-UNNAMED",
+    "--add-opens=java.desktop/sun.awt.image=ALL-UNNAMED",
+    "--add-opens=java.desktop/sun.awt.windows=ALL-UNNAMED",
+    "--add-opens=java.desktop/sun.font=ALL-UNNAMED",
+    "--add-opens=java.desktop/sun.java2d=ALL-UNNAMED",
+    "--add-opens=java.desktop/sun.swing=ALL-UNNAMED",
+    "--add-opens=java.management/sun.management=ALL-UNNAMED",
+    "--add-opens=jdk.attach/sun.tools.attach=ALL-UNNAMED",
+    "--add-opens=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
+    "--add-opens=jdk.internal.jvmstat/sun.jvmstat.monitor=ALL-UNNAMED",
+    "--add-opens=jdk.jdi/com.sun.tools.jdi=ALL-UNNAMED",
 )
 
 val frozenUiHotspotBudgets = listOf(
@@ -196,6 +239,17 @@ intellijPlatform {
     // Generating searchable options mutates the transformed IDE dependency on
     // Windows and trips Gradle 9 immutable-workspace checks during packaging.
     buildSearchableOptions.set(false)
+
+    pluginVerification {
+        // Verify the declared support floor and current upper-edge IDE branch.
+        // IntelliJ IDEA Community artifacts are no longer published for 2025.3+.
+        // Plugin 2.2.1 still exposes the legacy IU type and uses ide(...) here.
+        ides {
+            compatibilityVerificationIdeTargets.forEach { (type, version) ->
+                ide(type, version)
+            }
+        }
+    }
 
     pluginConfiguration {
         name = providers.gradleProperty("pluginName").get()
@@ -253,6 +307,17 @@ tasks {
         }
     }
 
+    val inheritedPlatformTestSystemProperties = named<Test>("test").get().systemProperties.toMap()
+    val platformSettingsLocalModuleJar = provider {
+        val appClientJar = sourceSets["test"].runtimeClasspath.files.firstOrNull { it.name == "app-client.jar" }
+            ?: throw GradleException("Unable to locate app-client.jar on the test runtime classpath")
+        val moduleJar = appClientJar.parentFile.resolve("modules/intellij.platform.settings.local.jar")
+        if (!moduleJar.exists()) {
+            throw GradleException("Missing IntelliJ settings module jar required by BasePlatformTestCase: ${moduleJar.absolutePath}")
+        }
+        moduleJar
+    }
+
     // The platform plugin still wires searchable-options packaging into buildPlugin
     // even when generation is disabled. Redirect the intermediate input away from the
     // IDE runtime and disable the chain so Windows packaging does not touch the
@@ -306,9 +371,11 @@ tasks {
         useJUnit()
         testClassesDirs = sourceSets["test"].output.classesDirs
         classpath = sourceSets["test"].runtimeClasspath
+        classpath += files(platformSettingsLocalModuleJar)
         maxParallelForks = 1
         isScanForTestClasses = false
         jvmArgs(*platformTestJvmArgs.toTypedArray())
+        inheritedPlatformTestSystemProperties.forEach(::systemProperty)
         systemProperty("idea.system.path", sandboxRoot.get().dir("system").asFile.absolutePath)
         systemProperty("idea.config.path", sandboxRoot.get().dir("config").asFile.absolutePath)
         systemProperty("idea.plugins.path", sandboxRoot.get().dir("plugins").asFile.absolutePath)
@@ -561,6 +628,12 @@ tasks {
         group = "verification"
         description = "Run minimal CI verification: plugin config, static analysis, compile, oversized source audit, frozen UI hotspot guard, core regression tests, workflow/UI smoke, architecture and external process audits, and plugin packaging"
         dependsOn("verifyPluginProjectConfiguration", staticAnalysisCheck, "compileKotlin", largeFileWarningAudit, uiHotspotGrowthGuard, coreRegressionTest, workflowSmokeTest, architectureRegressionTest, externalProcessAuditTest, "buildPlugin")
+    }
+
+    register("compatibilityVerificationCheck") {
+        group = "verification"
+        description = "Run IntelliJ Plugin Verifier against the supported IDE compatibility endpoints"
+        dependsOn("verifyPlugin")
     }
 
     val phase3CoverageReport by registering {

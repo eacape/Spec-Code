@@ -522,11 +522,7 @@ internal class SpecWorkflowGateDetailsPanel(
     }
 
     private fun quickFixPresentations(violation: Violation): List<SpecGateQuickFixSupport.Presentation> {
-        val aiDisabledReason = if (aiFillUnavailableReasonProvider != null) {
-            aiFillUnavailableReasonProvider.invoke()
-        } else {
-            RequirementsSectionAiSupport.unavailableReason()
-        }
+        val aiDisabledReason = resolveAiFillUnavailableReason()
         return SpecGateQuickFixSupport.presentations(violation).map { presentation ->
             if (
                 presentation.descriptor.kind == GateQuickFixKind.AI_FILL_MISSING_REQUIREMENTS_SECTIONS &&
@@ -540,6 +536,14 @@ internal class SpecWorkflowGateDetailsPanel(
                 presentation
             }
         }
+    }
+
+    private fun resolveAiFillUnavailableReason(): String? {
+        aiFillUnavailableReasonProvider?.invoke()?.let { return it }
+        if (onAiFillRequested != null) {
+            return null
+        }
+        return RequirementsSectionAiSupport.unavailableReason()
     }
 
     private fun runRequirementsSectionRepair(

@@ -177,7 +177,7 @@ internal object SpecDetailPreviewContentCoordinator {
         return when (phase) {
             SpecPhase.SPECIFY -> SpecCodingBundle.message("spec.detail.step.requirements")
             SpecPhase.DESIGN -> SpecCodingBundle.message("spec.detail.step.design")
-            SpecPhase.IMPLEMENT -> SpecCodingBundle.message("spec.detail.step.tasks")
+            SpecPhase.IMPLEMENT -> SpecCodingBundle.message("spec.detail.step.taskList")
         }
     }
 }

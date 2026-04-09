@@ -117,6 +117,28 @@ class SpecWorkflowPanel(
         isDisposed = { _isDisposed || project.isDisposed },
     )
     private val workspacePresentationTelemetry = SpecWorkflowWorkspacePresentationTelemetryTracker(logger)
+    private val workflowCreateCoordinator = SpecWorkflowCreateCoordinator(
+        createWorkflow = { request ->
+            specEngine.createWorkflow(
+                title = request.title,
+                description = request.description,
+                template = request.template,
+                verifyEnabled = request.verifyEnabled,
+                changeIntent = request.changeIntent,
+                baselineWorkflowId = request.baselineWorkflowId,
+            )
+        },
+        recordCreateAttempt = { template, timestamp ->
+            SpecWorkflowFirstRunTrackingStore.getInstance(project).recordWorkflowCreateAttempt(template, timestamp)
+        },
+        recordCreateSuccess = { workflowId, template, timestamp ->
+            SpecWorkflowFirstRunTrackingStore.getInstance(project)
+                .recordWorkflowCreateSuccess(workflowId = workflowId, template = template, timestampMillis = timestamp)
+        },
+        firstVisibleArtifactExists = { workflowId, artifactFileName ->
+            Files.isRegularFile(artifactService.locateArtifact(workflowId, artifactFileName))
+        },
+    )
     private val loadCoordinator = SpecWorkflowPanelLoadCoordinator(
         reloadWorkflow = { workflowId -> specEngine.reloadWorkflow(workflowId) },
         parseTasks = { workflowId -> specTasksService.parse(workflowId) },
@@ -2376,22 +2398,30 @@ class SpecWorkflowPanel(
                 val verifyEnabled = dialog.resultVerifyEnabled
                 val changeIntent = dialog.resultChangeIntent
                 val baselineWorkflowId = dialog.resultBaselineWorkflowId
-                SpecWorkflowFirstRunTrackingStore.getInstance(project).recordWorkflowCreateAttempt(template)
                 taskCoordinator.launchIo {
-                    specEngine.createWorkflow(
-                        title = title,
-                        description = desc,
-                        template = template,
-                        verifyEnabled = verifyEnabled,
-                        changeIntent = changeIntent,
-                        baselineWorkflowId = baselineWorkflowId,
-                    ).onSuccess { wf ->
-                        SpecWorkflowFirstRunTrackingStore.getInstance(project)
-                            .recordWorkflowCreateSuccess(workflowId = wf.id, template = template)
+                    workflowCreateCoordinator.create(
+                        SpecWorkflowCreateRequest(
+                            title = title,
+                            description = desc,
+                            template = template,
+                            verifyEnabled = verifyEnabled,
+                            changeIntent = changeIntent,
+                            baselineWorkflowId = baselineWorkflowId,
+                        ),
+                    ).onSuccess { outcome ->
                         invokeLaterSafe {
-                            highlightedWorkflowId = wf.id
-                            refreshWorkflows(selectWorkflowId = wf.id)
-                            publishWorkflowSelection(wf.id)
+                            highlightedWorkflowId = outcome.workflow.id
+                            refreshWorkflows(selectWorkflowId = outcome.workflow.id)
+                            publishWorkflowSelection(outcome.workflow.id)
+                            if (!outcome.firstVisibleArtifactMaterialized) {
+                                setStatusText(
+                                    SpecCodingBundle.message(
+                                        "spec.workflow.create.firstArtifactMissing",
+                                        outcome.expectedFirstVisibleArtifactFileName,
+                                        outcome.workflow.id,
+                                    ),
+                                )
+                            }
                         }
                     }.onFailure { e ->
                         logger.warn("Failed to create workflow", e)

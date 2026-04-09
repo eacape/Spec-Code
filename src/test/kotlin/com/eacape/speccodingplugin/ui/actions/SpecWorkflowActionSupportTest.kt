@@ -122,6 +122,31 @@ class SpecWorkflowActionSupportTest {
     }
 
     @Test
+    fun `find existing workflow artifact path should preserve actual file casing on ignore case fallback`() {
+        val actualPath = Path.of("specs", "wf-1", "TASKS.md")
+
+        val resolved = SpecWorkflowActionSupport.findExistingWorkflowArtifactPath(
+            artifactPaths = listOf(actualPath),
+            fileName = "tasks.md",
+        )
+
+        assertEquals(actualPath, resolved)
+    }
+
+    @Test
+    fun `find existing workflow artifact path should prefer exact match before ignore case fallback`() {
+        val exactPath = Path.of("specs", "wf-1", "tasks.md")
+        val fallbackPath = Path.of("specs", "wf-1", "TASKS.md")
+
+        val resolved = SpecWorkflowActionSupport.findExistingWorkflowArtifactPath(
+            artifactPaths = listOf(fallbackPath, exactPath),
+            fileName = "tasks.md",
+        )
+
+        assertEquals(exactPath, resolved)
+    }
+
+    @Test
     fun `verification plan summary includes plan scope command and confirmation reasons`() {
         val summary = SpecWorkflowActionSupport.verificationPlanSummary(
             plan = VerifyPlan(

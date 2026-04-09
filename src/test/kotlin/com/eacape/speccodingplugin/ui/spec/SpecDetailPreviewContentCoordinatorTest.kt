@@ -139,6 +139,35 @@ class SpecDetailPreviewContentCoordinatorTest {
     }
 
     @Test
+    fun `implement revision lock should use task list phase title`() {
+        val workflow = workflow(
+            currentPhase = SpecPhase.IMPLEMENT,
+            documents = mapOf(
+                SpecPhase.IMPLEMENT to document(
+                    phase = SpecPhase.IMPLEMENT,
+                    content = "# Tasks",
+                ),
+            ),
+        )
+
+        val plan = SpecDetailPreviewContentCoordinator.forDocumentPreview(
+            workflow = workflow,
+            phase = SpecPhase.IMPLEMENT,
+            workbenchArtifactBinding = null,
+            isGeneratingActive = false,
+            keepGeneratingIndicator = false,
+            revisionLockedPhase = SpecPhase.IMPLEMENT,
+            isEditing = false,
+        )
+
+        assertEquals(
+            SpecCodingBundle.message("spec.detail.revision.locked.banner", SpecCodingBundle.message("spec.detail.step.taskList")),
+            plan.validationMessage?.text,
+        )
+        assertEquals(SpecDetailPreviewValidationTone.MUTED, plan.validationMessage?.tone)
+    }
+
+    @Test
     fun `validation failure preview should keep markdown and error tone`() {
         val plan = SpecDetailPreviewContentCoordinator.forValidationFailure(
             markdownContent = "# Tasks\n\n- missing implementation steps",

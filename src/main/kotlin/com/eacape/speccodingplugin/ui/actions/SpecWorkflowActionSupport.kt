@@ -567,16 +567,11 @@ internal object SpecWorkflowActionSupport {
     }
 
     fun resolveGateViolationPath(project: Project, workflowId: String, violation: Violation): Path? {
-        val normalizedFileName = violation.fileName.trim()
-        if (normalizedFileName.isEmpty()) {
-            return null
-        }
         val artifactService = SpecArtifactService(project)
-        return runCatching {
-            artifactService.locateArtifact(workflowId, normalizedFileName)
-        }.getOrNull()?.takeIf(Files::exists)
-            ?: artifactService.listWorkflowMarkdownArtifacts(workflowId)
-                .firstOrNull { path -> path.fileName.toString().equals(normalizedFileName, ignoreCase = true) }
+        val artifactPaths = runCatching {
+            artifactService.listWorkflowMarkdownArtifacts(workflowId)
+        }.getOrDefault(emptyList())
+        return findExistingWorkflowArtifactPath(artifactPaths, violation.fileName)
     }
 
     fun openFile(project: Project, path: Path, line: Int = 1): Boolean {
@@ -588,6 +583,18 @@ internal object SpecWorkflowActionSupport {
     fun openGateViolation(project: Project, workflowId: String, violation: Violation): Boolean {
         val path = resolveGateViolationPath(project, workflowId, violation) ?: return false
         return openFile(project, path, violation.line)
+    }
+
+    internal fun findExistingWorkflowArtifactPath(artifactPaths: List<Path>, fileName: String): Path? {
+        val normalizedFileName = fileName.trim()
+        if (normalizedFileName.isEmpty()) {
+            return null
+        }
+        return artifactPaths.firstOrNull { path ->
+            path.fileName.toString() == normalizedFileName
+        } ?: artifactPaths.firstOrNull { path ->
+            path.fileName.toString().equals(normalizedFileName, ignoreCase = true)
+        }
     }
 
     private fun formatViolation(violation: Violation): String {
