@@ -69,6 +69,7 @@ class NewSpecWorkflowDialog(
     private val onboardingArea = createReadOnlyInfoArea(rows = 3)
     private val firstRunStatusArea = createReadOnlyInfoArea(rows = 4)
     private val firstRunGuideArea = createReadOnlyInfoArea(rows = 7)
+    private val capabilityGuideArea = createReadOnlyInfoArea(rows = 6)
     private val demoProjectArea = createReadOnlyInfoArea(rows = 3).apply {
         text = SpecCodingBundle.message("spec.dialog.demo.summary")
     }
@@ -249,6 +250,13 @@ class NewSpecWorkflowDialog(
             panel.add(javax.swing.Box.createVerticalStrut(4))
             firstRunGuideArea.alignmentX = JComponent.LEFT_ALIGNMENT
             panel.add(firstRunGuideArea)
+            panel.add(javax.swing.Box.createVerticalStrut(8))
+            val capabilityGuideLabel = JBLabel(SpecCodingBundle.message("spec.dialog.capabilityGuide.title"))
+            capabilityGuideLabel.alignmentX = JComponent.LEFT_ALIGNMENT
+            panel.add(capabilityGuideLabel)
+            panel.add(javax.swing.Box.createVerticalStrut(4))
+            capabilityGuideArea.alignmentX = JComponent.LEFT_ALIGNMENT
+            panel.add(capabilityGuideArea)
             panel.add(javax.swing.Box.createVerticalStrut(8))
         }
         val demoProjectLabel = JBLabel(SpecCodingBundle.message("spec.dialog.demo.title"))
@@ -522,6 +530,7 @@ class NewSpecWorkflowDialog(
         }
         updateOnboardingPresentation(readiness)
         updateFirstRunStatus(readiness)
+        updateCapabilityGuide(readiness)
         localSetupArea.text = buildString {
             appendLine(readiness.summary)
             appendLine()
@@ -572,6 +581,30 @@ class NewSpecWorkflowDialog(
             if (status.details.isNotEmpty()) {
                 appendLine()
                 append(status.details.joinToString("\n"))
+            }
+        }
+    }
+
+    private fun updateCapabilityGuide(readiness: LocalEnvironmentReadinessSnapshot) {
+        val activeProject = project ?: return
+        val guide = SpecWorkflowCapabilityEnablementGuideCoordinator.build(
+            readiness = readiness,
+            tracking = SpecWorkflowFirstRunTrackingStore.getInstance(activeProject).snapshot(),
+        )
+        capabilityGuideArea.text = buildString {
+            appendLine(guide.summary)
+            appendLine()
+            guide.items.forEachIndexed { index, item ->
+                append(index + 1)
+                append(". ")
+                append(item.title())
+                append(" [")
+                append(item.timing.presentation())
+                append("]: ")
+                append(item.detail)
+                if (index < guide.items.lastIndex) {
+                    appendLine()
+                }
             }
         }
     }
