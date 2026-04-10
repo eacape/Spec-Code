@@ -36,6 +36,7 @@ class SpecWorkflowTaskExecutionCoordinatorTest {
             listOf(SpecCodingBundle.message("spec.toolwindow.tasks.execute.updated", "T-1", "Session T-1")),
             recorder.statusTexts,
         )
+        assertTrue(recorder.failureStatuses.isEmpty())
         assertEquals(
             listOf(RefreshEvent("wf-1", "T-1", "spec_task_execution_updated")),
             recorder.refreshEvents,
@@ -71,6 +72,7 @@ class SpecWorkflowTaskExecutionCoordinatorTest {
             listOf(SpecCodingBundle.message("spec.toolwindow.tasks.retry.updated", "T-2", "Session T-2")),
             recorder.statusTexts,
         )
+        assertTrue(recorder.failureStatuses.isEmpty())
         assertEquals(
             listOf(RefreshEvent("wf-1", "T-2", "spec_task_execution_updated")),
             recorder.refreshEvents,
@@ -101,6 +103,7 @@ class SpecWorkflowTaskExecutionCoordinatorTest {
             ),
             recorder.statusTexts,
         )
+        assertTrue(recorder.failureStatuses.isEmpty())
         assertEquals(
             listOf(RefreshEvent("wf-1", "T-3", "spec_task_execution_cancelled")),
             recorder.refreshEvents,
@@ -122,8 +125,23 @@ class SpecWorkflowTaskExecutionCoordinatorTest {
         coordinator.execute(request)
 
         assertEquals(
-            listOf(SpecCodingBundle.message("spec.workflow.error", "boom")),
-            recorder.statusTexts,
+            listOf(
+                FailureStatusPresentation(
+                    text = SpecCodingBundle.message("spec.workflow.error", "boom"),
+                    actions = recorder.runtimeActions,
+                ),
+            ),
+            recorder.failureStatuses,
+        )
+        assertTrue(recorder.statusTexts.isEmpty())
+        assertEquals(
+            listOf(
+                TroubleshootingRequest(
+                    workflowId = "wf-1",
+                    trigger = SpecWorkflowRuntimeTroubleshootingTrigger.TASK_EXECUTION_FAILURE,
+                ),
+            ),
+            recorder.troubleshootingRequests,
         )
         assertEquals(
             listOf(RefreshEvent("wf-1", "T-4", "spec_task_execution_failed")),
@@ -166,6 +184,7 @@ class SpecWorkflowTaskExecutionCoordinatorTest {
             listOf(SpecCodingBundle.message("spec.toolwindow.tasks.execution.cancelled", "T-5")),
             recorder.statusTexts,
         )
+        assertTrue(recorder.failureStatuses.isEmpty())
         assertEquals(
             listOf(RefreshEvent("wf-2", "T-5", "spec_task_execution_cancelled")),
             recorder.refreshEvents,
@@ -205,6 +224,9 @@ class SpecWorkflowTaskExecutionCoordinatorTest {
             setStatusText = { text ->
                 recorder.statusTexts += text
             },
+            showFailureStatus = { text, actions ->
+                recorder.failureStatuses += FailureStatusPresentation(text, actions)
+            },
             setCancelRequestedStatusText = { text ->
                 recorder.statusTexts += text
             },
@@ -213,6 +235,10 @@ class SpecWorkflowTaskExecutionCoordinatorTest {
             },
             reloadCurrentWorkflow = {
                 recorder.reloadCalls += 1
+            },
+            buildRuntimeTroubleshootingActions = { workflowId, trigger ->
+                recorder.troubleshootingRequests += TroubleshootingRequest(workflowId, trigger)
+                recorder.runtimeActions
             },
             renderFailureMessage = { error, fallback ->
                 error.message ?: fallback
@@ -314,8 +340,14 @@ class SpecWorkflowTaskExecutionCoordinatorTest {
         val cancelTaskCalls = mutableListOf<CancelTaskCall>()
         val openChatCalls = mutableListOf<OpenChatSessionCall>()
         val statusTexts = mutableListOf<String>()
+        val failureStatuses = mutableListOf<FailureStatusPresentation>()
         val refreshEvents = mutableListOf<RefreshEvent>()
         val dialogs = mutableListOf<DialogCall>()
+        val troubleshootingRequests = mutableListOf<TroubleshootingRequest>()
+        val runtimeActions = listOf(
+            SpecWorkflowTroubleshootingAction.OpenSettings(label = "Open settings"),
+            SpecWorkflowTroubleshootingAction.OpenBundledDemo(label = "Open bundled demo"),
+        )
         var reloadCalls: Int = 0
 
         var onStartExecution: (
@@ -386,5 +418,15 @@ class SpecWorkflowTaskExecutionCoordinatorTest {
     private data class DialogCall(
         val title: String,
         val message: String,
+    )
+
+    private data class TroubleshootingRequest(
+        val workflowId: String,
+        val trigger: SpecWorkflowRuntimeTroubleshootingTrigger,
+    )
+
+    private data class FailureStatusPresentation(
+        val text: String,
+        val actions: List<SpecWorkflowTroubleshootingAction>,
     )
 }

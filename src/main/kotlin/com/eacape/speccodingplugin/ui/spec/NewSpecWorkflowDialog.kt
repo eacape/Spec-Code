@@ -27,6 +27,7 @@ import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.JBUI
 import java.awt.Dimension
 import java.awt.Font
+import java.awt.FlowLayout
 import javax.swing.BoxLayout
 import javax.swing.BorderFactory
 import javax.swing.ButtonGroup
@@ -70,6 +71,31 @@ class NewSpecWorkflowDialog(
     private val firstRunStatusArea = createReadOnlyInfoArea(rows = 4)
     private val firstRunGuideArea = createReadOnlyInfoArea(rows = 7)
     private val capabilityGuideArea = createReadOnlyInfoArea(rows = 6)
+    private val troubleshootingFaqArea = createReadOnlyInfoArea(rows = 10)
+    private val troubleshootingActionsPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(8), 0)).apply {
+        alignmentX = JComponent.LEFT_ALIGNMENT
+        isOpaque = false
+        isVisible = false
+    }
+    private val troubleshootingActionDispatcher = SpecWorkflowTroubleshootingActionDispatcher(
+        object : SpecWorkflowTroubleshootingActionDispatcher.Callbacks {
+            override fun openSettings() {
+                openSettingsAndRefreshReadiness()
+            }
+
+            override fun openBundledDemo() {
+                openBundledDemoProject()
+            }
+
+            override fun selectEntry(entry: SpecWorkflowPrimaryEntry) {
+                selectPrimaryEntry(entry)
+            }
+
+            override fun refreshAfterEntrySelection() {
+                updateFormState()
+            }
+        },
+    )
     private val demoProjectArea = createReadOnlyInfoArea(rows = 3).apply {
         text = SpecCodingBundle.message("spec.dialog.demo.summary")
     }
@@ -258,6 +284,19 @@ class NewSpecWorkflowDialog(
             capabilityGuideArea.alignmentX = JComponent.LEFT_ALIGNMENT
             panel.add(capabilityGuideArea)
             panel.add(javax.swing.Box.createVerticalStrut(8))
+            val troubleshootingFaqLabel = JBLabel(SpecCodingBundle.message("spec.dialog.troubleshooting.title"))
+            troubleshootingFaqLabel.alignmentX = JComponent.LEFT_ALIGNMENT
+            panel.add(troubleshootingFaqLabel)
+            panel.add(javax.swing.Box.createVerticalStrut(4))
+            troubleshootingFaqArea.alignmentX = JComponent.LEFT_ALIGNMENT
+            panel.add(troubleshootingFaqArea)
+            panel.add(javax.swing.Box.createVerticalStrut(4))
+            val troubleshootingActionsLabel = JBLabel(SpecCodingBundle.message("spec.dialog.troubleshooting.actions.title"))
+            troubleshootingActionsLabel.alignmentX = JComponent.LEFT_ALIGNMENT
+            panel.add(troubleshootingActionsLabel)
+            panel.add(javax.swing.Box.createVerticalStrut(4))
+            panel.add(troubleshootingActionsPanel)
+            panel.add(javax.swing.Box.createVerticalStrut(8))
         }
         val demoProjectLabel = JBLabel(SpecCodingBundle.message("spec.dialog.demo.title"))
         demoProjectLabel.alignmentX = JComponent.LEFT_ALIGNMENT
@@ -362,6 +401,7 @@ class NewSpecWorkflowDialog(
         localReadinessSnapshot?.let { readiness ->
             updateOnboardingPresentation(readiness)
             updateFirstRunGuide(readiness)
+            updateTroubleshootingFaq(readiness)
         }
         val template = selectedTemplate()
         val supportsVerifySelection = templateSupportsVerifySelection(template)
@@ -531,6 +571,7 @@ class NewSpecWorkflowDialog(
         updateOnboardingPresentation(readiness)
         updateFirstRunStatus(readiness)
         updateCapabilityGuide(readiness)
+        updateTroubleshootingFaq(readiness)
         localSetupArea.text = buildString {
             appendLine(readiness.summary)
             appendLine()
@@ -607,6 +648,45 @@ class NewSpecWorkflowDialog(
                 }
             }
         }
+    }
+
+    private fun updateTroubleshootingFaq(readiness: LocalEnvironmentReadinessSnapshot) {
+        val activeProject = project ?: return
+        val faq = SpecWorkflowTroubleshootingFaqCoordinator.build(
+            readiness = readiness,
+            tracking = SpecWorkflowFirstRunTrackingStore.getInstance(activeProject).snapshot(),
+            template = selectedTemplate(),
+        )
+        troubleshootingFaqArea.text = buildString {
+            appendLine(faq.summary)
+            appendLine()
+            faq.items.forEachIndexed { index, item ->
+                append(index + 1)
+                append(". ")
+                append(item.question)
+                appendLine()
+                append(item.answer)
+                if (index < faq.items.lastIndex) {
+                    appendLine()
+                    appendLine()
+                }
+            }
+        }
+        updateTroubleshootingActions(faq.actions)
+    }
+
+    private fun updateTroubleshootingActions(actions: List<SpecWorkflowTroubleshootingAction>) {
+        troubleshootingActionsPanel.removeAll()
+        actions.forEach { action ->
+            val button = JButton(action.label).apply {
+                isFocusable = false
+                addActionListener { troubleshootingActionDispatcher.perform(action) }
+            }
+            troubleshootingActionsPanel.add(button)
+        }
+        troubleshootingActionsPanel.isVisible = actions.isNotEmpty()
+        troubleshootingActionsPanel.revalidate()
+        troubleshootingActionsPanel.repaint()
     }
 
     private fun openSettingsAndRefreshReadiness() {

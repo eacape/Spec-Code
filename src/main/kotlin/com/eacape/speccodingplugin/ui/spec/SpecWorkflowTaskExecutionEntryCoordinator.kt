@@ -18,6 +18,11 @@ internal class SpecWorkflowTaskExecutionEntryCoordinator(
     private val findReusableWorkflowChatSessionId: (workflowId: String, preferredSessionId: String?) -> String?,
     private val providerDisplayName: (String) -> String,
     private val setStatusText: (String) -> Unit,
+    private val showFailureStatus: (String, List<SpecWorkflowTroubleshootingAction>) -> Unit,
+    private val buildRuntimeTroubleshootingActions: (
+        workflowId: String,
+        trigger: SpecWorkflowRuntimeTroubleshootingTrigger,
+    ) -> List<SpecWorkflowTroubleshootingAction>,
     private val execute: (SpecWorkflowTaskExecutionRequest) -> Unit,
 ) {
 
@@ -29,18 +34,26 @@ internal class SpecWorkflowTaskExecutionEntryCoordinator(
 
         val providerId = request.providerId?.trim()
         if (providerId.isNullOrBlank()) {
-            setStatusText(
+            showFailureStatus(
                 SpecCodingBundle.message("spec.toolwindow.tasks.execute.providerRequired"),
+                buildRuntimeTroubleshootingActions(
+                    workflowId,
+                    SpecWorkflowRuntimeTroubleshootingTrigger.TASK_EXECUTION_PRECHECK,
+                ),
             )
             return false
         }
 
         val modelId = request.modelId?.trim().orEmpty()
         if (modelId.isBlank()) {
-            setStatusText(
+            showFailureStatus(
                 SpecCodingBundle.message(
                     "spec.toolwindow.tasks.execute.modelRequired",
                     providerDisplayName(providerId),
+                ),
+                buildRuntimeTroubleshootingActions(
+                    workflowId,
+                    SpecWorkflowRuntimeTroubleshootingTrigger.TASK_EXECUTION_PRECHECK,
                 ),
             )
             return false

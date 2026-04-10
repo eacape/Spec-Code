@@ -52,9 +52,14 @@ internal class SpecWorkflowTaskExecutionCoordinator(
     private val cancelExecution: (workflowId: String, taskId: String) -> Unit,
     private val openWorkflowChatExecutionSession: (sessionId: String, workflowId: String) -> Unit,
     private val setStatusText: (String) -> Unit,
+    private val showFailureStatus: (String, List<SpecWorkflowTroubleshootingAction>) -> Unit,
     private val setCancelRequestedStatusText: (String) -> Unit,
     private val publishWorkflowChatRefresh: (workflowId: String, taskId: String?, reason: String) -> Unit,
     private val reloadCurrentWorkflow: () -> Unit,
+    private val buildRuntimeTroubleshootingActions: (
+        workflowId: String,
+        trigger: SpecWorkflowRuntimeTroubleshootingTrigger,
+    ) -> List<SpecWorkflowTroubleshootingAction>,
     private val renderFailureMessage: (Throwable, String) -> String,
     private val showExecutionFailureDialog: (title: String, message: String) -> Unit,
 ) {
@@ -151,7 +156,13 @@ internal class SpecWorkflowTaskExecutionCoordinator(
                         error,
                         SpecCodingBundle.message("common.unknown"),
                     )
-                    setStatusText(SpecCodingBundle.message("spec.workflow.error", message))
+                    showFailureStatus(
+                        SpecCodingBundle.message("spec.workflow.error", message),
+                        buildRuntimeTroubleshootingActions(
+                            request.workflowId,
+                            SpecWorkflowRuntimeTroubleshootingTrigger.TASK_EXECUTION_FAILURE,
+                        ),
+                    )
                     publishWorkflowChatRefresh(
                         request.workflowId,
                         request.taskId,

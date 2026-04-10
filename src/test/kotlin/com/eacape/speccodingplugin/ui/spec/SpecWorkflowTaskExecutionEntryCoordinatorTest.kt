@@ -43,6 +43,7 @@ class SpecWorkflowTaskExecutionEntryCoordinatorTest {
             recorder.executionRequest,
         )
         assertTrue(recorder.statusTexts.isEmpty())
+        assertTrue(recorder.failureStatuses.isEmpty())
     }
 
     @Test
@@ -55,9 +56,24 @@ class SpecWorkflowTaskExecutionEntryCoordinatorTest {
         )
 
         assertFalse(accepted)
+        assertTrue(recorder.statusTexts.isEmpty())
         assertEquals(
-            listOf(SpecCodingBundle.message("spec.toolwindow.tasks.execute.providerRequired")),
-            recorder.statusTexts,
+            listOf(
+                FailureStatusPresentation(
+                    text = SpecCodingBundle.message("spec.toolwindow.tasks.execute.providerRequired"),
+                    actions = recorder.runtimeActions,
+                ),
+            ),
+            recorder.failureStatuses,
+        )
+        assertEquals(
+            listOf(
+                TroubleshootingRequest(
+                    workflowId = "wf-1",
+                    trigger = SpecWorkflowRuntimeTroubleshootingTrigger.TASK_EXECUTION_PRECHECK,
+                ),
+            ),
+            recorder.troubleshootingRequests,
         )
         assertTrue(recorder.sessionLookups.isEmpty())
         assertNull(recorder.executionRequest)
@@ -77,14 +93,27 @@ class SpecWorkflowTaskExecutionEntryCoordinatorTest {
 
         assertFalse(accepted)
         assertEquals(listOf("provider-2"), recorder.providerDisplayNames)
+        assertTrue(recorder.statusTexts.isEmpty())
         assertEquals(
             listOf(
-                SpecCodingBundle.message(
-                    "spec.toolwindow.tasks.execute.modelRequired",
-                    "Provider provider-2",
+                FailureStatusPresentation(
+                    text = SpecCodingBundle.message(
+                        "spec.toolwindow.tasks.execute.modelRequired",
+                        "Provider provider-2",
+                    ),
+                    actions = recorder.runtimeActions,
                 ),
             ),
-            recorder.statusTexts,
+            recorder.failureStatuses,
+        )
+        assertEquals(
+            listOf(
+                TroubleshootingRequest(
+                    workflowId = "wf-1",
+                    trigger = SpecWorkflowRuntimeTroubleshootingTrigger.TASK_EXECUTION_PRECHECK,
+                ),
+            ),
+            recorder.troubleshootingRequests,
         )
         assertTrue(recorder.sessionLookups.isEmpty())
         assertNull(recorder.executionRequest)
@@ -112,6 +141,7 @@ class SpecWorkflowTaskExecutionEntryCoordinatorTest {
         )
         assertEquals(true, recorder.executionRequest?.retry)
         assertNull(recorder.executionRequest?.sessionId)
+        assertTrue(recorder.failureStatuses.isEmpty())
     }
 
     private fun coordinator(
@@ -131,6 +161,13 @@ class SpecWorkflowTaskExecutionEntryCoordinatorTest {
             },
             setStatusText = { text ->
                 recorder.statusTexts += text
+            },
+            showFailureStatus = { text, actions ->
+                recorder.failureStatuses += FailureStatusPresentation(text, actions)
+            },
+            buildRuntimeTroubleshootingActions = { workflowId, trigger ->
+                recorder.troubleshootingRequests += TroubleshootingRequest(workflowId, trigger)
+                recorder.runtimeActions
             },
             execute = { request ->
                 recorder.executionRequest = request
@@ -162,11 +199,27 @@ class SpecWorkflowTaskExecutionEntryCoordinatorTest {
         val sessionLookups = mutableListOf<SessionLookupCall>()
         val providerDisplayNames = mutableListOf<String>()
         val statusTexts = mutableListOf<String>()
+        val failureStatuses = mutableListOf<FailureStatusPresentation>()
+        val troubleshootingRequests = mutableListOf<TroubleshootingRequest>()
+        val runtimeActions = listOf(
+            SpecWorkflowTroubleshootingAction.OpenSettings(label = "Open settings"),
+            SpecWorkflowTroubleshootingAction.OpenBundledDemo(label = "Open bundled demo"),
+        )
         var executionRequest: SpecWorkflowTaskExecutionRequest? = null
     }
 
     private data class SessionLookupCall(
         val workflowId: String,
         val preferredSessionId: String?,
+    )
+
+    private data class TroubleshootingRequest(
+        val workflowId: String,
+        val trigger: SpecWorkflowRuntimeTroubleshootingTrigger,
+    )
+
+    private data class FailureStatusPresentation(
+        val text: String,
+        val actions: List<SpecWorkflowTroubleshootingAction>,
     )
 }

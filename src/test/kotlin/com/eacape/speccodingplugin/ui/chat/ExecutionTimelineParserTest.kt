@@ -103,4 +103,12 @@ class ExecutionTimelineParserTest {
         assertEquals(ExecutionTimelineParser.Kind.VERIFY, items[2].kind)
         assertEquals(ExecutionTimelineParser.Status.ERROR, items[2].status)
     }
+
+    @Test
+    fun `parse should treat exit code output as error`() {
+        val item = ExecutionTimelineParser.parseLine("[Output] CLI exited with exit code: 1")
+
+        assertEquals(ExecutionTimelineParser.Kind.OUTPUT, item?.kind)
+        assertEquals(ExecutionTimelineParser.Status.ERROR, item?.status)
+    }
 }

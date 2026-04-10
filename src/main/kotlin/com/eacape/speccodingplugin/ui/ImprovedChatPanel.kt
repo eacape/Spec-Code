@@ -1264,17 +1264,7 @@ class ImprovedChatPanel(
         } else {
             ChatTraceKind.TASK
         }
-        val status = when (progress.phase) {
-            ExecutionLivePhase.QUEUED,
-            ExecutionLivePhase.PREPARING_CONTEXT,
-            ExecutionLivePhase.REQUEST_DISPATCHED,
-            ExecutionLivePhase.STREAMING,
-            ExecutionLivePhase.CANCELLING,
-            -> ChatTraceStatus.RUNNING
-
-            ExecutionLivePhase.WAITING_CONFIRMATION -> ChatTraceStatus.INFO
-            ExecutionLivePhase.TERMINAL -> ChatTraceStatus.DONE
-        }
+        val status = resolveFallbackTaskExecutionTraceStatus(progress)
         return sanitizeStreamEvent(
             ChatStreamEvent(
                 kind = kind,
@@ -7384,6 +7374,35 @@ class ImprovedChatPanel(
             )
         }
 
+        internal fun resolveFallbackTaskExecutionTraceStatus(
+            progress: TaskExecutionLiveProgress,
+        ): ChatTraceStatus {
+            return when (progress.phase) {
+                ExecutionLivePhase.QUEUED,
+                ExecutionLivePhase.PREPARING_CONTEXT,
+                ExecutionLivePhase.REQUEST_DISPATCHED,
+                ExecutionLivePhase.STREAMING,
+                ExecutionLivePhase.CANCELLING,
+                -> ChatTraceStatus.RUNNING
+
+                ExecutionLivePhase.WAITING_CONFIRMATION -> ChatTraceStatus.INFO
+                ExecutionLivePhase.TERMINAL -> if (looksLikeFailedTaskExecutionDetail(progress.lastDetail)) {
+                    ChatTraceStatus.ERROR
+                } else {
+                    ChatTraceStatus.DONE
+                }
+            }
+        }
+
+        private fun looksLikeFailedTaskExecutionDetail(detail: String?): Boolean {
+            val normalized = detail?.trim()?.lowercase(Locale.ROOT).orEmpty()
+            if (normalized.isBlank()) {
+                return false
+            }
+            return FAILED_TASK_EXECUTION_DETAIL_KEYWORDS.any(normalized::contains) ||
+                (normalized.contains("exit") && normalized.contains("code"))
+        }
+
         private val CHAT_CONTEXT_CONFIG = ContextConfig(
             includeCurrentFile = false,
             includeSelectedCode = false,
@@ -7396,6 +7415,19 @@ class ImprovedChatPanel(
             "mcp-",
             "model context protocol",
             "modelcontextprotocol",
+        )
+        private val FAILED_TASK_EXECUTION_DETAIL_KEYWORDS = listOf(
+            "failed",
+            "failure",
+            "error",
+            "exception",
+            "timed out",
+            "timeout",
+            "失败",
+            "错误",
+            "异常",
+            "超时",
+            "未成功",
         )
         private const val HISTORY_CONTENT_KEY = "SpecCoding.HistoryContent"
         private val HISTORY_CONTENT_DATA_KEY = Key.create<String>(HISTORY_CONTENT_KEY)

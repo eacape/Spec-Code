@@ -744,8 +744,9 @@ open class ChatMessagePanel(
         val processItems = traceSnapshot.items.filter { item ->
             item.kind != ExecutionTimelineParser.Kind.OUTPUT && shouldRenderProcessItem(item)
         }
+        val hasFailedTrace = messageFinished && traceSnapshot.items.any { it.status == ExecutionTimelineParser.Status.ERROR }
         if (processItems.isNotEmpty()) {
-            container.add(createTracePanel(processItems))
+            container.add(createTracePanel(processItems, hasFailedTrace))
         }
 
         val outputItems = traceSnapshot.items.filter { it.kind == ExecutionTimelineParser.Kind.OUTPUT }
@@ -1012,15 +1013,20 @@ open class ChatMessagePanel(
         return normalized in WORKFLOW_HEADING_TITLES
     }
 
-    private fun createTracePanel(items: List<StreamingTraceAssembler.TraceItem>): JPanel {
+    private fun createTracePanel(
+        items: List<StreamingTraceAssembler.TraceItem>,
+        hasFailedTrace: Boolean,
+    ): JPanel {
         val displayItems = mergeTraceItemsForDisplay(items)
             .takeLast(MAX_TIMELINE_VISIBLE_ITEMS)
+        val running = items.any { it.status == ExecutionTimelineParser.Status.RUNNING }
+        val failed = hasFailedTrace && !running
 
         val wrapper = JPanel(BorderLayout())
         wrapper.isOpaque = true
-        wrapper.background = traceCardBackgroundColor()
+        wrapper.background = traceCardBackgroundColor(failed)
         wrapper.border = buildRoundedContainerBorder(
-            lineColor = traceCardBorderColor(),
+            lineColor = traceCardBorderColor(failed),
             arc = 12,
             padding = JBUI.insets(7, 9, 6, 9),
         )
@@ -1031,7 +1037,6 @@ open class ChatMessagePanel(
         val summaryLeft = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
         summaryLeft.isOpaque = false
 
-        val running = items.any { it.status == ExecutionTimelineParser.Status.RUNNING }
         if (running) {
             summaryLeft.add(
                 createRunningIndicator(
@@ -1042,7 +1047,11 @@ open class ChatMessagePanel(
             )
         } else {
             val summaryIcon = JBLabel("●")
-            summaryIcon.foreground = kindColor(ExecutionTimelineParser.Kind.TASK)
+            summaryIcon.foreground = if (failed) {
+                statusColor(ExecutionTimelineParser.Status.ERROR)
+            } else {
+                kindColor(ExecutionTimelineParser.Kind.TASK)
+            }
             summaryIcon.font = summaryIcon.font.deriveFont(11f)
             summaryLeft.add(summaryIcon)
         }
@@ -1050,6 +1059,14 @@ open class ChatMessagePanel(
         val summaryLabel = JBLabel(SpecCodingBundle.message("chat.timeline.summary.label"))
         summaryLabel.font = summaryLabel.font.deriveFont(java.awt.Font.BOLD, 12f)
         summaryLeft.add(summaryLabel)
+        if (failed) {
+            summaryLeft.add(
+                createSummaryBadge(
+                    SpecCodingBundle.message("chat.timeline.status.failed"),
+                    SummaryBadgeTone.ERROR,
+                ),
+            )
+        }
 
         val readCount = items.count { it.kind == ExecutionTimelineParser.Kind.READ }
         val editCount = items.count { it.kind == ExecutionTimelineParser.Kind.EDIT }
@@ -1108,11 +1125,12 @@ open class ChatMessagePanel(
             filterLevel = outputFilterLevel,
             charBudget = if (outputExpanded) null else OUTPUT_COLLAPSED_CHAR_BUDGET,
         )
+        val failed = mergedOutput.status == ExecutionTimelineParser.Status.ERROR
         val wrapper = JPanel(BorderLayout())
         wrapper.isOpaque = true
-        wrapper.background = outputCardBackgroundColor()
+        wrapper.background = outputCardBackgroundColor(failed)
         wrapper.border = buildRoundedContainerBorder(
-            lineColor = outputCardBorderColor(),
+            lineColor = outputCardBorderColor(failed),
             arc = 12,
             padding = JBUI.insets(7, 9, 6, 9),
         )
@@ -1134,7 +1152,11 @@ open class ChatMessagePanel(
             )
         } else {
             val icon = JBLabel("▤")
-            icon.foreground = kindColor(ExecutionTimelineParser.Kind.OUTPUT)
+            icon.foreground = if (failed) {
+                statusColor(ExecutionTimelineParser.Status.ERROR)
+            } else {
+                kindColor(ExecutionTimelineParser.Kind.OUTPUT)
+            }
             icon.font = icon.font.deriveFont(12f)
             left.add(icon)
         }
@@ -1142,6 +1164,14 @@ open class ChatMessagePanel(
         val title = JBLabel(SpecCodingBundle.message("chat.timeline.kind.output"))
         title.font = title.font.deriveFont(java.awt.Font.BOLD, 12f)
         left.add(title)
+        if (failed) {
+            left.add(
+                createSummaryBadge(
+                    SpecCodingBundle.message("chat.timeline.status.failed"),
+                    SummaryBadgeTone.ERROR,
+                ),
+            )
+        }
 
         left.add(createSummaryBadge(items.size.toString()))
         header.add(left, BorderLayout.CENTER)
@@ -2844,25 +2874,53 @@ open class ChatMessagePanel(
         )
     }
 
-    private fun traceCardBackgroundColor(): java.awt.Color = JBColor(
-        java.awt.Color(252, 253, 255),
-        java.awt.Color(42, 47, 55),
-    )
+    private fun traceCardBackgroundColor(failed: Boolean): java.awt.Color = if (failed) {
+        JBColor(
+            java.awt.Color(255, 247, 247),
+            java.awt.Color(62, 42, 44),
+        )
+    } else {
+        JBColor(
+            java.awt.Color(252, 253, 255),
+            java.awt.Color(42, 47, 55),
+        )
+    }
 
-    private fun traceCardBorderColor(): java.awt.Color = JBColor(
-        java.awt.Color(214, 223, 234),
-        java.awt.Color(78, 88, 99),
-    )
+    private fun traceCardBorderColor(failed: Boolean): java.awt.Color = if (failed) {
+        JBColor(
+            java.awt.Color(233, 179, 184),
+            java.awt.Color(126, 77, 82),
+        )
+    } else {
+        JBColor(
+            java.awt.Color(214, 223, 234),
+            java.awt.Color(78, 88, 99),
+        )
+    }
 
-    private fun outputCardBackgroundColor(): java.awt.Color = JBColor(
-        java.awt.Color(252, 253, 255),
-        java.awt.Color(41, 46, 53),
-    )
+    private fun outputCardBackgroundColor(failed: Boolean): java.awt.Color = if (failed) {
+        JBColor(
+            java.awt.Color(255, 247, 247),
+            java.awt.Color(60, 41, 44),
+        )
+    } else {
+        JBColor(
+            java.awt.Color(252, 253, 255),
+            java.awt.Color(41, 46, 53),
+        )
+    }
 
-    private fun outputCardBorderColor(): java.awt.Color = JBColor(
-        java.awt.Color(214, 223, 234),
-        java.awt.Color(78, 88, 99),
-    )
+    private fun outputCardBorderColor(failed: Boolean): java.awt.Color = if (failed) {
+        JBColor(
+            java.awt.Color(233, 179, 184),
+            java.awt.Color(126, 77, 82),
+        )
+    } else {
+        JBColor(
+            java.awt.Color(214, 223, 234),
+            java.awt.Color(78, 88, 99),
+        )
+    }
 
     private fun traceRowBackgroundColor(): java.awt.Color = JBColor(
         java.awt.Color(250, 252, 255),
@@ -2889,17 +2947,37 @@ open class ChatMessagePanel(
         java.awt.Color(86, 96, 108),
     )
 
-    private fun createSummaryBadge(text: String): JBLabel {
+    private fun createSummaryBadge(
+        text: String,
+        tone: SummaryBadgeTone = SummaryBadgeTone.NEUTRAL,
+    ): JBLabel {
         val badge = JBLabel(text)
         badge.isOpaque = true
-        badge.background = JBColor(
-            java.awt.Color(246, 249, 253),
-            java.awt.Color(58, 65, 76),
-        )
-        badge.foreground = JBColor(
-            java.awt.Color(92, 108, 127),
-            java.awt.Color(166, 184, 208),
-        )
+        val (background, foreground) = when (tone) {
+            SummaryBadgeTone.NEUTRAL -> Pair(
+                JBColor(
+                    java.awt.Color(246, 249, 253),
+                    java.awt.Color(58, 65, 76),
+                ),
+                JBColor(
+                    java.awt.Color(92, 108, 127),
+                    java.awt.Color(166, 184, 208),
+                ),
+            )
+
+            SummaryBadgeTone.ERROR -> Pair(
+                JBColor(
+                    java.awt.Color(252, 231, 233),
+                    java.awt.Color(108, 62, 66),
+                ),
+                JBColor(
+                    java.awt.Color(160, 50, 58),
+                    java.awt.Color(246, 193, 198),
+                ),
+            )
+        }
+        badge.background = background
+        badge.foreground = foreground
         badge.font = badge.font.deriveFont(10f)
         badge.border = JBUI.Borders.empty(1, 6, 1, 6)
         return badge
@@ -3323,6 +3401,11 @@ open class ChatMessagePanel(
         val status: ExecutionTimelineParser.Status,
         val detail: String,
     )
+
+    private enum class SummaryBadgeTone {
+        NEUTRAL,
+        ERROR,
+    }
 
     private data class UserImageAttachment(
         val displayName: String,

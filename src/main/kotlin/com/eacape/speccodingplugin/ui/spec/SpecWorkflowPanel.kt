@@ -18,6 +18,7 @@ import com.eacape.speccodingplugin.spec.*
 import com.eacape.speccodingplugin.ui.ChatToolWindowControlListener
 import com.eacape.speccodingplugin.ui.ChatToolWindowFactory
 import com.eacape.speccodingplugin.ui.ComboBoxAutoWidthSupport
+import com.eacape.speccodingplugin.ui.LocalEnvironmentReadiness
 import com.eacape.speccodingplugin.ui.RefreshFeedback
 import com.eacape.speccodingplugin.ui.SwingPanelTaskCoordinator
 import com.eacape.speccodingplugin.ui.WorkflowChatRefreshEvent
@@ -30,6 +31,7 @@ import com.eacape.speccodingplugin.window.GlobalConfigSyncListener
 import com.eacape.speccodingplugin.window.WindowSessionIsolationService
 import com.eacape.speccodingplugin.ui.worktree.NewWorktreeDialog
 import com.eacape.speccodingplugin.worktree.WorktreeManager
+import com.intellij.ide.BrowserUtil
 import com.intellij.CommonBundle
 import com.intellij.openapi.components.service
 import com.intellij.openapi.Disposable
@@ -38,6 +40,7 @@ import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
+import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.project.Project
@@ -304,6 +307,7 @@ class SpecWorkflowPanel(
             taskChatCoordinator.openExecutionSession(sessionId, workflowId)
         },
         setStatusText = ::setStatusText,
+        showFailureStatus = ::setStatusWithTroubleshooting,
         setCancelRequestedStatusText = { text ->
             invokeLaterSafe {
                 setStatusText(text)
@@ -314,6 +318,9 @@ class SpecWorkflowPanel(
         },
         reloadCurrentWorkflow = {
             reloadCurrentWorkflow()
+        },
+        buildRuntimeTroubleshootingActions = { workflowId, trigger ->
+            buildTaskExecutionTroubleshootingActions(workflowId, trigger)
         },
         renderFailureMessage = { error, fallback ->
             compactErrorMessage(error, fallback)
@@ -334,6 +341,10 @@ class SpecWorkflowPanel(
         },
         providerDisplayName = ::providerDisplayName,
         setStatusText = ::setStatusText,
+        showFailureStatus = ::setStatusWithTroubleshooting,
+        buildRuntimeTroubleshootingActions = { workflowId, trigger ->
+            buildTaskExecutionTroubleshootingActions(workflowId, trigger)
+        },
         execute = taskExecutionCoordinator::execute,
     )
     private val verifyDeltaCoordinator = SpecWorkflowVerifyDeltaCoordinator(
@@ -670,7 +681,23 @@ class SpecWorkflowPanel(
         onRepairTasksRequested = ::repairTasksArtifactFromGate,
     )
     private val statusLabel = JBLabel("")
+    private val statusActionPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0))
     private val statusChipPanel = JPanel(BorderLayout())
+    private val statusTroubleshootingActionDispatcher = SpecWorkflowTroubleshootingActionDispatcher(
+        object : SpecWorkflowTroubleshootingActionDispatcher.Callbacks {
+            override fun openSettings() {
+                openTroubleshootingSettings()
+            }
+
+            override fun openBundledDemo() {
+                openBundledDemoProject()
+            }
+
+            override fun selectEntry(entry: SpecWorkflowPrimaryEntry) = Unit
+
+            override fun refreshAfterEntrySelection() = Unit
+        },
+    )
     private val modelLabel = JBLabel(SpecCodingBundle.message("toolwindow.model.label"))
     private val providerComboBox = ComboBox<String>()
     private val modelComboBox = ComboBox<ModelInfo>()
@@ -918,8 +945,11 @@ class SpecWorkflowPanel(
             bottom = 1,
             right = 6,
         )
+        statusActionPanel.isOpaque = false
+        statusActionPanel.isVisible = false
         statusChipPanel.removeAll()
         statusChipPanel.add(statusLabel, BorderLayout.CENTER)
+        statusChipPanel.add(statusActionPanel, BorderLayout.EAST)
         val toolbarCard = JPanel(BorderLayout()).apply {
             isOpaque = true
             background = TOOLBAR_BG
@@ -1697,11 +1727,89 @@ class SpecWorkflowPanel(
     private fun toUiLowercase(value: String): String = value.lowercase(Locale.ROOT)
 
     private fun setStatusText(text: String?) {
+        applyStatusPresentation(text, emptyList())
+    }
+
+    private fun setStatusWithTroubleshooting(
+        text: String?,
+        actions: List<SpecWorkflowTroubleshootingAction>,
+    ) {
+        applyStatusPresentation(text, actions)
+    }
+
+    private fun applyStatusPresentation(
+        text: String?,
+        actions: List<SpecWorkflowTroubleshootingAction>,
+    ) {
         val value = text?.trim().orEmpty()
         statusLabel.text = value
+        updateStatusTroubleshootingActions(actions)
         statusChipPanel.isVisible = value.isNotEmpty()
         statusChipPanel.revalidate()
         statusChipPanel.repaint()
+    }
+
+    private fun updateStatusTroubleshootingActions(actions: List<SpecWorkflowTroubleshootingAction>) {
+        statusActionPanel.removeAll()
+        actions.forEach { action ->
+            statusActionPanel.add(createStatusTroubleshootingButton(action))
+        }
+        statusActionPanel.isVisible = actions.isNotEmpty()
+    }
+
+    private fun createStatusTroubleshootingButton(action: SpecWorkflowTroubleshootingAction): JButton {
+        return JButton(action.label).apply {
+            addActionListener { statusTroubleshootingActionDispatcher.perform(action) }
+            styleToolbarButton(this)
+        }
+    }
+
+    private fun buildTaskExecutionTroubleshootingActions(
+        workflowId: String,
+        trigger: SpecWorkflowRuntimeTroubleshootingTrigger,
+    ): List<SpecWorkflowTroubleshootingAction> {
+        val template = currentWorkflow
+            ?.takeIf { workflow -> workflow.id == workflowId }
+            ?.template
+            ?: WorkflowTemplate.QUICK_TASK
+        return SpecWorkflowRuntimeTroubleshootingCoordinator.build(
+            trigger = trigger,
+            readiness = LocalEnvironmentReadiness.inspect(project),
+            tracking = SpecWorkflowFirstRunTrackingStore.getInstance(project).snapshot(),
+            template = template,
+        )
+    }
+
+    private fun openTroubleshootingSettings() {
+        ShowSettingsUtil.getInstance().showSettingsDialog(
+            project,
+            "com.eacape.speccodingplugin.settings",
+        )
+        syncToolbarSelectionFromSettings()
+    }
+
+    private fun openBundledDemoProject() {
+        val demoProject = runCatching {
+            SpecWorkflowBundledDemoProjectSupport.materializeDefault()
+        }.getOrElse { error ->
+            showBundledDemoOpenError(error)
+            return
+        }
+        val readmePath = demoProject.readmePath
+        if (!SpecWorkflowActionSupport.openFile(project, readmePath)) {
+            BrowserUtil.browse(readmePath.toUri())
+        }
+    }
+
+    private fun showBundledDemoOpenError(error: Throwable) {
+        Messages.showErrorDialog(
+            project,
+            SpecCodingBundle.message(
+                "spec.dialog.demo.open.failed",
+                error.message ?: error.javaClass.simpleName,
+            ),
+            SpecCodingBundle.message("spec.dialog.demo.title"),
+        )
     }
 
     private fun createSectionContainer(
@@ -5070,6 +5178,10 @@ class SpecWorkflowPanel(
 
     internal fun selectedModelIdForTest(): String? = (modelComboBox.selectedItem as? ModelInfo)?.id
 
+    internal fun clearToolbarModelSelectionForTest() {
+        modelComboBox.selectedItem = null
+    }
+
     internal fun selectToolbarModelForTest(providerId: String, modelId: String) {
         providerComboBox.selectedItem = providerId
         val targetModel = (0 until modelComboBox.itemCount)
@@ -5101,6 +5213,13 @@ class SpecWorkflowPanel(
     internal fun composerCodeContextHintTextForTest(): String = detailPanel.composerCodeContextHintTextForTest()
 
     internal fun currentStatusTextForTest(): String = statusLabel.text.orEmpty()
+
+    internal fun currentStatusActionLabelsForTest(): List<String> {
+        return statusActionPanel.components
+            .filterIsInstance<JButton>()
+            .map { button -> button.text.orEmpty() }
+            .filter { label -> label.isNotBlank() }
+    }
 
     internal fun isComposerSourceRestoreVisibleForTest(): Boolean = detailPanel.isComposerSourceRestoreVisibleForTest()
 

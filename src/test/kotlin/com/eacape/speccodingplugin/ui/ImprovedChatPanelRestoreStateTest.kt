@@ -2,6 +2,7 @@ package com.eacape.speccodingplugin.ui
 
 import com.eacape.speccodingplugin.spec.ExecutionLivePhase
 import com.eacape.speccodingplugin.spec.TaskExecutionLiveProgress
+import com.eacape.speccodingplugin.stream.ChatTraceStatus
 import com.eacape.speccodingplugin.window.WindowRuntimeState
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -104,19 +105,47 @@ class ImprovedChatPanelRestoreStateTest {
         assertEquals(listOf("run-a", "run-b", "run-c"), ordered.map(TaskExecutionLiveProgress::runId))
     }
 
+    @Test
+    fun `terminal fallback trace status should keep failed executions marked as error`() {
+        val failedStatus = ImprovedChatPanel.resolveFallbackTaskExecutionTraceStatus(
+            liveProgress(
+                runId = "run-failed",
+                taskId = "T-404",
+                updatedAt = "2026-03-19T10:00:02Z",
+                phase = ExecutionLivePhase.TERMINAL,
+                detail = "AI execution failed with exit code 1",
+            ),
+        )
+        val succeededStatus = ImprovedChatPanel.resolveFallbackTaskExecutionTraceStatus(
+            liveProgress(
+                runId = "run-done",
+                taskId = "T-405",
+                updatedAt = "2026-03-19T10:00:03Z",
+                phase = ExecutionLivePhase.TERMINAL,
+                detail = "Execution completed successfully",
+            ),
+        )
+
+        assertEquals(ChatTraceStatus.ERROR, failedStatus)
+        assertEquals(ChatTraceStatus.DONE, succeededStatus)
+    }
+
     private fun liveProgress(
         runId: String,
         taskId: String,
         updatedAt: String,
+        phase: ExecutionLivePhase = ExecutionLivePhase.STREAMING,
+        detail: String? = null,
     ): TaskExecutionLiveProgress {
         val instant = Instant.parse(updatedAt)
         return TaskExecutionLiveProgress(
             workflowId = "wf-test",
             runId = runId,
             taskId = taskId,
-            phase = ExecutionLivePhase.STREAMING,
+            phase = phase,
             startedAt = instant.minusSeconds(30),
             lastUpdatedAt = instant,
+            lastDetail = detail,
         )
     }
 }

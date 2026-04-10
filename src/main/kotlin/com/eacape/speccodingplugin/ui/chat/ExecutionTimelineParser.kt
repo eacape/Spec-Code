@@ -109,8 +109,12 @@ internal object ExecutionTimelineParser {
         }
 
         if (ERROR_KEYWORDS.any { keyword -> normalized.contains(keyword) } ||
+            normalized.contains("exit code") ||
+            normalized.contains("timed out") ||
             line.contains("失败") ||
-            line.contains("错误")
+            line.contains("错误") ||
+            line.contains("退出码") ||
+            line.contains("超时")
         ) {
             return Status.ERROR
         }

@@ -174,7 +174,7 @@ class ChatMessagePanelTraceStreamingTest {
             .filterIsInstance<JButton>()
             .any { button ->
                 button.text == expandText || button.text == collapseText
-            }
+        }
         assertTrue(hasTimelineToggle)
     }
 
