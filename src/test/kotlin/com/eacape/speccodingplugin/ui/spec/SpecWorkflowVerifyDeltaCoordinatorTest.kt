@@ -31,6 +31,42 @@ class SpecWorkflowVerifyDeltaCoordinatorTest {
     }
 
     @Test
+    fun `runVerification should surface troubleshooting actions when verification fails`() {
+        val recorder = RecordingEnvironment().apply {
+            verificationFailure = IllegalStateException("verify disabled")
+            troubleshootingActions = listOf(
+                SpecWorkflowTroubleshootingAction.OpenSettings(label = "Open settings"),
+                SpecWorkflowTroubleshootingAction.OpenBundledDemo(label = "Open bundled demo"),
+            )
+        }
+        val coordinator = coordinator(recorder)
+
+        coordinator.runVerification(" wf-verify-fail ")
+
+        assertEquals(listOf("wf-verify-fail"), recorder.runVerificationCalls)
+        assertEquals(
+            listOf(
+                FailureStatusCall(
+                    text = SpecCodingBundle.message("spec.workflow.error", "verify disabled"),
+                    actions = recorder.troubleshootingActions,
+                ),
+            ),
+            recorder.failureStatuses,
+        )
+        assertEquals(
+            listOf(
+                TroubleshootingCall(
+                    workflowId = "wf-verify-fail",
+                    trigger = SpecWorkflowRuntimeTroubleshootingTrigger.VERIFY_FAILURE,
+                ),
+            ),
+            recorder.troubleshootingCalls,
+        )
+        assertEquals(0, recorder.reloadCount)
+        assertTrue(recorder.statusTexts.isEmpty())
+    }
+
+    @Test
     fun `openVerificationDocument should report unavailable when file does not exist`() {
         val recorder = RecordingEnvironment().apply {
             locateArtifactPath = Path.of("build", "missing-verification.md")
@@ -215,9 +251,14 @@ class SpecWorkflowVerifyDeltaCoordinatorTest {
         recorder: RecordingEnvironment,
     ): SpecWorkflowVerifyDeltaCoordinator {
         return SpecWorkflowVerifyDeltaCoordinator(
-            runVerificationWorkflow = { workflowId, onCompleted ->
+            runVerificationWorkflow = { workflowId, onCompleted, onFailure ->
                 recorder.runVerificationCalls += workflowId
-                onCompleted(recorder.verificationSummary)
+                val failure = recorder.verificationFailure
+                if (failure != null) {
+                    onFailure(failure)
+                } else {
+                    onCompleted(recorder.verificationSummary)
+                }
             },
             locateArtifact = { workflowId, stageId ->
                 recorder.locateArtifactCalls += LocateArtifactCall(workflowId, stageId)
@@ -258,6 +299,13 @@ class SpecWorkflowVerifyDeltaCoordinatorTest {
             setStatusText = { text ->
                 recorder.statusTexts += text
             },
+            showFailureStatus = { text, actions ->
+                recorder.failureStatuses += FailureStatusCall(text, actions)
+            },
+            buildRuntimeTroubleshootingActions = { workflowId, trigger ->
+                recorder.troubleshootingCalls += TroubleshootingCall(workflowId, trigger)
+                recorder.troubleshootingActions
+            },
             renderFailureMessage = { error ->
                 error.message ?: "unknown"
             },
@@ -283,12 +331,14 @@ class SpecWorkflowVerifyDeltaCoordinatorTest {
 
     private class RecordingEnvironment {
         var verificationSummary: String = "verification finished"
+        var verificationFailure: Throwable? = null
         var locateArtifactPath: Path = Path.of("build", "verification.md")
         var openFileResult: Boolean = true
         var compareByWorkflowIdResult: Result<SpecWorkflowDelta> =
             Result.failure(IllegalStateException("missing compare result"))
         var compareByBaselineResult: Result<SpecWorkflowDelta> =
             Result.failure(IllegalStateException("missing baseline result"))
+        var troubleshootingActions: List<SpecWorkflowTroubleshootingAction> = emptyList()
         var snapshots: List<SpecWorkflowSnapshotEntry> = listOf(
             SpecWorkflowSnapshotEntry(
                 snapshotId = "snapshot-1",
@@ -308,6 +358,8 @@ class SpecWorkflowVerifyDeltaCoordinatorTest {
         val pinBaselineCalls = mutableListOf<PinBaselineCall>()
         val deltaDialogCalls = mutableListOf<DeltaDialogCall>()
         val statusTexts = mutableListOf<String>()
+        val failureStatuses = mutableListOf<FailureStatusCall>()
+        val troubleshootingCalls = mutableListOf<TroubleshootingCall>()
         var reloadCount: Int = 0
     }
 
@@ -335,5 +387,15 @@ class SpecWorkflowVerifyDeltaCoordinatorTest {
     private data class DeltaDialogCall(
         val workflow: SpecWorkflow,
         val delta: SpecWorkflowDelta,
+    )
+
+    private data class FailureStatusCall(
+        val text: String,
+        val actions: List<SpecWorkflowTroubleshootingAction>,
+    )
+
+    private data class TroubleshootingCall(
+        val workflowId: String,
+        val trigger: SpecWorkflowRuntimeTroubleshootingTrigger,
     )
 }

@@ -458,6 +458,8 @@ tasks {
         classNames = listOf(
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowSelectionServiceTest",
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowGateDetailsPanelTest",
+            "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelGenerationTroubleshootingPlatformTest",
+            "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelVerifyTroubleshootingPlatformTest",
             "com.eacape.speccodingplugin.ui.actions.SpecWorkflowActionSupportPlatformTest",
             "com.eacape.speccodingplugin.spec.SpecRelatedFilesServicePlatformTest",
         ),

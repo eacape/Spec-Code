@@ -347,6 +347,14 @@ abstract class CliEngine(
     }
 
     /**
+     * 清洗 stderr 单行内容，用于最终错误消息拼装。
+     * 返回 null 表示该行属于协议噪音/可忽略元数据，不应暴露给用户。
+     */
+    protected open fun sanitizeProcessErrorLine(line: String): String? {
+        return line.takeIf { it.isNotBlank() }
+    }
+
+    /**
      * stdout 在无换行时的分片阈值。
      * 返回 null 或 <= 0 时仅按换行刷新，适合 JSONL 等按行协议。
      */
@@ -581,6 +589,7 @@ abstract class CliEngine(
             .replace('\r', '\n')
             .lineSequence()
             .map { it.trim() }
+            .mapNotNull(::sanitizeProcessErrorLine)
             .filter { it.isNotBlank() }
             .filterNot { looksLikeMojibakeLine(it) }
             .joinToString("\n")

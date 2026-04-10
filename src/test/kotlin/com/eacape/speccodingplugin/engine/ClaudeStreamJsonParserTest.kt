@@ -100,6 +100,16 @@ class ClaudeStreamJsonParserTest {
     }
 
     @Test
+    fun `system init metadata line should be ignored`() {
+        val line =
+            """{"type":"system","subtype":"init","cwd":"/tmp/project","session_id":"abc","tools":["mcp__demo__tool"]}"""
+
+        val chunk = ClaudeStreamJsonParser.parseLine(line)
+
+        assertNull(chunk)
+    }
+
+    @Test
     fun `non json workflow line should fallback to plain text parsing`() {
         val line = "[Task] collect project context"
 

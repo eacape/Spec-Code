@@ -15,7 +15,11 @@ internal data class SpecWorkflowVerifyDeltaCompareRequest(
 )
 
 internal class SpecWorkflowVerifyDeltaCoordinator(
-    private val runVerificationWorkflow: (workflowId: String, onCompleted: (String) -> Unit) -> Unit,
+    private val runVerificationWorkflow: (
+        workflowId: String,
+        onCompleted: (String) -> Unit,
+        onFailure: (Throwable) -> Unit,
+    ) -> Unit,
     private val locateArtifact: (workflowId: String, stageId: StageId) -> Path,
     private val openFile: (Path) -> Boolean,
     private val runIo: (task: () -> Unit) -> Unit,
@@ -31,15 +35,35 @@ internal class SpecWorkflowVerifyDeltaCoordinator(
     private val showDeltaDialog: (SpecWorkflow, SpecWorkflowDelta) -> Unit,
     private val reloadCurrentWorkflow: () -> Unit,
     private val setStatusText: (String) -> Unit,
+    private val showFailureStatus: (String, List<SpecWorkflowTroubleshootingAction>) -> Unit,
+    private val buildRuntimeTroubleshootingActions: (
+        workflowId: String,
+        trigger: SpecWorkflowRuntimeTroubleshootingTrigger,
+    ) -> List<SpecWorkflowTroubleshootingAction>,
     private val renderFailureMessage: (Throwable) -> String,
 ) {
 
     fun runVerification(workflowId: String) {
         val normalizedWorkflowId = workflowId.trim().ifBlank { return }
-        runVerificationWorkflow(normalizedWorkflowId) { summary ->
-            reloadCurrentWorkflow()
-            setStatusText(summary)
-        }
+        runVerificationWorkflow(
+            normalizedWorkflowId,
+            { summary ->
+                reloadCurrentWorkflow()
+                setStatusText(summary)
+            },
+            { error ->
+                showFailureStatus(
+                    SpecCodingBundle.message(
+                        "spec.workflow.error",
+                        renderFailureMessage(error),
+                    ),
+                    buildRuntimeTroubleshootingActions(
+                        normalizedWorkflowId,
+                        SpecWorkflowRuntimeTroubleshootingTrigger.VERIFY_FAILURE,
+                    ),
+                )
+            },
+        )
     }
 
     fun openVerificationDocument(workflowId: String) {

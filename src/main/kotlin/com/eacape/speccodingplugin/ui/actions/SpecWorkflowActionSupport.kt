@@ -389,6 +389,7 @@ internal object SpecWorkflowActionSupport {
         tasksService: SpecTasksService,
         workflowId: String,
         onCompleted: ((VerifyRunResult) -> Unit)? = null,
+        onFailure: ((Throwable) -> Unit)? = null,
     ) {
         runBackground(
             project = project,
@@ -397,6 +398,13 @@ internal object SpecWorkflowActionSupport {
                 VerificationActionContext(
                     plan = verificationService.preview(workflowId),
                     scopeTasks = tasksService.parse(workflowId).sortedBy(StructuredTask::id),
+                )
+            },
+            onFailure = onFailure ?: { error ->
+                showErrorDialog(
+                    project = project,
+                    title = SpecCodingBundle.message("spec.action.verify.preview"),
+                    message = describeFailure(error),
                 )
             },
             onSuccess = { context ->
@@ -412,6 +420,13 @@ internal object SpecWorkflowActionSupport {
                             workflowId = workflowId,
                             planId = context.plan.planId,
                             scopeTaskIds = context.scopeTasks.map(StructuredTask::id),
+                        )
+                    },
+                    onFailure = onFailure ?: { error ->
+                        showErrorDialog(
+                            project = project,
+                            title = SpecCodingBundle.message("spec.action.verify.executing"),
+                            message = describeFailure(error),
                         )
                     },
                     onSuccess = { result ->

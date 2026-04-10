@@ -126,6 +126,70 @@ class SpecWorkflowRuntimeTroubleshootingCoordinatorTest {
         )
     }
 
+    @Test
+    fun `build should reuse quick task fallback for generation precheck before first visible success`() {
+        val actions = SpecWorkflowRuntimeTroubleshootingCoordinator.build(
+            trigger = SpecWorkflowRuntimeTroubleshootingTrigger.GENERATION_PRECHECK,
+            readiness = readySnapshot(),
+            tracking = emptyTracking(),
+            template = WorkflowTemplate.FULL_SPEC,
+        )
+
+        assertEquals(
+            listOf(
+                SpecWorkflowTroubleshootingAction.SelectEntry(
+                    entry = SpecWorkflowPrimaryEntry.QUICK_TASK,
+                    label = SpecCodingBundle.message("spec.dialog.troubleshooting.action.switchToQuickTask"),
+                ),
+                SpecWorkflowTroubleshootingAction.OpenSettings(
+                    label = SpecCodingBundle.message("spec.dialog.troubleshooting.action.openSettings"),
+                ),
+                SpecWorkflowTroubleshootingAction.OpenBundledDemo(
+                    label = SpecCodingBundle.message("spec.dialog.troubleshooting.action.openBundledDemo"),
+                ),
+            ),
+            actions,
+        )
+    }
+
+    @Test
+    fun `build should keep settings only for generation failure after first visible success`() {
+        val actions = SpecWorkflowRuntimeTroubleshootingCoordinator.build(
+            trigger = SpecWorkflowRuntimeTroubleshootingTrigger.GENERATION_FAILURE,
+            readiness = readySnapshot(),
+            tracking = successTracking(),
+            template = WorkflowTemplate.QUICK_TASK,
+        )
+
+        assertEquals(
+            listOf(
+                SpecWorkflowTroubleshootingAction.OpenSettings(
+                    label = SpecCodingBundle.message("spec.dialog.troubleshooting.action.openSettings"),
+                ),
+            ),
+            actions,
+        )
+    }
+
+    @Test
+    fun `build should reuse verify failure shortcuts after first visible success`() {
+        val actions = SpecWorkflowRuntimeTroubleshootingCoordinator.build(
+            trigger = SpecWorkflowRuntimeTroubleshootingTrigger.VERIFY_FAILURE,
+            readiness = readySnapshot(),
+            tracking = successTracking(),
+            template = WorkflowTemplate.QUICK_TASK,
+        )
+
+        assertEquals(
+            listOf(
+                SpecWorkflowTroubleshootingAction.OpenSettings(
+                    label = SpecCodingBundle.message("spec.dialog.troubleshooting.action.openSettings"),
+                ),
+            ),
+            actions,
+        )
+    }
+
     private fun emptyTracking() = SpecWorkflowFirstRunTrackingSnapshot(
         createAttemptCount = 0,
         createSuccessCount = 0,

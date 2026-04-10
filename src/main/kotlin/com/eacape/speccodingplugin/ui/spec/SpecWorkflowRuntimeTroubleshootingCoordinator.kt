@@ -7,6 +7,10 @@ import com.eacape.speccodingplugin.ui.LocalEnvironmentReadinessSnapshot
 internal enum class SpecWorkflowRuntimeTroubleshootingTrigger {
     TASK_EXECUTION_PRECHECK,
     TASK_EXECUTION_FAILURE,
+    GENERATION_PRECHECK,
+    GENERATION_FAILURE,
+    CLARIFICATION_DRAFT_FAILURE,
+    VERIFY_FAILURE,
 }
 
 internal object SpecWorkflowRuntimeTroubleshootingCoordinator {

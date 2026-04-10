@@ -320,7 +320,7 @@ class SpecWorkflowPanel(
             reloadCurrentWorkflow()
         },
         buildRuntimeTroubleshootingActions = { workflowId, trigger ->
-            buildTaskExecutionTroubleshootingActions(workflowId, trigger)
+            buildRuntimeTroubleshootingActions(workflowId, trigger)
         },
         renderFailureMessage = { error, fallback ->
             compactErrorMessage(error, fallback)
@@ -343,12 +343,12 @@ class SpecWorkflowPanel(
         setStatusText = ::setStatusText,
         showFailureStatus = ::setStatusWithTroubleshooting,
         buildRuntimeTroubleshootingActions = { workflowId, trigger ->
-            buildTaskExecutionTroubleshootingActions(workflowId, trigger)
+            buildRuntimeTroubleshootingActions(workflowId, trigger)
         },
         execute = taskExecutionCoordinator::execute,
     )
     private val verifyDeltaCoordinator = SpecWorkflowVerifyDeltaCoordinator(
-        runVerificationWorkflow = { workflowId, onCompleted ->
+        runVerificationWorkflow = { workflowId, onCompleted, onFailure ->
             SpecWorkflowActionSupport.runVerificationWorkflow(
                 project = project,
                 verificationService = specVerificationService,
@@ -357,6 +357,7 @@ class SpecWorkflowPanel(
                 onCompleted = { result ->
                     onCompleted(result.summary)
                 },
+                onFailure = onFailure,
             )
         },
         locateArtifact = { workflowId, stageId ->
@@ -400,6 +401,10 @@ class SpecWorkflowPanel(
             reloadCurrentWorkflow()
         },
         setStatusText = ::setStatusText,
+        showFailureStatus = ::setStatusWithTroubleshooting,
+        buildRuntimeTroubleshootingActions = { workflowId, trigger ->
+            buildRuntimeTroubleshootingActions(workflowId, trigger)
+        },
         renderFailureMessage = { error ->
             compactErrorMessage(error, SpecCodingBundle.message("common.unknown"))
         },
@@ -1731,6 +1736,27 @@ class SpecWorkflowPanel(
         applyStatusPresentation(text, actions)
     }
 
+    private fun setRuntimeTroubleshootingStatus(
+        workflowId: String?,
+        text: String?,
+        trigger: SpecWorkflowRuntimeTroubleshootingTrigger,
+    ) {
+        val statusText = text?.trim().orEmpty()
+        if (statusText.isBlank()) {
+            setStatusText(text)
+            return
+        }
+        val normalizedWorkflowId = workflowId?.trim().orEmpty()
+        if (normalizedWorkflowId.isBlank()) {
+            setStatusText(statusText)
+            return
+        }
+        setStatusWithTroubleshooting(
+            statusText,
+            buildRuntimeTroubleshootingActions(normalizedWorkflowId, trigger),
+        )
+    }
+
     private fun applyStatusPresentation(
         text: String?,
         actions: List<SpecWorkflowTroubleshootingAction>,
@@ -1758,7 +1784,7 @@ class SpecWorkflowPanel(
         }
     }
 
-    private fun buildTaskExecutionTroubleshootingActions(
+    private fun buildRuntimeTroubleshootingActions(
         workflowId: String,
         trigger: SpecWorkflowRuntimeTroubleshootingTrigger,
     ): List<SpecWorkflowTroubleshootingAction> {
@@ -3317,7 +3343,15 @@ class SpecWorkflowPanel(
                         lastError = result.errorText,
                     )
                     appendProcessTimelineEntries(listOf(result.timelineEntry))
-                    setStatusText(result.statusText)
+                    if (result.troubleshootingTrigger != null) {
+                        setRuntimeTroubleshootingStatus(
+                            prepared.context.workflowId,
+                            result.statusText,
+                            result.troubleshootingTrigger,
+                        )
+                    } else {
+                        setStatusText(result.statusText)
+                    }
                 }
             } catch (cancel: CancellationException) {
                 if (isActiveGenerationRequest(prepared.activeRequest)) {
@@ -3428,7 +3462,15 @@ class SpecWorkflowPanel(
             detailPanel.exitClarificationMode(clearInput = update.clearInputOnExit)
         }
         if (update.statusText != null) {
-            setStatusText(update.statusText)
+            if (update.troubleshootingTrigger != null) {
+                setRuntimeTroubleshootingStatus(
+                    workflowId,
+                    update.statusText,
+                    update.troubleshootingTrigger,
+                )
+            } else {
+                setStatusText(update.statusText)
+            }
         }
         if (update.shouldReloadWorkflow) {
             reloadCurrentWorkflow()
@@ -3530,7 +3572,11 @@ class SpecWorkflowPanel(
         ) {
             is SpecWorkflowGenerationContextResolution.Success -> resolution.context
             is SpecWorkflowGenerationContextResolution.Failure -> {
-                resolution.statusMessage?.let(::setStatusText)
+                setRuntimeTroubleshootingStatus(
+                    selectedWorkflowId,
+                    resolution.statusMessage,
+                    SpecWorkflowRuntimeTroubleshootingTrigger.GENERATION_PRECHECK,
+                )
                 null
             }
         }
@@ -5238,6 +5284,22 @@ class SpecWorkflowPanel(
     }
 
     internal fun currentClarificationQuestionsTextForTest(): String = detailPanel.clarificationQuestionsTextForTest()
+
+    internal fun setComposerInputTextForTest(text: String) {
+        detailPanel.setInputTextForTest(text)
+    }
+
+    internal fun clickGenerateForTest() {
+        detailPanel.clickGenerateForTest()
+    }
+
+    internal fun requestGenerationForTest(input: String) {
+        onGenerate(input)
+    }
+
+    internal fun runVerificationForTest(workflowId: String) {
+        verifyDeltaCoordinator.runVerification(workflowId)
+    }
 
     internal fun startRequirementsClarifyThenFillForTest(
         workflowId: String,

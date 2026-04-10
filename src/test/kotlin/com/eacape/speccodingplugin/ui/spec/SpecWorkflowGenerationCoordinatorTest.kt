@@ -218,6 +218,10 @@ class SpecWorkflowGenerationCoordinatorTest {
             SpecCodingBundle.message("spec.workflow.error", "draft failed"),
             result.statusText,
         )
+        assertEquals(
+            SpecWorkflowRuntimeTroubleshootingTrigger.CLARIFICATION_DRAFT_FAILURE,
+            result.troubleshootingTrigger,
+        )
         assertEquals(SpecWorkflowTimelineEntryState.FAILED, result.timelineEntry.state)
     }
 
@@ -257,7 +261,7 @@ class SpecWorkflowGenerationCoordinatorTest {
     }
 
     @Test
-    fun `advanceGenerationProgress should surface validation failure and interrupted retry data`() {
+    fun `advanceGenerationProgress should surface validation failure generation failure and interrupted retry data`() {
         val coordinator = coordinator()
         val prepared = coordinator.prepareGeneration(
             workflowId = "wf-1",
@@ -275,6 +279,11 @@ class SpecWorkflowGenerationCoordinatorTest {
             tracker = SpecWorkflowGenerationProgressTracker(),
             progress = SpecGenerationProgress.ValidationFailed(document(), validation),
         )
+        val failedUpdate = coordinator.advanceGenerationProgress(
+            prepared = prepared,
+            tracker = SpecWorkflowGenerationProgressTracker(),
+            progress = SpecGenerationProgress.Failed("provider unavailable", details = null),
+        )
         val interruptedUpdate = coordinator.buildInterruptedProgressUpdate(
             prepared = prepared,
             interruptedMessage = "Interrupted by user",
@@ -288,6 +297,16 @@ class SpecWorkflowGenerationCoordinatorTest {
         )
         assertTrue(validationUpdate.shouldReloadWorkflow)
         assertEquals(validation, validationUpdate.validationFailure)
+        assertEquals(
+            SpecWorkflowRuntimeTroubleshootingTrigger.GENERATION_FAILURE,
+            failedUpdate.troubleshootingTrigger,
+        )
+        assertEquals("provider unavailable", failedUpdate.retryLastError)
+        assertEquals(
+            SpecCodingBundle.message("spec.workflow.error", "provider unavailable"),
+            failedUpdate.statusText,
+        )
+        assertTrue(failedUpdate.shouldShowGenerationFailed)
         assertEquals("confirmed context", interruptedUpdate.retryConfirmedContext)
         assertEquals("Interrupted by user", interruptedUpdate.retryLastError)
         assertTrue(interruptedUpdate.shouldShowGenerationFailed)
@@ -295,6 +314,7 @@ class SpecWorkflowGenerationCoordinatorTest {
             SpecCodingBundle.message("spec.workflow.error", "Interrupted by user"),
             interruptedUpdate.statusText,
         )
+        assertNull(interruptedUpdate.troubleshootingTrigger)
     }
 
     private fun coordinator(

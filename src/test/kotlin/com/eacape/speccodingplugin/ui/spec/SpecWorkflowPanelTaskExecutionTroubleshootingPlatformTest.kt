@@ -56,7 +56,7 @@ class SpecWorkflowPanelTaskExecutionTroubleshootingPlatformTest : BasePlatformTe
             assertFalse(panel.requestExecutionForTaskForTest(task.id))
         }
 
-        waitUntil {
+        waitUntil(timeoutMs = 15_000) {
             panel.currentStatusActionLabelsForTest().isNotEmpty()
         }
 

@@ -51,6 +51,41 @@ class ClaudeCodeEngine(
         return ClaudeStreamJsonParser.parseLine(line)
     }
 
+    override fun parseProgressLine(line: String): EngineChunk? {
+        if (line.isBlank()) return null
+        val parsed = ClaudeStreamJsonParser.parseLine(line)
+        if (parsed != null) {
+            return parsed.event?.let { event ->
+                EngineChunk(
+                    delta = "",
+                    event = event,
+                )
+            }
+        }
+        if (ClaudeStreamJsonParser.isStructuredEventLine(line)) {
+            return null
+        }
+        return super.parseProgressLine(line)
+    }
+
+    override fun sanitizeProcessErrorLine(line: String): String? {
+        if (line.isBlank()) return null
+        val parsed = ClaudeStreamJsonParser.parseLine(line)
+        if (parsed != null) {
+            val event = parsed.event
+            return when {
+                event?.status == com.eacape.speccodingplugin.stream.ChatTraceStatus.ERROR ->
+                    event.detail.takeIf(String::isNotBlank)
+
+                else -> null
+            }
+        }
+        if (ClaudeStreamJsonParser.isStructuredEventLine(line)) {
+            return null
+        }
+        return super.sanitizeProcessErrorLine(line)
+    }
+
     fun supportsImageFlag(): Boolean {
         cachedImageFlagSupport?.let { return it }
         val detected = detectImageFlagSupport()

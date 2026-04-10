@@ -88,6 +88,7 @@ internal data class SpecWorkflowClarificationDraftResult(
     val errorText: String?,
     val statusText: String?,
     val timelineEntry: SpecWorkflowTimelineEntry,
+    val troubleshootingTrigger: SpecWorkflowRuntimeTroubleshootingTrigger? = null,
 )
 
 internal data class SpecWorkflowPreparedGenerationRequest(
@@ -116,6 +117,7 @@ internal data class SpecWorkflowGenerationProgressUpdate(
     val clearInputOnExit: Boolean = false,
     val shouldReloadWorkflow: Boolean = false,
     val validationFailure: ValidationResult? = null,
+    val troubleshootingTrigger: SpecWorkflowRuntimeTroubleshootingTrigger? = null,
 )
 
 internal class SpecWorkflowGenerationCoordinator(
@@ -300,10 +302,15 @@ internal class SpecWorkflowGenerationCoordinator(
                     state = SpecWorkflowTimelineEntryState.FAILED,
                 )
             } else {
-                SpecWorkflowTimelineEntry(
-                    text = SpecCodingBundle.message("spec.workflow.process.clarify.ready"),
-                    state = SpecWorkflowTimelineEntryState.DONE,
-                )
+                    SpecWorkflowTimelineEntry(
+                        text = SpecCodingBundle.message("spec.workflow.process.clarify.ready"),
+                        state = SpecWorkflowTimelineEntryState.DONE,
+                    )
+            },
+            troubleshootingTrigger = if (draft == null) {
+                SpecWorkflowRuntimeTroubleshootingTrigger.CLARIFICATION_DRAFT_FAILURE
+            } else {
+                null
             },
         )
     }
@@ -441,6 +448,7 @@ internal class SpecWorkflowGenerationCoordinator(
                     retryLastError = progress.error,
                     statusText = SpecCodingBundle.message("spec.workflow.error", progress.error),
                     shouldShowGenerationFailed = true,
+                    troubleshootingTrigger = SpecWorkflowRuntimeTroubleshootingTrigger.GENERATION_FAILURE,
                 )
             }
         }

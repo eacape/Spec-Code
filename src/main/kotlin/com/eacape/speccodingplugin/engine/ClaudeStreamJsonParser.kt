@@ -74,6 +74,13 @@ internal object ClaudeStreamJsonParser {
         )
     }
 
+    fun isStructuredEventLine(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.isBlank()) return false
+        val payload = parseJsonObject(trimmed) ?: return false
+        return payload.string("type")?.isNotBlank() == true
+    }
+
     private fun parseJsonObject(raw: String): JsonObject? {
         return runCatching { json.parseToJsonElement(raw) }
             .getOrNull()
@@ -157,6 +164,9 @@ internal object ClaudeStreamJsonParser {
 
     private fun parseSystemEvent(payload: JsonObject): ChatStreamEvent? {
         val subtype = payload.string("subtype")
+        if (subtype.equals("init", ignoreCase = true)) {
+            return null
+        }
         val detail = normalizeDetail(
             firstNonBlank(
                 payload.string("message"),
