@@ -74,6 +74,58 @@ class SpecWorkflowRuntimeTroubleshootingCoordinatorTest {
         )
     }
 
+    @Test
+    fun `build should offer quick task fallback before first visible success on full spec`() {
+        val actions = SpecWorkflowRuntimeTroubleshootingCoordinator.build(
+            trigger = SpecWorkflowRuntimeTroubleshootingTrigger.TASK_EXECUTION_PRECHECK,
+            readiness = readySnapshot(),
+            tracking = emptyTracking(),
+            template = WorkflowTemplate.FULL_SPEC,
+        )
+
+        assertEquals(
+            listOf(
+                SpecWorkflowTroubleshootingAction.SelectEntry(
+                    entry = SpecWorkflowPrimaryEntry.QUICK_TASK,
+                    label = SpecCodingBundle.message("spec.dialog.troubleshooting.action.switchToQuickTask"),
+                ),
+                SpecWorkflowTroubleshootingAction.OpenSettings(
+                    label = SpecCodingBundle.message("spec.dialog.troubleshooting.action.openSettings"),
+                ),
+                SpecWorkflowTroubleshootingAction.OpenBundledDemo(
+                    label = SpecCodingBundle.message("spec.dialog.troubleshooting.action.openBundledDemo"),
+                ),
+            ),
+            actions,
+        )
+    }
+
+    @Test
+    fun `build should offer quick task fallback when full spec regresses but quick task stays ready`() {
+        val actions = SpecWorkflowRuntimeTroubleshootingCoordinator.build(
+            trigger = SpecWorkflowRuntimeTroubleshootingTrigger.TASK_EXECUTION_FAILURE,
+            readiness = quickTaskOnlySnapshot(),
+            tracking = successTracking(),
+            template = WorkflowTemplate.FULL_SPEC,
+        )
+
+        assertEquals(
+            listOf(
+                SpecWorkflowTroubleshootingAction.SelectEntry(
+                    entry = SpecWorkflowPrimaryEntry.QUICK_TASK,
+                    label = SpecCodingBundle.message("spec.dialog.troubleshooting.action.switchToQuickTask"),
+                ),
+                SpecWorkflowTroubleshootingAction.OpenSettings(
+                    label = SpecCodingBundle.message("spec.dialog.troubleshooting.action.openSettings"),
+                ),
+                SpecWorkflowTroubleshootingAction.OpenBundledDemo(
+                    label = SpecCodingBundle.message("spec.dialog.troubleshooting.action.openBundledDemo"),
+                ),
+            ),
+            actions,
+        )
+    }
+
     private fun emptyTracking() = SpecWorkflowFirstRunTrackingSnapshot(
         createAttemptCount = 0,
         createSuccessCount = 0,
@@ -129,6 +181,25 @@ class SpecWorkflowRuntimeTroubleshootingCoordinatorTest {
             claudeInfo = CliToolInfo(
                 available = false,
                 path = "claude",
+            ),
+            codexInfo = CliToolInfo(
+                available = false,
+                path = "codex",
+            ),
+        ),
+    )
+
+    private fun quickTaskOnlySnapshot() = LocalEnvironmentReadiness.evaluate(
+        LocalEnvironmentReadinessInput(
+            projectPath = Path.of("D:/workspace/spec-code"),
+            projectWritable = true,
+            gitRepositoryDetected = false,
+            configuredClaudePath = "",
+            configuredCodexPath = "",
+            claudeInfo = CliToolInfo(
+                available = true,
+                path = "claude",
+                version = "1.0.0",
             ),
             codexInfo = CliToolInfo(
                 available = false,

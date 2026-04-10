@@ -296,8 +296,19 @@ open class ChatMessagePanel(
 
             val resolvedTraceSnapshot = resolveAssistantTraceSnapshot()
             if (resolvedTraceSnapshot.hasTrace) {
-                val answerContent = resolveAssistantDisplayedAnswerContent(content, resolvedTraceSnapshot)
-                renderAssistantTraceContent(answerContent, resolvedTraceSnapshot, useStructured)
+                val explicitAnswerContent = resolveAssistantAnswerContent(content)
+                val answerContent = explicitAnswerContent.ifBlank {
+                    resolveAssistantDisplayedAnswerContent(content, resolvedTraceSnapshot)
+                }
+                renderAssistantTraceContent(
+                    answerContent = answerContent,
+                    traceSnapshot = resolvedTraceSnapshot,
+                    structured = useStructured,
+                    showFailedState = shouldShowAssistantTraceFailedState(
+                        traceSnapshot = resolvedTraceSnapshot,
+                        explicitAnswerContent = explicitAnswerContent,
+                    ),
+                )
             } else if (useStructured) {
                 contentHost.removeAll()
                 contentHost.add(createAssistantAnswerComponent(content, structured = true), BorderLayout.CENTER)
@@ -735,6 +746,7 @@ open class ChatMessagePanel(
         answerContent: String,
         traceSnapshot: StreamingTraceAssembler.TraceSnapshot,
         structured: Boolean,
+        showFailedState: Boolean,
     ) {
         val container = JPanel()
         container.layout = BoxLayout(container, BoxLayout.Y_AXIS)
@@ -744,14 +756,13 @@ open class ChatMessagePanel(
         val processItems = traceSnapshot.items.filter { item ->
             item.kind != ExecutionTimelineParser.Kind.OUTPUT && shouldRenderProcessItem(item)
         }
-        val hasFailedTrace = messageFinished && traceSnapshot.items.any { it.status == ExecutionTimelineParser.Status.ERROR }
         if (processItems.isNotEmpty()) {
-            container.add(createTracePanel(processItems, hasFailedTrace))
+            container.add(createTracePanel(processItems, showFailedState))
         }
 
         val outputItems = traceSnapshot.items.filter { it.kind == ExecutionTimelineParser.Kind.OUTPUT }
         if (outputItems.isNotEmpty()) {
-            container.add(createOutputPanel(outputItems))
+            container.add(createOutputPanel(outputItems, showFailedState))
         }
 
         if (answerContent.isNotBlank()) {
@@ -766,6 +777,15 @@ open class ChatMessagePanel(
         // Keep process area lightweight: ignore pure thinking traces in the visual timeline.
         if (item.kind == ExecutionTimelineParser.Kind.THINK) return false
         return item.detail.isNotBlank() || item.status != ExecutionTimelineParser.Status.INFO
+    }
+
+    private fun shouldShowAssistantTraceFailedState(
+        traceSnapshot: StreamingTraceAssembler.TraceSnapshot,
+        explicitAnswerContent: String,
+    ): Boolean {
+        if (!messageFinished) return false
+        if (explicitAnswerContent.isNotBlank()) return false
+        return traceSnapshot.items.any { it.status == ExecutionTimelineParser.Status.ERROR }
     }
 
     private fun createAssistantAnswerComponent(content: String, structured: Boolean): JPanel {
@@ -1119,13 +1139,16 @@ open class ChatMessagePanel(
         return container
     }
 
-    private fun createOutputPanel(items: List<StreamingTraceAssembler.TraceItem>): JPanel {
+    private fun createOutputPanel(
+        items: List<StreamingTraceAssembler.TraceItem>,
+        showFailedState: Boolean,
+    ): JPanel {
         val mergedOutput = mergeOutputItemsForDisplay(
             items = items.takeLast(MAX_TIMELINE_VISIBLE_ITEMS),
             filterLevel = outputFilterLevel,
             charBudget = if (outputExpanded) null else OUTPUT_COLLAPSED_CHAR_BUDGET,
         )
-        val failed = mergedOutput.status == ExecutionTimelineParser.Status.ERROR
+        val failed = showFailedState && mergedOutput.status == ExecutionTimelineParser.Status.ERROR
         val wrapper = JPanel(BorderLayout())
         wrapper.isOpaque = true
         wrapper.background = outputCardBackgroundColor(failed)

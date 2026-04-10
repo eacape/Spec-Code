@@ -38,6 +38,34 @@ class ChatMessagePanelFailureStateTest {
         )
     }
 
+    @Test
+    fun `final assistant answer should suppress overall failed badge even when a step failed`() {
+        val panel = runOnEdtResult {
+            ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT).apply {
+                appendContent(
+                    """
+                    [Task] prepare workflow context done
+                    [Verify] spec verification failed
+
+                    已完成分析并给出最终处理建议。
+                    """.trimIndent()
+                )
+                finishMessage()
+            }
+        }
+
+        val labels = collectDescendants(panel)
+            .filterIsInstance<JLabel>()
+            .mapNotNull { it.text }
+            .toList()
+
+        assertTrue(labels.contains(SpecCodingBundle.message("chat.timeline.summary.label")))
+        assertTrue(
+            labels.none { it == SpecCodingBundle.message("chat.timeline.status.failed") },
+            labels.joinToString(" | "),
+        )
+    }
+
     private fun <T> runOnEdtResult(action: () -> T): T {
         if (SwingUtilities.isEventDispatchThread()) {
             return action()

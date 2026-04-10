@@ -684,19 +684,13 @@ class SpecWorkflowPanel(
     private val statusActionPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0))
     private val statusChipPanel = JPanel(BorderLayout())
     private val statusTroubleshootingActionDispatcher = SpecWorkflowTroubleshootingActionDispatcher(
-        object : SpecWorkflowTroubleshootingActionDispatcher.Callbacks {
-            override fun openSettings() {
-                openTroubleshootingSettings()
-            }
-
-            override fun openBundledDemo() {
-                openBundledDemoProject()
-            }
-
-            override fun selectEntry(entry: SpecWorkflowPrimaryEntry) = Unit
-
-            override fun refreshAfterEntrySelection() = Unit
-        },
+        SpecWorkflowRuntimeTroubleshootingActionCallbacks(
+            openSettingsAction = ::openTroubleshootingSettings,
+            openBundledDemoAction = ::openBundledDemoProject,
+            openCreateWorkflowDialog = { template ->
+                onCreateWorkflow(template)
+            },
+        ),
     )
     private val modelLabel = JBLabel(SpecCodingBundle.message("toolwindow.model.label"))
     private val providerComboBox = ComboBox<String>()

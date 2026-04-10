@@ -17,6 +17,12 @@ internal object SpecWorkflowRuntimeTroubleshootingCoordinator {
         template: WorkflowTemplate,
     ): List<SpecWorkflowTroubleshootingAction> {
         val actions = linkedMapOf<String, SpecWorkflowTroubleshootingAction>()
+        if (shouldOfferQuickTaskFallback(readiness, tracking, template)) {
+            actions["quickTask"] = SpecWorkflowTroubleshootingAction.SelectEntry(
+                entry = SpecWorkflowPrimaryEntry.QUICK_TASK,
+                label = SpecCodingBundle.message("spec.dialog.troubleshooting.action.switchToQuickTask"),
+            )
+        }
         actions["settings"] = SpecWorkflowTroubleshootingAction.OpenSettings(
             label = SpecCodingBundle.message("spec.dialog.troubleshooting.action.openSettings"),
         )
@@ -26,6 +32,23 @@ internal object SpecWorkflowRuntimeTroubleshootingCoordinator {
             )
         }
         return actions.values.toList()
+    }
+
+    private fun shouldOfferQuickTaskFallback(
+        readiness: LocalEnvironmentReadinessSnapshot,
+        tracking: SpecWorkflowFirstRunTrackingSnapshot,
+        template: WorkflowTemplate,
+    ): Boolean {
+        if (template != WorkflowTemplate.FULL_SPEC) {
+            return false
+        }
+        if (!readiness.quickTaskReady) {
+            return false
+        }
+        if (!readiness.fullSpecReady) {
+            return true
+        }
+        return tracking.createSuccessCount == 0
     }
 
     private fun shouldOfferBundledDemo(
