@@ -190,6 +190,28 @@ class SpecWorkflowRuntimeTroubleshootingCoordinatorTest {
         )
     }
 
+    @Test
+    fun `build should avoid quick task fallback for worktree failure`() {
+        val actions = SpecWorkflowRuntimeTroubleshootingCoordinator.build(
+            trigger = SpecWorkflowRuntimeTroubleshootingTrigger.WORKTREE_FAILURE,
+            readiness = readySnapshot(),
+            tracking = emptyTracking(),
+            template = WorkflowTemplate.FULL_SPEC,
+        )
+
+        assertEquals(
+            listOf(
+                SpecWorkflowTroubleshootingAction.OpenSettings(
+                    label = SpecCodingBundle.message("spec.dialog.troubleshooting.action.openSettings"),
+                ),
+                SpecWorkflowTroubleshootingAction.OpenBundledDemo(
+                    label = SpecCodingBundle.message("spec.dialog.troubleshooting.action.openBundledDemo"),
+                ),
+            ),
+            actions,
+        )
+    }
+
     private fun emptyTracking() = SpecWorkflowFirstRunTrackingSnapshot(
         createAttemptCount = 0,
         createSuccessCount = 0,

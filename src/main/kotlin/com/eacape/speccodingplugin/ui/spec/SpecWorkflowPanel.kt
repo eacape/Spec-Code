@@ -566,6 +566,10 @@ class SpecWorkflowPanel(
             compactErrorMessage(error, SpecCodingBundle.message("common.unknown"))
         },
         setStatusText = ::setStatusText,
+        showFailureStatus = ::setStatusWithTroubleshooting,
+        buildRuntimeTroubleshootingActions = { workflowId, trigger ->
+            buildRuntimeTroubleshootingActions(workflowId, trigger)
+        },
     )
     private val discoveryListener: () -> Unit = {
         llmRouter.refreshProviders()
@@ -5299,6 +5303,32 @@ class SpecWorkflowPanel(
 
     internal fun runVerificationForTest(workflowId: String) {
         verifyDeltaCoordinator.runVerification(workflowId)
+    }
+
+    internal fun createWorktreeForTest(shortName: String = "feature", baseBranch: String = "main") {
+        currentWorkflow?.let { workflow ->
+            worktreeCoordinator.createAndSwitch(
+                SpecWorkflowWorktreeCreateRequest(
+                    specTaskId = workflow.id,
+                    shortName = shortName,
+                    baseBranch = baseBranch,
+                ),
+            )
+        }
+    }
+
+    internal fun compareWorkflowBaselineForTest(baselineWorkflowId: String, title: String = "Baseline") {
+        currentWorkflow?.let { workflow ->
+            verifyDeltaCoordinator.compareBaseline(
+                SpecWorkflowVerifyDeltaCompareRequest(
+                    targetWorkflow = workflow,
+                    choice = SpecWorkflowReferenceBaselineChoice(
+                        workflowId = baselineWorkflowId,
+                        title = title,
+                    ),
+                ),
+            )
+        }
     }
 
     internal fun startRequirementsClarifyThenFillForTest(

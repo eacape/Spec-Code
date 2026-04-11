@@ -460,6 +460,7 @@ tasks {
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowGateDetailsPanelTest",
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelGenerationTroubleshootingPlatformTest",
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelVerifyTroubleshootingPlatformTest",
+            "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelWorktreeTroubleshootingPlatformTest",
             "com.eacape.speccodingplugin.ui.actions.SpecWorkflowActionSupportPlatformTest",
             "com.eacape.speccodingplugin.spec.SpecRelatedFilesServicePlatformTest",
         ),

@@ -66,6 +66,33 @@ class ChatMessagePanelFailureStateTest {
         )
     }
 
+    @Test
+    fun `fallback output summary should suppress overall failed badge when final conclusion exists`() {
+        val panel = runOnEdtResult {
+            ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT).apply {
+                appendContent(
+                    """
+                    [Verify] business assertions failed
+                    [Output] 结果: BUILD SUCCESSFUL.
+                    [Output] 结果: harness 已恢复，完整 smoke 真正跑起来了，但还有 2 条业务断言失败，不再是平台容器起不来。
+                    """.trimIndent()
+                )
+                finishMessage()
+            }
+        }
+
+        val labels = collectDescendants(panel)
+            .filterIsInstance<JLabel>()
+            .mapNotNull { it.text }
+            .toList()
+
+        assertTrue(labels.contains(SpecCodingBundle.message("chat.timeline.summary.label")))
+        assertTrue(
+            labels.none { it == SpecCodingBundle.message("chat.timeline.status.failed") },
+            labels.joinToString(" | "),
+        )
+    }
+
     private fun <T> runOnEdtResult(action: () -> T): T {
         if (SwingUtilities.isEventDispatchThread()) {
             return action()

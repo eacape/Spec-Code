@@ -11,6 +11,7 @@ internal enum class SpecWorkflowRuntimeTroubleshootingTrigger {
     GENERATION_FAILURE,
     CLARIFICATION_DRAFT_FAILURE,
     VERIFY_FAILURE,
+    WORKTREE_FAILURE,
 }
 
 internal object SpecWorkflowRuntimeTroubleshootingCoordinator {
@@ -21,7 +22,7 @@ internal object SpecWorkflowRuntimeTroubleshootingCoordinator {
         template: WorkflowTemplate,
     ): List<SpecWorkflowTroubleshootingAction> {
         val actions = linkedMapOf<String, SpecWorkflowTroubleshootingAction>()
-        if (shouldOfferQuickTaskFallback(readiness, tracking, template)) {
+        if (shouldOfferQuickTaskFallback(trigger, readiness, tracking, template)) {
             actions["quickTask"] = SpecWorkflowTroubleshootingAction.SelectEntry(
                 entry = SpecWorkflowPrimaryEntry.QUICK_TASK,
                 label = SpecCodingBundle.message("spec.dialog.troubleshooting.action.switchToQuickTask"),
@@ -39,10 +40,14 @@ internal object SpecWorkflowRuntimeTroubleshootingCoordinator {
     }
 
     private fun shouldOfferQuickTaskFallback(
+        trigger: SpecWorkflowRuntimeTroubleshootingTrigger,
         readiness: LocalEnvironmentReadinessSnapshot,
         tracking: SpecWorkflowFirstRunTrackingSnapshot,
         template: WorkflowTemplate,
     ): Boolean {
+        if (trigger == SpecWorkflowRuntimeTroubleshootingTrigger.WORKTREE_FAILURE) {
+            return false
+        }
         if (template != WorkflowTemplate.FULL_SPEC) {
             return false
         }

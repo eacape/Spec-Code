@@ -306,7 +306,7 @@ open class ChatMessagePanel(
                     structured = useStructured,
                     showFailedState = shouldShowAssistantTraceFailedState(
                         traceSnapshot = resolvedTraceSnapshot,
-                        explicitAnswerContent = explicitAnswerContent,
+                        answerContent = answerContent,
                     ),
                 )
             } else if (useStructured) {
@@ -781,11 +781,71 @@ open class ChatMessagePanel(
 
     private fun shouldShowAssistantTraceFailedState(
         traceSnapshot: StreamingTraceAssembler.TraceSnapshot,
-        explicitAnswerContent: String,
+        answerContent: String,
     ): Boolean {
         if (!messageFinished) return false
-        if (explicitAnswerContent.isNotBlank()) return false
+        if (answerContent.isNotBlank() && !looksLikeFailureOnlyFallbackAnswer(answerContent)) {
+            return false
+        }
         return traceSnapshot.items.any { it.status == ExecutionTimelineParser.Status.ERROR }
+    }
+
+    private fun looksLikeFailureOnlyFallbackAnswer(answerContent: String): Boolean {
+        val lines = answerContent.lineSequence()
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .toList()
+        if (lines.isEmpty()) {
+            return false
+        }
+        if (lines.size > FAILURE_ONLY_FALLBACK_MAX_LINES || answerContent.length > FAILURE_ONLY_FALLBACK_MAX_CHARS) {
+            return false
+        }
+        if (lines.any(::containsSuccessfulOutcomeSignal)) {
+            return false
+        }
+        if (
+            lines.any { line -> OUTPUT_ALLOWED_HEADING_REGEX.matches(line) } &&
+            (lines.size > 1 || answerContent.length > FAILURE_ONLY_FALLBACK_MIN_STRUCTURED_SUMMARY_CHARS)
+        ) {
+            return false
+        }
+        if (lines.any(::isLikelyWorkflowHeading)) {
+            return false
+        }
+        if (lines.any { line ->
+                line.startsWith("- ") ||
+                    line.startsWith("* ") ||
+                    ORDERED_LIST_ITEM_REGEX.matches(line)
+            }
+        ) {
+            return false
+        }
+        val hasFailureSignal = lines.any(::containsFailureOnlySignal)
+        val allLinesCompact = lines.all { line ->
+            !looksLikeRawCodeOrPatchLine(line) && !looksLikeToolDiagnosticLine(line)
+        }
+        return hasFailureSignal && allLinesCompact
+    }
+
+    private fun containsFailureOnlySignal(line: String): Boolean {
+        val normalized = line.lowercase(Locale.ROOT)
+        return FAILURE_ONLY_FALLBACK_KEYWORDS.any(normalized::contains) ||
+            line.contains("失败") ||
+            line.contains("错误") ||
+            line.contains("异常") ||
+            line.contains("超时") ||
+            line.contains("退出码")
+    }
+
+    private fun containsSuccessfulOutcomeSignal(line: String): Boolean {
+        val normalized = line.lowercase(Locale.ROOT)
+        return SUCCESSFUL_OUTCOME_KEYWORDS.any(normalized::contains) ||
+            line.contains("成功") ||
+            line.contains("已恢复") ||
+            line.contains("已修复") ||
+            line.contains("已完成") ||
+            line.contains("通过")
     }
 
     private fun createAssistantAnswerComponent(content: String, structured: Boolean): JPanel {
@@ -3183,6 +3243,9 @@ open class ChatMessagePanel(
         private const val OUTPUT_NARRATIVE_MIN_SENTENCE_WORDS = 2
         private const val OUTPUT_NARRATIVE_MIN_SENTENCE_CJK_CHARS = 2
         private const val OUTPUT_CODE_SYMBOL_MIN_COUNT = 3
+        private const val FAILURE_ONLY_FALLBACK_MAX_LINES = 2
+        private const val FAILURE_ONLY_FALLBACK_MAX_CHARS = 120
+        private const val FAILURE_ONLY_FALLBACK_MIN_STRUCTURED_SUMMARY_CHARS = 40
         private const val COPY_FEEDBACK_DURATION_MS = 1000
         private const val COPY_FEEDBACK_TIMER_KEY = "spec.copy.feedback.timer"
         private const val TEXT_PANE_LINK_HANDLERS_KEY = "spec.textPane.linkHandlersInstalled"
@@ -3221,6 +3284,31 @@ open class ChatMessagePanel(
         private val BLOCKQUOTE_LINE_REGEX = Regex("""^\s{0,3}>\s?.*$""")
         private val UNORDERED_LIST_ITEM_REGEX = Regex("""^(?:[-*]|[•●·・▪◦‣])\s*.+$""")
         private val ORDERED_LIST_ITEM_REGEX = Regex("""^\d+[.)、）．](?:\s+|(?=[^\s\d])).+$""")
+        private val FAILURE_ONLY_FALLBACK_KEYWORDS = listOf(
+            "error",
+            "failed",
+            "failure",
+            "exception",
+            "timeout",
+            "timed out",
+            "exit code",
+            "exited with code",
+            "connection failed",
+            "connect failed",
+            "network error",
+        )
+        private val SUCCESSFUL_OUTCOME_KEYWORDS = listOf(
+            "build successful",
+            "successful",
+            "succeeded",
+            "restored",
+            "recovered",
+            "fixed",
+            "resolved",
+            "passed",
+            "complete",
+            "completed",
+        )
         private val MARKDOWN_INLINE_LINK_REGEX = Regex("""(?<!!)\[[^\]\n]+]\(([^()\n]|\\[()])+\)""")
         private val WORKFLOW_MARKDOWN_HEADING_REGEX = Regex("""^##+(?:\s+|(?=\S)).+$""")
         private val INLINE_MARKDOWN_HEADING_REGEX = Regex("""(\S)\s*(#{2,6}\s*(?:\d+[.)、）．]\s*)?[^\s#].*)""")

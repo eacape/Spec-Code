@@ -52,16 +52,7 @@ internal class SpecWorkflowVerifyDeltaCoordinator(
                 setStatusText(summary)
             },
             { error ->
-                showFailureStatus(
-                    SpecCodingBundle.message(
-                        "spec.workflow.error",
-                        renderFailureMessage(error),
-                    ),
-                    buildRuntimeTroubleshootingActions(
-                        normalizedWorkflowId,
-                        SpecWorkflowRuntimeTroubleshootingTrigger.VERIFY_FAILURE,
-                    ),
-                )
+                showVerifyFailureStatus(normalizedWorkflowId, error)
             },
         )
     }
@@ -92,12 +83,7 @@ internal class SpecWorkflowVerifyDeltaCoordinator(
                     showDeltaDialog(request.targetWorkflow, delta)
                     setStatusText(SpecCodingBundle.message("spec.delta.generated"))
                 }.onFailure { error ->
-                    setStatusText(
-                        SpecCodingBundle.message(
-                            "spec.workflow.error",
-                            renderFailureMessage(error),
-                        ),
-                    )
+                    showVerifyFailureStatus(request.targetWorkflow.id, error)
                 }
             }
         }
@@ -132,14 +118,22 @@ internal class SpecWorkflowVerifyDeltaCoordinator(
                         ),
                     )
                 }.onFailure { error ->
-                    setStatusText(
-                        SpecCodingBundle.message(
-                            "spec.workflow.error",
-                            renderFailureMessage(error),
-                        ),
-                    )
+                    showVerifyFailureStatus(normalizedWorkflowId, error)
                 }
             }
         }
+    }
+
+    private fun showVerifyFailureStatus(workflowId: String, error: Throwable) {
+        showFailureStatus(
+            SpecCodingBundle.message(
+                "spec.workflow.error",
+                renderFailureMessage(error),
+            ),
+            buildRuntimeTroubleshootingActions(
+                workflowId,
+                SpecWorkflowRuntimeTroubleshootingTrigger.VERIFY_FAILURE,
+            ),
+        )
     }
 }

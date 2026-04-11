@@ -151,9 +151,13 @@ class SpecWorkflowVerifyDeltaCoordinatorTest {
     }
 
     @Test
-    fun `compareBaseline should report compare failure`() {
+    fun `compareBaseline should surface troubleshooting actions when compare fails`() {
         val recorder = RecordingEnvironment().apply {
             compareByWorkflowIdResult = Result.failure(IllegalStateException("compare failed"))
+            troubleshootingActions = listOf(
+                SpecWorkflowTroubleshootingAction.OpenSettings(label = "Open settings"),
+                SpecWorkflowTroubleshootingAction.OpenBundledDemo(label = "Open bundled demo"),
+            )
         }
         val coordinator = coordinator(recorder)
 
@@ -170,13 +174,26 @@ class SpecWorkflowVerifyDeltaCoordinatorTest {
         assertTrue(recorder.deltaDialogCalls.isEmpty())
         assertEquals(
             listOf(
-                SpecCodingBundle.message(
-                    "spec.workflow.error",
-                    "compare failed",
+                FailureStatusCall(
+                    text = SpecCodingBundle.message(
+                        "spec.workflow.error",
+                        "compare failed",
+                    ),
+                    actions = recorder.troubleshootingActions,
                 ),
             ),
-            recorder.statusTexts,
+            recorder.failureStatuses,
         )
+        assertEquals(
+            listOf(
+                TroubleshootingCall(
+                    workflowId = "wf-6",
+                    trigger = SpecWorkflowRuntimeTroubleshootingTrigger.VERIFY_FAILURE,
+                ),
+            ),
+            recorder.troubleshootingCalls,
+        )
+        assertTrue(recorder.statusTexts.isEmpty())
     }
 
     @Test
@@ -245,6 +262,66 @@ class SpecWorkflowVerifyDeltaCoordinatorTest {
             ),
             recorder.statusTexts,
         )
+    }
+
+    @Test
+    fun `pinBaseline should surface troubleshooting actions when pinning fails`() {
+        val recorder = RecordingEnvironment().apply {
+            snapshots = listOf(
+                SpecWorkflowSnapshotEntry(
+                    snapshotId = "snapshot-10",
+                    workflowId = "wf-9",
+                    trigger = SpecSnapshotTrigger.WORKFLOW_SAVE_AFTER,
+                    createdAt = 10L,
+                ),
+            )
+            pinResult = Result.failure(IllegalStateException("pin failed"))
+            troubleshootingActions = listOf(
+                SpecWorkflowTroubleshootingAction.OpenSettings(label = "Open settings"),
+                SpecWorkflowTroubleshootingAction.OpenBundledDemo(label = "Open bundled demo"),
+            )
+        }
+        val coordinator = coordinator(recorder)
+
+        coordinator.pinBaseline(" wf-9 ")
+
+        assertEquals(listOf("wf-9"), recorder.listSnapshotCalls)
+        assertEquals(
+            listOf(
+                PinBaselineCall(
+                    workflowId = "wf-9",
+                    snapshotId = "snapshot-10",
+                    label = SpecCodingBundle.message(
+                        "spec.toolwindow.verifyDelta.pin.autoLabel",
+                        "snapshot-10",
+                    ),
+                ),
+            ),
+            recorder.pinBaselineCalls,
+        )
+        assertEquals(
+            listOf(
+                FailureStatusCall(
+                    text = SpecCodingBundle.message(
+                        "spec.workflow.error",
+                        "pin failed",
+                    ),
+                    actions = recorder.troubleshootingActions,
+                ),
+            ),
+            recorder.failureStatuses,
+        )
+        assertEquals(
+            listOf(
+                TroubleshootingCall(
+                    workflowId = "wf-9",
+                    trigger = SpecWorkflowRuntimeTroubleshootingTrigger.VERIFY_FAILURE,
+                ),
+            ),
+            recorder.troubleshootingCalls,
+        )
+        assertEquals(0, recorder.reloadCount)
+        assertTrue(recorder.statusTexts.isEmpty())
     }
 
     private fun coordinator(

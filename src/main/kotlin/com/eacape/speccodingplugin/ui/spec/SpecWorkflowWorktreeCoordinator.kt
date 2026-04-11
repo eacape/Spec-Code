@@ -24,6 +24,11 @@ internal class SpecWorkflowWorktreeCoordinator(
     private val mergeWorktree: (worktreeId: String, targetBranch: String) -> Result<WorktreeMergeResult>,
     private val renderFailureMessage: (Throwable) -> String,
     private val setStatusText: (String) -> Unit,
+    private val showFailureStatus: (String, List<SpecWorkflowTroubleshootingAction>) -> Unit,
+    private val buildRuntimeTroubleshootingActions: (
+        workflowId: String,
+        trigger: SpecWorkflowRuntimeTroubleshootingTrigger,
+    ) -> List<SpecWorkflowTroubleshootingAction>,
 ) {
 
     fun createAndSwitch(request: SpecWorkflowWorktreeCreateRequest) {
@@ -43,7 +48,8 @@ internal class SpecWorkflowWorktreeCoordinator(
                             ),
                         )
                     } else {
-                        setStatusText(
+                        showWorktreeFailureStatus(
+                            request.specTaskId,
                             SpecCodingBundle.message(
                                 "spec.workflow.worktree.switchFailed",
                                 renderFailureMessage(switchResult.exceptionOrNull() ?: IllegalStateException("unknown")),
@@ -53,7 +59,8 @@ internal class SpecWorkflowWorktreeCoordinator(
                 }
             }.onFailure { error ->
                 invokeLater {
-                    setStatusText(
+                    showWorktreeFailureStatus(
+                        request.specTaskId,
                         SpecCodingBundle.message(
                             "spec.workflow.worktree.createFailed",
                             renderFailureMessage(error),
@@ -84,7 +91,8 @@ internal class SpecWorkflowWorktreeCoordinator(
                         ),
                     )
                 }.onFailure { error ->
-                    setStatusText(
+                    showWorktreeFailureStatus(
+                        request.workflowId,
                         SpecCodingBundle.message(
                             "spec.workflow.worktree.mergeFailed",
                             renderFailureMessage(error),
@@ -102,5 +110,20 @@ internal class SpecWorkflowWorktreeCoordinator(
         } ?: bindings.firstOrNull { binding ->
             binding.specTaskId == workflowId
         }
+    }
+
+    private fun showWorktreeFailureStatus(workflowId: String, text: String) {
+        val normalizedWorkflowId = workflowId.trim()
+        if (normalizedWorkflowId.isBlank()) {
+            setStatusText(text)
+            return
+        }
+        showFailureStatus(
+            text,
+            buildRuntimeTroubleshootingActions(
+                normalizedWorkflowId,
+                SpecWorkflowRuntimeTroubleshootingTrigger.WORKTREE_FAILURE,
+            ),
+        )
     }
 }
