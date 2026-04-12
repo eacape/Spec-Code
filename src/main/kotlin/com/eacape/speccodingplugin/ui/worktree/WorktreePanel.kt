@@ -5,16 +5,29 @@ import com.eacape.speccodingplugin.i18n.LocaleChangedEvent
 import com.eacape.speccodingplugin.i18n.LocaleChangedListener
 import com.eacape.speccodingplugin.spec.SpecEngine
 import com.eacape.speccodingplugin.spec.SpecWorkflow
+import com.eacape.speccodingplugin.spec.WorkflowTemplate
+import com.eacape.speccodingplugin.ui.LocalEnvironmentReadiness
+import com.eacape.speccodingplugin.ui.actions.SpecWorkflowActionSupport
 import com.eacape.speccodingplugin.ui.spec.SpecUiStyle
+import com.eacape.speccodingplugin.ui.spec.SpecWorkflowBundledDemoProjectSupport
+import com.eacape.speccodingplugin.ui.spec.SpecWorkflowFirstRunTrackingStore
+import com.eacape.speccodingplugin.ui.spec.SpecWorkflowPrimaryEntry
+import com.eacape.speccodingplugin.ui.spec.SpecWorkflowRuntimeTroubleshootingCoordinator
+import com.eacape.speccodingplugin.ui.spec.SpecWorkflowRuntimeTroubleshootingTrigger
+import com.eacape.speccodingplugin.ui.spec.SpecWorkflowTroubleshootingAction
+import com.eacape.speccodingplugin.ui.spec.SpecWorkflowTroubleshootingActionDispatcher
 import com.eacape.speccodingplugin.worktree.WorktreeManager
 import com.eacape.speccodingplugin.worktree.WorktreeBinding
 import com.eacape.speccodingplugin.worktree.WorktreeMergeResult
 import com.eacape.speccodingplugin.worktree.WorktreeStatus
+import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.invokeLater
 import com.intellij.openapi.diagnostic.thisLogger
+import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.Messages
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.JBUI
@@ -27,10 +40,14 @@ import java.awt.Color
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Font
+import java.awt.FlowLayout
+import javax.swing.Box
+import javax.swing.BoxLayout
+import javax.swing.JButton
 import javax.swing.JPanel
 import javax.swing.JSplitPane
 
-class WorktreePanel(
+internal class WorktreePanel(
     private val project: Project,
     private val listWorkflows: () -> List<String> = {
         SpecEngine.getInstance(project).listWorkflows()
@@ -66,6 +83,9 @@ class WorktreePanel(
     private val newWorktreeDialogFactory: (defaultBaseBranch: String) -> NewWorktreeDialog = { defaultBaseBranch ->
         NewWorktreeDialog(baseBranch = defaultBaseBranch)
     },
+    private val runtimeTroubleshootingActionBuilder: (() -> List<SpecWorkflowTroubleshootingAction>)? = null,
+    private val openSettingsAction: (() -> Unit)? = null,
+    private val openBundledDemoAction: (() -> Unit)? = null,
     private val runSynchronously: Boolean = false,
 ) : JPanel(BorderLayout()), Disposable {
 
@@ -88,6 +108,44 @@ class WorktreePanel(
     private val experimentalBadgeLabel = JBLabel(SpecCodingBundle.message("beta.badge.experimental"))
     private val noteLabel = JBLabel(SpecCodingBundle.message("worktree.panel.note"))
     private val statusLabel = JBLabel(SpecCodingBundle.message("worktree.status.count", 0))
+    private val troubleshootingMessageLabel = JBLabel()
+    private val troubleshootingActionPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
+        isOpaque = false
+    }
+    private val troubleshootingPanel = JPanel().apply {
+        layout = BoxLayout(this, BoxLayout.Y_AXIS)
+        isOpaque = true
+        background = TROUBLESHOOTING_BG
+        border = SpecUiStyle.roundedCardBorder(
+            lineColor = TROUBLESHOOTING_BORDER,
+            arc = JBUI.scale(12),
+            top = 8,
+            left = 10,
+            bottom = 8,
+            right = 10,
+        )
+        troubleshootingMessageLabel.foreground = TROUBLESHOOTING_FG
+        troubleshootingMessageLabel.font = JBUI.Fonts.smallFont()
+        add(troubleshootingMessageLabel)
+        add(Box.createVerticalStrut(JBUI.scale(6)))
+        add(troubleshootingActionPanel)
+        isVisible = false
+    }
+    private val troubleshootingActionDispatcher = SpecWorkflowTroubleshootingActionDispatcher(
+        object : SpecWorkflowTroubleshootingActionDispatcher.Callbacks {
+            override fun openSettings() {
+                openSettings()
+            }
+
+            override fun openBundledDemo() {
+                openBundledDemoProject()
+            }
+
+            override fun selectEntry(entry: SpecWorkflowPrimaryEntry) = Unit
+
+            override fun refreshAfterEntrySelection() = Unit
+        },
+    )
 
     private var selectedWorktreeId: String? = null
     private var currentItems: List<WorktreeListItem> = emptyList()
@@ -352,6 +410,36 @@ class WorktreePanel(
         detailPanel.updateWorktree(updated)
     }
 
+    private fun openSettings() {
+        openSettingsAction?.invoke() ?: ShowSettingsUtil.getInstance().showSettingsDialog(
+            project,
+            "com.eacape.speccodingplugin.settings",
+        )
+    }
+
+    private fun openBundledDemoProject() {
+        openBundledDemoAction?.invoke() ?: runCatching {
+            SpecWorkflowBundledDemoProjectSupport.materializeDefault()
+        }.onSuccess { demoProject ->
+            if (!SpecWorkflowActionSupport.openFile(project, demoProject.readmePath)) {
+                BrowserUtil.browse(demoProject.readmePath.toUri())
+            }
+        }.onFailure { error ->
+            showBundledDemoOpenError(error)
+        }
+    }
+
+    private fun showBundledDemoOpenError(error: Throwable) {
+        Messages.showErrorDialog(
+            project,
+            SpecCodingBundle.message(
+                "spec.dialog.demo.open.failed",
+                error.message ?: error.javaClass.simpleName,
+            ),
+            SpecCodingBundle.message("spec.dialog.demo.title"),
+        )
+    }
+
     private fun subscribeToLocaleEvents() {
         val application = ApplicationManager.getApplication() ?: return
         application.messageBus.connect(this).subscribe(
@@ -435,6 +523,9 @@ class WorktreePanel(
         private val STATUS_CHIP_BG = JBColor(Color(236, 244, 255), Color(66, 76, 91))
         private val STATUS_CHIP_BORDER = JBColor(Color(178, 198, 226), Color(99, 116, 140))
         private val STATUS_TEXT_FG = JBColor(Color(52, 72, 106), Color(201, 213, 232))
+        private val TROUBLESHOOTING_BG = JBColor(Color(255, 247, 233), Color(86, 72, 54))
+        private val TROUBLESHOOTING_BORDER = JBColor(Color(230, 197, 139), Color(140, 112, 76))
+        private val TROUBLESHOOTING_FG = JBColor(Color(122, 81, 18), Color(242, 224, 184))
         private val PANEL_SECTION_BG = JBColor(Color(250, 252, 255), Color(51, 56, 64))
         private val PANEL_SECTION_BORDER = JBColor(Color(204, 215, 233), Color(84, 92, 105))
     }

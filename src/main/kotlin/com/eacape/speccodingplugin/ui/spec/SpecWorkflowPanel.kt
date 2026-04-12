@@ -119,6 +119,23 @@ class SpecWorkflowPanel(
     private val taskCoordinator = SwingPanelTaskCoordinator(
         isDisposed = { _isDisposed || project.isDisposed },
     )
+    private val runtimeTroubleshootingActionBuilder = SpecWorkflowRuntimeTroubleshootingActionBuilder(
+        readinessSnapshot = {
+            LocalEnvironmentReadiness.inspect(project)
+        },
+        trackingSnapshot = {
+            SpecWorkflowFirstRunTrackingStore.getInstance(project).snapshot()
+        },
+        resolveTemplate = { workflowId ->
+            currentWorkflow
+                ?.takeIf { workflow -> workflow.id == workflowId }
+                ?.template
+                ?: WorkflowTemplate.QUICK_TASK
+        },
+    )
+    private val runtimeTroubleshootingStatusCoordinator = SpecWorkflowRuntimeTroubleshootingStatusCoordinator(
+        buildActions = runtimeTroubleshootingActionBuilder::build,
+    )
     private val workspacePresentationTelemetry = SpecWorkflowWorkspacePresentationTelemetryTracker(logger)
     private val workflowCreateCoordinator = SpecWorkflowCreateCoordinator(
         createWorkflow = { request ->
@@ -319,9 +336,7 @@ class SpecWorkflowPanel(
         reloadCurrentWorkflow = {
             reloadCurrentWorkflow()
         },
-        buildRuntimeTroubleshootingActions = { workflowId, trigger ->
-            buildRuntimeTroubleshootingActions(workflowId, trigger)
-        },
+        buildRuntimeTroubleshootingActions = runtimeTroubleshootingActionBuilder::build,
         renderFailureMessage = { error, fallback ->
             compactErrorMessage(error, fallback)
         },
@@ -342,9 +357,7 @@ class SpecWorkflowPanel(
         providerDisplayName = ::providerDisplayName,
         setStatusText = ::setStatusText,
         showFailureStatus = ::setStatusWithTroubleshooting,
-        buildRuntimeTroubleshootingActions = { workflowId, trigger ->
-            buildRuntimeTroubleshootingActions(workflowId, trigger)
-        },
+        buildRuntimeTroubleshootingActions = runtimeTroubleshootingActionBuilder::build,
         execute = taskExecutionCoordinator::execute,
     )
     private val verifyDeltaCoordinator = SpecWorkflowVerifyDeltaCoordinator(
@@ -402,9 +415,7 @@ class SpecWorkflowPanel(
         },
         setStatusText = ::setStatusText,
         showFailureStatus = ::setStatusWithTroubleshooting,
-        buildRuntimeTroubleshootingActions = { workflowId, trigger ->
-            buildRuntimeTroubleshootingActions(workflowId, trigger)
-        },
+        buildRuntimeTroubleshootingActions = runtimeTroubleshootingActionBuilder::build,
         renderFailureMessage = { error ->
             compactErrorMessage(error, SpecCodingBundle.message("common.unknown"))
         },
@@ -567,9 +578,42 @@ class SpecWorkflowPanel(
         },
         setStatusText = ::setStatusText,
         showFailureStatus = ::setStatusWithTroubleshooting,
-        buildRuntimeTroubleshootingActions = { workflowId, trigger ->
-            buildRuntimeTroubleshootingActions(workflowId, trigger)
+        buildRuntimeTroubleshootingActions = runtimeTroubleshootingActionBuilder::build,
+    )
+    private val stageTransitionCoordinator = SpecWorkflowStageTransitionCoordinator(
+        backgroundRunner = object : SpecWorkflowStageTransitionBackgroundRunner {
+            override fun <T> run(request: SpecWorkflowStageTransitionBackgroundRequest<T>) {
+                SpecWorkflowActionSupport.runBackground(
+                    project = project,
+                    title = request.title,
+                    task = request.task,
+                    onSuccess = request.onSuccess,
+                )
+            }
         },
+        previewStageTransition = { workflowId, transitionType, targetStage ->
+            specEngine.previewStageTransition(
+                workflowId = workflowId,
+                transitionType = transitionType,
+                targetStage = targetStage,
+            )
+        },
+        advanceWorkflow = { workflowId ->
+            specEngine.advanceWorkflow(workflowId) { true }
+        },
+        jumpToStage = { workflowId, targetStage ->
+            specEngine.jumpToStage(workflowId, targetStage) { true }
+        },
+        rollbackToStage = { workflowId, targetStage ->
+            specEngine.rollbackToStage(workflowId, targetStage)
+        },
+        showGateBlocked = { workflowId, gateResult ->
+            SpecWorkflowActionSupport.showGateBlocked(project, workflowId, gateResult)
+        },
+        confirmWarnings = { workflowId, gateResult ->
+            SpecWorkflowActionSupport.confirmWarnings(project, workflowId, gateResult)
+        },
+        onTransitionCompleted = ::handleStageTransitionCompleted,
     )
     private val discoveryListener: () -> Unit = {
         llmRouter.refreshProviders()
@@ -623,11 +667,13 @@ class SpecWorkflowPanel(
         callbacks = object : SpecWorkflowWorkbenchCommandCallbacks {
             override fun advance() = onAdvanceStageRequested()
 
-            override fun jump(workflowId: String, targetStage: StageId) = previewAndJumpToStage(workflowId, targetStage)
+            override fun jump(workflowId: String, targetStage: StageId) =
+                stageTransitionCoordinator.jump(workflowId, targetStage)
 
             override fun jumpFallback() = onJumpStageRequested()
 
-            override fun rollback(workflowId: String, targetStage: StageId) = executeRollbackStage(workflowId, targetStage)
+            override fun rollback(workflowId: String, targetStage: StageId) =
+                stageTransitionCoordinator.rollback(workflowId, targetStage)
 
             override fun rollbackFallback() = onRollbackStageRequested()
 
@@ -1730,14 +1776,19 @@ class SpecWorkflowPanel(
     private fun toUiLowercase(value: String): String = value.lowercase(Locale.ROOT)
 
     private fun setStatusText(text: String?) {
-        applyStatusPresentation(text, emptyList())
+        applyStatusPresentation(runtimeTroubleshootingStatusCoordinator.plain(text))
     }
 
     private fun setStatusWithTroubleshooting(
         text: String?,
         actions: List<SpecWorkflowTroubleshootingAction>,
     ) {
-        applyStatusPresentation(text, actions)
+        applyStatusPresentation(
+            runtimeTroubleshootingStatusCoordinator.withActions(
+                text = text,
+                actions = actions,
+            ),
+        )
     }
 
     private fun setRuntimeTroubleshootingStatus(
@@ -1745,30 +1796,21 @@ class SpecWorkflowPanel(
         text: String?,
         trigger: SpecWorkflowRuntimeTroubleshootingTrigger,
     ) {
-        val statusText = text?.trim().orEmpty()
-        if (statusText.isBlank()) {
-            setStatusText(text)
-            return
-        }
-        val normalizedWorkflowId = workflowId?.trim().orEmpty()
-        if (normalizedWorkflowId.isBlank()) {
-            setStatusText(statusText)
-            return
-        }
-        setStatusWithTroubleshooting(
-            statusText,
-            buildRuntimeTroubleshootingActions(normalizedWorkflowId, trigger),
+        applyStatusPresentation(
+            runtimeTroubleshootingStatusCoordinator.runtime(
+                SpecWorkflowRuntimeTroubleshootingStatusRequest(
+                    workflowId = workflowId,
+                    text = text,
+                    trigger = trigger,
+                ),
+            ),
         )
     }
 
-    private fun applyStatusPresentation(
-        text: String?,
-        actions: List<SpecWorkflowTroubleshootingAction>,
-    ) {
-        val value = text?.trim().orEmpty()
-        statusLabel.text = value
-        updateStatusTroubleshootingActions(actions)
-        statusChipPanel.isVisible = value.isNotEmpty()
+    private fun applyStatusPresentation(presentation: SpecWorkflowStatusPresentation) {
+        statusLabel.text = presentation.text
+        updateStatusTroubleshootingActions(presentation.actions)
+        statusChipPanel.isVisible = presentation.text.isNotEmpty()
         statusChipPanel.revalidate()
         statusChipPanel.repaint()
     }
@@ -1786,22 +1828,6 @@ class SpecWorkflowPanel(
             addActionListener { statusTroubleshootingActionDispatcher.perform(action) }
             styleToolbarButton(this)
         }
-    }
-
-    private fun buildRuntimeTroubleshootingActions(
-        workflowId: String,
-        trigger: SpecWorkflowRuntimeTroubleshootingTrigger,
-    ): List<SpecWorkflowTroubleshootingAction> {
-        val template = currentWorkflow
-            ?.takeIf { workflow -> workflow.id == workflowId }
-            ?.template
-            ?: WorkflowTemplate.QUICK_TASK
-        return SpecWorkflowRuntimeTroubleshootingCoordinator.build(
-            trigger = trigger,
-            readiness = LocalEnvironmentReadiness.inspect(project),
-            tracking = SpecWorkflowFirstRunTrackingStore.getInstance(project).snapshot(),
-            template = template,
-        )
     }
 
     private fun openTroubleshootingSettings() {
@@ -3881,29 +3907,7 @@ class SpecWorkflowPanel(
 
     private fun onAdvanceStageRequested() {
         val workflowId = selectedWorkflowId ?: return
-        SpecWorkflowActionSupport.runBackground(
-            project = project,
-            title = SpecCodingBundle.message("spec.action.advance.preview"),
-            task = {
-                specEngine.previewStageTransition(
-                    workflowId = workflowId,
-                    transitionType = StageTransitionType.ADVANCE,
-                ).getOrThrow()
-            },
-            onSuccess = { preview ->
-                when (preview.gateResult.status) {
-                    GateStatus.ERROR -> SpecWorkflowActionSupport.showGateBlocked(project, workflowId, preview.gateResult)
-                    GateStatus.WARNING -> {
-                        if (!SpecWorkflowActionSupport.confirmWarnings(project, workflowId, preview.gateResult)) {
-                            return@runBackground
-                        }
-                        executeAdvanceStage(workflowId)
-                    }
-
-                    GateStatus.PASS -> executeAdvanceStage(workflowId)
-                }
-            },
-        )
+        stageTransitionCoordinator.advance(workflowId)
     }
 
     private fun onJumpStageRequested() {
@@ -3922,7 +3926,7 @@ class SpecWorkflowPanel(
             stages = targets,
             title = SpecCodingBundle.message("spec.action.jump.stage.popup.title"),
             workflowMeta = workflowMeta,
-            onChosen = { targetStage -> previewAndJumpToStage(workflowMeta.workflowId, targetStage) },
+            onChosen = { targetStage -> stageTransitionCoordinator.jump(workflowMeta.workflowId, targetStage) },
         )
     }
 
@@ -3942,7 +3946,7 @@ class SpecWorkflowPanel(
             stages = targets,
             title = SpecCodingBundle.message("spec.action.rollback.stage.popup.title"),
             workflowMeta = workflowMeta,
-            onChosen = { targetStage -> executeRollbackStage(workflowMeta.workflowId, targetStage) },
+            onChosen = { targetStage -> stageTransitionCoordinator.rollback(workflowMeta.workflowId, targetStage) },
         )
     }
 
@@ -4002,84 +4006,6 @@ class SpecWorkflowPanel(
                     title = clonedTitle,
                     description = cloneDialog.resultDescription,
                     targetTemplate = preview.toTemplate,
-                )
-            },
-        )
-    }
-
-    private fun previewAndJumpToStage(workflowId: String, targetStage: StageId) {
-        SpecWorkflowActionSupport.runBackground(
-            project = project,
-            title = SpecCodingBundle.message("spec.action.jump.preview"),
-            task = {
-                specEngine.previewStageTransition(
-                    workflowId = workflowId,
-                    transitionType = StageTransitionType.JUMP,
-                    targetStage = targetStage,
-                ).getOrThrow()
-            },
-            onSuccess = { preview ->
-                when (preview.gateResult.status) {
-                    GateStatus.ERROR -> SpecWorkflowActionSupport.showGateBlocked(project, workflowId, preview.gateResult)
-                    GateStatus.WARNING -> {
-                        if (!SpecWorkflowActionSupport.confirmWarnings(project, workflowId, preview.gateResult)) {
-                            return@runBackground
-                        }
-                        executeJumpStage(workflowId, targetStage)
-                    }
-
-                    GateStatus.PASS -> executeJumpStage(workflowId, targetStage)
-                }
-            },
-        )
-    }
-
-    private fun executeAdvanceStage(workflowId: String) {
-        SpecWorkflowActionSupport.runBackground(
-            project = project,
-            title = SpecCodingBundle.message("spec.action.advance.executing"),
-            task = { specEngine.advanceWorkflow(workflowId) { true }.getOrThrow() },
-            onSuccess = { result ->
-                handleStageTransitionCompleted(
-                    workflowId = workflowId,
-                    successMessage = SpecCodingBundle.message(
-                        "spec.action.advance.success",
-                        SpecWorkflowActionSupport.stageLabel(result.targetStage),
-                    ),
-                )
-            },
-        )
-    }
-
-    private fun executeJumpStage(workflowId: String, targetStage: StageId) {
-        SpecWorkflowActionSupport.runBackground(
-            project = project,
-            title = SpecCodingBundle.message("spec.action.jump.executing"),
-            task = { specEngine.jumpToStage(workflowId, targetStage) { true }.getOrThrow() },
-            onSuccess = { result ->
-                handleStageTransitionCompleted(
-                    workflowId = workflowId,
-                    successMessage = SpecCodingBundle.message(
-                        "spec.action.jump.success",
-                        SpecWorkflowActionSupport.stageLabel(result.targetStage),
-                    ),
-                )
-            },
-        )
-    }
-
-    private fun executeRollbackStage(workflowId: String, targetStage: StageId) {
-        SpecWorkflowActionSupport.runBackground(
-            project = project,
-            title = SpecCodingBundle.message("spec.action.rollback.executing"),
-            task = { specEngine.rollbackToStage(workflowId, targetStage).getOrThrow() },
-            onSuccess = { meta ->
-                handleStageTransitionCompleted(
-                    workflowId = workflowId,
-                    successMessage = SpecCodingBundle.message(
-                        "spec.action.rollback.success",
-                        SpecWorkflowActionSupport.stageLabel(meta.currentStage),
-                    ),
                 )
             },
         )
