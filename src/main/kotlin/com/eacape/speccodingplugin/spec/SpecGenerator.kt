@@ -256,11 +256,9 @@ class SpecGenerator(
             appendLine(
                 "1. 必须包含且按顺序保留以下五个二级标题：${DesignSectionSupport.canonicalMarkdownHeadingSummary()}。",
             )
-            appendLine("2. 在“架构设计”中说明核心模块、职责与关键数据流。")
-            appendLine("3. 在“技术选型”中给出技术方案与取舍理由。")
-            appendLine("4. 在“数据模型”中描述核心实体、字段关系与约束。")
-            appendLine("5. 在“接口设计”中说明关键接口、输入输出以及与现有工作流/服务的调用边界。")
-            appendLine("6. 在“非功能设计”中覆盖性能、安全、可靠性、可观测性与回滚约束。")
+            DesignSectionSupport.generationRequirementLines().forEachIndexed { index, requirement ->
+                appendLine("${index + 2}. $requirement")
+            }
             appendLine("7. 使用 Markdown；若包含 Mermaid，只作为章节内代码块，不要替代正文结构。")
 
             if (request.options.includeExamples) {
@@ -411,7 +409,9 @@ class SpecGenerator(
             appendLine(
                 "2. Keep or restore the required five-section structure for ${DesignSectionSupport.englishHeadingSummary()}.",
             )
-            appendLine("3. Keep unaffected sections stable while updating the relevant architecture, technology, data model, API, or non-functional decisions.")
+            appendLine(
+                "3. Keep unaffected sections stable while updating the relevant ${DesignSectionSupport.reviseFocusSummary()}.",
+            )
             appendLine("4. Preserve the overall markdown structure and keep Mermaid content, if any, inside fenced code blocks.")
             appendLine("5. Use the upstream requirements document only as supporting reference, not as the primary rewrite source.")
 
@@ -1172,49 +1172,7 @@ class SpecGenerator(
      * 获取 Design 阶段模板
      */
     private fun getDesignTemplate(): String {
-        return buildString {
-            appendLine("# 设计文档")
-            appendLine()
-            appendLine(DesignSectionId.ARCHITECTURE.markdownHeading())
-            appendLine()
-            appendLine("采用三层架构：")
-            appendLine("- 表示层：Web UI")
-            appendLine("- 业务层：业务逻辑处理")
-            appendLine("- 数据层：数据持久化")
-            appendLine()
-            appendLine(DesignSectionId.TECHNOLOGY.markdownHeading())
-            appendLine()
-            appendLine("- 后端：Kotlin + Spring Boot")
-            appendLine("- 前端：React + TypeScript")
-            appendLine("- 数据库：PostgreSQL")
-            appendLine()
-            appendLine(DesignSectionId.DATA_MODEL.markdownHeading())
-            appendLine()
-            appendLine("```kotlin")
-            appendLine("data class User(")
-            appendLine("    val id: String,")
-            appendLine("    val email: String,")
-            appendLine("    val passwordHash: String")
-            appendLine(")")
-            appendLine("```")
-            appendLine()
-            appendLine(DesignSectionId.API_DESIGN.markdownHeading())
-            appendLine()
-            appendLine("### POST /api/auth/login")
-            appendLine("请求：")
-            appendLine("```json")
-            appendLine("{")
-            appendLine("  \"email\": \"user@example.com\",")
-            appendLine("  \"password\": \"password123\"")
-            appendLine("}")
-            appendLine("```")
-            appendLine()
-            appendLine(DesignSectionId.NON_FUNCTIONAL.markdownHeading())
-            appendLine()
-            appendLine("- 性能：关键工作流操作应在可接受时延内完成，并避免阻塞 IDE 主线程")
-            appendLine("- 安全：敏感配置和执行上下文需要脱敏、审计并限制权限边界")
-            appendLine("- 可观测性与回滚：关键步骤需要保留验证结果、错误诊断信息和回滚入口")
-        }.trim()
+        return DesignSectionSupport.canonicalTemplateMarkdown()
     }
 
     /**

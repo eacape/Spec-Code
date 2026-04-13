@@ -67,8 +67,11 @@ class SpecGeneratorComposeModeTest {
         assertTrue(userPrompt.contains("## 接口设计"))
         assertTrue(userPrompt.contains("## 非功能设计"))
         assertTrue(!userPrompt.contains("## API 设计"))
-        assertTrue(userPrompt.contains("关键接口、输入输出以及与现有工作流/服务的调用边界"))
-        assertTrue(userPrompt.contains("可观测性与回滚约束"))
+        DesignSectionSupport.generationRequirementLines().forEach { requirement ->
+            assertTrue(userPrompt.contains(requirement))
+        }
+        assertTrue(userPrompt.contains("### POST /api/auth/login"))
+        assertTrue(userPrompt.contains("敏感配置和执行上下文需要脱敏、审计并限制权限边界"))
         assertTrue(userPrompt.contains("参考格式"))
     }
 
@@ -148,6 +151,7 @@ class SpecGeneratorComposeModeTest {
         assertTrue(userPrompt.contains("## Upstream requirements.md Reference"))
         assertTrue(userPrompt.contains("Keep source references traceable."))
         assertTrue(userPrompt.contains(DesignSectionSupport.englishHeadingSummary()))
+        assertTrue(userPrompt.contains(DesignSectionSupport.reviseFocusSummary()))
         assertTrue(userPrompt.contains("## Incremental Workflow Baseline"))
         assertTrue(userPrompt.contains("## Local Repository Code Context"))
         assertTrue(userPrompt.contains("src/main/kotlin/com/example/WorkflowEngine.kt"))

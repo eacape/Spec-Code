@@ -68,7 +68,7 @@ internal object ArtifactDraftStateSupport {
     fun defaultSkeletonFor(stageId: StageId): String {
         val raw = when (stageId) {
             StageId.REQUIREMENTS -> REQUIREMENTS_SKELETON
-            StageId.DESIGN -> DESIGN_SKELETON
+            StageId.DESIGN -> DesignSectionSupport.artifactDraftMarkdown()
             StageId.TASKS -> TASKS_SKELETON
             StageId.VERIFY -> VERIFICATION_SKELETON
             StageId.IMPLEMENT,
@@ -95,13 +95,7 @@ internal object ArtifactDraftStateSupport {
                 "As a <role>, I want <capability>, so that <benefit>.",
                 "TODO: Add measurable acceptance criteria.",
             )
-            StageId.DESIGN -> listOf(
-                "TODO: Describe the architecture and module boundaries.",
-                "TODO: List selected technologies and rationale.",
-                "TODO: Describe key entities and relationships.",
-                "TODO: Describe interfaces and contract changes.",
-                "TODO: Capture performance, security, and operability choices.",
-            )
+            StageId.DESIGN -> DesignSectionSupport.draftPlaceholderLines()
             StageId.TASKS -> listOf(
                 "TODO: Add implementation details.",
                 "TODO: Break work into executable steps.",
@@ -137,25 +131,6 @@ internal object ArtifactDraftStateSupport {
 
         ## Acceptance Criteria
         - [ ] TODO: Add measurable acceptance criteria.
-    """
-
-    private const val DESIGN_SKELETON = """
-        # Design Document
-
-        ## Architecture Design
-        - TODO: Describe the architecture and module boundaries.
-
-        ## Technology Stack
-        - TODO: List selected technologies and rationale.
-
-        ## Data Model
-        - TODO: Describe key entities and relationships.
-
-        ## API Design
-        - TODO: Describe interfaces and contract changes.
-
-        ## Non-Functional Design
-        - TODO: Capture performance, security, and operability choices.
     """
 
     private const val TASKS_SKELETON = """

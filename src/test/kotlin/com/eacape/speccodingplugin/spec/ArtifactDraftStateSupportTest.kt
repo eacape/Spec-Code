@@ -19,6 +19,26 @@ class ArtifactDraftStateSupportTest {
     }
 
     @Test
+    fun `design skeleton should reuse shared draft metadata and remain unmaterialized`() {
+        val skeleton = ArtifactDraftStateSupport.defaultSkeletonFor(StageId.DESIGN)
+
+        assertEquals(
+            DesignSectionSupport.artifactDraftMarkdown().trim(),
+            skeleton.trim(),
+        )
+        assertTrue(skeleton.contains("## Architecture Design"))
+        assertTrue(skeleton.contains("## Non-Functional Design"))
+        assertEquals(
+            ArtifactDraftState.UNMATERIALIZED,
+            ArtifactDraftStateSupport.deriveState(
+                stageId = StageId.DESIGN,
+                content = skeleton,
+                hasMaterializationAudit = false,
+            ),
+        )
+    }
+
+    @Test
     fun `deriveState should keep placeholder content unmaterialized until saved`() {
         val placeholderTasks = """
             # Implement Document

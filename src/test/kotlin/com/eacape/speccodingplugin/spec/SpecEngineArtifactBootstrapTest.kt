@@ -60,6 +60,43 @@ class SpecEngineArtifactBootstrapTest {
     }
 
     @Test
+    fun `createWorkflow should scaffold shared design draft skeleton for full spec`() {
+        val configPath = tempDir.resolve(".spec-coding").resolve("config.yaml")
+        Files.createDirectories(configPath.parent)
+        Files.writeString(
+            configPath,
+            """
+            schemaVersion: 1
+            defaultTemplate: FULL_SPEC
+            """.trimIndent() + "\n",
+        )
+
+        val engine = SpecEngine(project, storage) { SpecGenerationResult.Failure("not used") }
+        val workflow = engine.createWorkflow(
+            title = "full spec",
+            description = "design draft bootstrap",
+            template = WorkflowTemplate.FULL_SPEC,
+            verifyEnabled = false,
+        ).getOrThrow()
+
+        val workflowDir = tempDir
+            .resolve(".spec-coding")
+            .resolve("specs")
+            .resolve(workflow.id)
+        val designPath = workflowDir.resolve("design.md")
+
+        assertEquals(StageId.REQUIREMENTS, workflow.currentStage)
+        assertTrue(Files.exists(workflowDir.resolve("requirements.md")))
+        assertTrue(Files.exists(designPath))
+        assertTrue(Files.exists(workflowDir.resolve("tasks.md")))
+        assertEquals(
+            ArtifactDraftStateSupport.defaultSkeletonFor(StageId.DESIGN),
+            Files.readString(designPath),
+        )
+        assertEquals(ArtifactDraftState.UNMATERIALIZED, workflow.artifactDraftStates[StageId.DESIGN])
+    }
+
+    @Test
     fun `createWorkflow should scaffold tasks and verification for direct implement when verify enabled`() {
         val configPath = tempDir.resolve(".spec-coding").resolve("config.yaml")
         Files.createDirectories(configPath.parent)
