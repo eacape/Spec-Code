@@ -253,12 +253,15 @@ class SpecGenerator(
             appendLine()
             appendLine("要求：")
             appendLine("0. 只输出最终 design.md 正文，不要输出思考过程、工具日志、路径信息或 JSON。")
-            appendLine("1. 必须包含二级标题：## 架构设计、## 技术选型、## 数据模型。")
+            appendLine(
+                "1. 必须包含且按顺序保留以下五个二级标题：${DesignSectionSupport.canonicalMarkdownHeadingSummary()}。",
+            )
             appendLine("2. 在“架构设计”中说明核心模块、职责与关键数据流。")
             appendLine("3. 在“技术选型”中给出技术方案与取舍理由。")
             appendLine("4. 在“数据模型”中描述核心实体、字段关系与约束。")
-            appendLine("5. 可补充 ## API 设计 与 ## 非功能设计（性能、安全、可扩展性）。")
-            appendLine("6. 使用 Markdown；若包含 Mermaid，只作为章节内代码块，不要替代正文结构。")
+            appendLine("5. 在“接口设计”中说明关键接口、输入输出以及与现有工作流/服务的调用边界。")
+            appendLine("6. 在“非功能设计”中覆盖性能、安全、可靠性、可观测性与回滚约束。")
+            appendLine("7. 使用 Markdown；若包含 Mermaid，只作为章节内代码块，不要替代正文结构。")
 
             if (request.options.includeExamples) {
                 appendLine()
@@ -405,9 +408,12 @@ class SpecGenerator(
             appendLine("Requirements:")
             appendLine("0. Output only the final design.md body. Do not output explanations, diff, JSON, or code fences.")
             appendLine("1. Use the current design.md as the primary baseline. Make incremental additions or local edits instead of a full rewrite.")
-            appendLine("2. Keep unaffected sections stable while updating the relevant architecture, technology, data model, or non-functional decisions.")
-            appendLine("3. Preserve the overall markdown structure and keep Mermaid content, if any, inside fenced code blocks.")
-            appendLine("4. Use the upstream requirements document only as supporting reference, not as the primary rewrite source.")
+            appendLine(
+                "2. Keep or restore the required five-section structure for ${DesignSectionSupport.englishHeadingSummary()}.",
+            )
+            appendLine("3. Keep unaffected sections stable while updating the relevant architecture, technology, data model, API, or non-functional decisions.")
+            appendLine("4. Preserve the overall markdown structure and keep Mermaid content, if any, inside fenced code blocks.")
+            appendLine("5. Use the upstream requirements document only as supporting reference, not as the primary rewrite source.")
 
             if (request.options.includeExamples) {
                 appendLine()
@@ -582,14 +588,7 @@ class SpecGenerator(
                 normalized.contains("非功能需求") ||
                 normalized.contains("用户故事") ||
                 normalized.contains("requirements")
-            SpecPhase.DESIGN -> normalized.contains("架构设计") ||
-                normalized.contains("architecture design") ||
-                normalized.contains("技术选型") ||
-                normalized.contains("technology stack") ||
-                normalized.contains("数据模型") ||
-                normalized.contains("data model") ||
-                normalized.contains("api 设计") ||
-                normalized.contains("api design")
+            SpecPhase.DESIGN -> DesignSectionSupport.containsSectionSignal(trimmed)
             SpecPhase.IMPLEMENT -> normalized.contains("任务列表") ||
                 normalized.contains("实现步骤") ||
                 normalized.contains("task list") ||
@@ -599,46 +598,73 @@ class SpecGenerator(
     }
 
     private fun ensureDesignStructure(content: String): String {
-        var normalized = content.trim()
+        val normalized = content.trim()
         if (normalized.isBlank()) {
-            return DESIGN_SKELETON
+            return buildDesignSkeleton()
         }
 
-        val hasArchitecture = containsAnyMarker(normalized, DESIGN_ARCHITECTURE_MARKERS)
-        val hasTechStack = containsAnyMarker(normalized, DESIGN_TECH_STACK_MARKERS)
-        val hasDataModel = containsAnyMarker(normalized, DESIGN_DATA_MODEL_MARKERS)
+        val missingSections = DesignSectionSupport.missingSections(normalized)
+        if (missingSections.isEmpty()) {
+            return normalized
+        }
 
-        if (!hasArchitecture) {
-            normalized = buildString {
-                appendLine("## 架构设计")
+        var structured = normalized
+        if (DesignSectionId.ARCHITECTURE in missingSections) {
+            structured = buildString {
+                appendLine("## ${DesignSectionId.ARCHITECTURE.canonicalHeading}")
                 appendLine()
-                appendLine(normalized)
+                appendLine(structured)
             }.trim()
         }
 
-        if (!hasTechStack) {
-            normalized = buildString {
-                appendLine(normalized)
-                appendLine()
-                appendLine("## 技术选型")
-                appendLine()
-                appendLine("- 核心技术栈：待补充")
-                appendLine("- 选型理由：待补充")
-            }.trim()
+        val trailingSections = missingSections.filterNot { section -> section == DesignSectionId.ARCHITECTURE }
+        if (trailingSections.isEmpty()) {
+            return structured
         }
 
-        if (!hasDataModel) {
-            normalized = buildString {
-                appendLine(normalized)
+        return buildString {
+            appendLine(structured)
+            trailingSections.forEach { section ->
                 appendLine()
-                appendLine("## 数据模型")
-                appendLine()
-                appendLine("- 核心实体：待补充")
-                appendLine("- 实体关系与约束：待补充")
-            }.trim()
-        }
+                appendLine(buildDesignSectionScaffold(section))
+            }
+        }.trim()
+    }
 
-        return normalized
+    private fun buildDesignSkeleton(): String {
+        return DesignSectionId.entries.joinToString("\n\n") { section ->
+            buildDesignSectionScaffold(section)
+        }
+    }
+
+    private fun buildDesignSectionScaffold(section: DesignSectionId): String {
+        val bodyLines = when (section) {
+            DesignSectionId.ARCHITECTURE -> listOf(
+                "- 核心模块：待补充",
+                "- 数据流与边界：待补充",
+            )
+            DesignSectionId.TECHNOLOGY -> listOf(
+                "- 核心技术栈：待补充",
+                "- 选型理由：待补充",
+            )
+            DesignSectionId.DATA_MODEL -> listOf(
+                "- 核心实体：待补充",
+                "- 实体关系与约束：待补充",
+            )
+            DesignSectionId.API_DESIGN -> listOf(
+                "- 关键接口与输入输出：待补充",
+                "- 与现有工作流/服务的调用边界：待补充",
+            )
+            DesignSectionId.NON_FUNCTIONAL -> listOf(
+                "- 性能、安全、可靠性约束：待补充",
+                "- 可观测性与回滚要求：待补充",
+            )
+        }
+        return buildString {
+            appendLine(section.markdownHeading())
+            appendLine()
+            bodyLines.forEach(::appendLine)
+        }.trim()
     }
 
     private fun ensureImplementStructure(content: String): String {
@@ -1146,43 +1172,49 @@ class SpecGenerator(
      * 获取 Design 阶段模板
      */
     private fun getDesignTemplate(): String {
-        return """
-            # 设计文档
-
-            ## 架构设计
-
-            采用三层架构：
-            - 表示层：Web UI
-            - 业务层：业务逻辑处理
-            - 数据层：数据持久化
-
-            ## 技术选型
-
-            - 后端：Kotlin + Spring Boot
-            - 前端：React + TypeScript
-            - 数据库：PostgreSQL
-
-            ## 数据模型
-
-            ```kotlin
-            data class User(
-                val id: String,
-                val email: String,
-                val passwordHash: String
-            )
-            ```
-
-            ## API 设计
-
-            ### POST /api/auth/login
-            请求：
-            ```json
-            {
-              "email": "user@example.com",
-              "password": "password123"
-            }
-            ```
-        """.trimIndent()
+        return buildString {
+            appendLine("# 设计文档")
+            appendLine()
+            appendLine(DesignSectionId.ARCHITECTURE.markdownHeading())
+            appendLine()
+            appendLine("采用三层架构：")
+            appendLine("- 表示层：Web UI")
+            appendLine("- 业务层：业务逻辑处理")
+            appendLine("- 数据层：数据持久化")
+            appendLine()
+            appendLine(DesignSectionId.TECHNOLOGY.markdownHeading())
+            appendLine()
+            appendLine("- 后端：Kotlin + Spring Boot")
+            appendLine("- 前端：React + TypeScript")
+            appendLine("- 数据库：PostgreSQL")
+            appendLine()
+            appendLine(DesignSectionId.DATA_MODEL.markdownHeading())
+            appendLine()
+            appendLine("```kotlin")
+            appendLine("data class User(")
+            appendLine("    val id: String,")
+            appendLine("    val email: String,")
+            appendLine("    val passwordHash: String")
+            appendLine(")")
+            appendLine("```")
+            appendLine()
+            appendLine(DesignSectionId.API_DESIGN.markdownHeading())
+            appendLine()
+            appendLine("### POST /api/auth/login")
+            appendLine("请求：")
+            appendLine("```json")
+            appendLine("{")
+            appendLine("  \"email\": \"user@example.com\",")
+            appendLine("  \"password\": \"password123\"")
+            appendLine("}")
+            appendLine("```")
+            appendLine()
+            appendLine(DesignSectionId.NON_FUNCTIONAL.markdownHeading())
+            appendLine()
+            appendLine("- 性能：关键工作流操作应在可接受时延内完成，并避免阻塞 IDE 主线程")
+            appendLine("- 安全：敏感配置和执行上下文需要脱敏、审计并限制权限边界")
+            appendLine("- 可观测性与回滚：关键步骤需要保留验证结果、错误诊断信息和回滚入口")
+        }.trim()
     }
 
     /**
@@ -1255,25 +1287,6 @@ class SpecGenerator(
         private val CHECKBOX_ITEM_REGEX = Regex("""^\s*-\s*\[[ xX]\]\s+\S+""")
         private val ORDERED_ITEM_REGEX = Regex("""^\s*\d+\.\s+\S+""")
         private const val MAX_LEADING_NOISE_LINES = 24
-        private val DESIGN_ARCHITECTURE_MARKERS = listOf("## 架构设计", "架构设计", "系统架构", "Architecture Design", "Architecture")
-        private val DESIGN_TECH_STACK_MARKERS = listOf("## 技术选型", "技术选型", "技术方案", "Technology Stack")
-        private val DESIGN_DATA_MODEL_MARKERS = listOf("## 数据模型", "数据模型", "实体模型", "Data Model")
-        private val DESIGN_SKELETON = """
-            ## 架构设计
-            
-            - 核心模块：待补充
-            - 数据流与边界：待补充
-            
-            ## 技术选型
-            
-            - 核心技术栈：待补充
-            - 选型理由：待补充
-            
-            ## 数据模型
-            
-            - 核心实体：待补充
-            - 实体关系与约束：待补充
-        """.trimIndent()
         private val IMPLEMENT_TASK_LIST_MARKERS = listOf("## 任务列表", "任务列表", "Task List")
         private val IMPLEMENT_STEPS_MARKERS = listOf("## 实现步骤", "实现步骤", "Implementation Steps")
         private val IMPLEMENT_SKELETON = """

@@ -15,6 +15,64 @@ import org.junit.jupiter.api.Test
 class SpecGeneratorComposeModeTest {
 
     @Test
+    fun `generate should guide design generation with required five section structure`() = runBlocking {
+        val llmRouter = mockk<LlmRouter>()
+        val generator = SpecGenerator(llmRouter)
+        var capturedLlmRequest: LlmRequest? = null
+        coEvery {
+            llmRouter.generate(providerId = any(), request = any())
+        } coAnswers {
+            capturedLlmRequest = invocation.args[1] as LlmRequest
+            LlmResponse(
+                content = """
+                    ## 架构设计
+                    - 通过 workflow orchestrator 管理阶段推进。
+
+                    ## 技术选型
+                    - Kotlin + IntelliJ Platform SDK。
+
+                    ## 数据模型
+                    - 持久化 workflow snapshot 与 verification result。
+
+                    ## 接口设计
+                    - generateDesign() 负责产出 design.md 并回写验证结果。
+
+                    ## 非功能设计
+                    - 保持 UI 响应、可观测性与回滚能力。
+                """.trimIndent(),
+                model = "mock-model",
+            )
+        }
+
+        val result = generator.generate(
+            SpecGenerationRequest(
+                phase = SpecPhase.DESIGN,
+                input = "Design a workflow-safe document generation pipeline.",
+                options = GenerationOptions(
+                    providerId = "mock",
+                    model = "mock-model",
+                    includeExamples = true,
+                ),
+            ),
+        )
+
+        val userPrompt = capturedLlmRequest
+            ?.messages
+            ?.lastOrNull { message -> message.role == LlmRole.USER }
+            ?.content
+        assertTrue(result is SpecGenerationResult.Success)
+        assertNotNull(userPrompt)
+        assertTrue(userPrompt!!.contains("必须包含且按顺序保留以下五个二级标题"))
+        assertTrue(userPrompt.contains(DesignSectionSupport.canonicalMarkdownHeadingSummary()))
+        assertTrue(userPrompt.contains("## 接口设计"))
+        assertTrue(userPrompt.contains("## 非功能设计"))
+        assertTrue(!userPrompt.contains("## API 设计"))
+        assertTrue(userPrompt.contains("关键接口、输入输出以及与现有工作流/服务的调用边界"))
+        assertTrue(userPrompt.contains("可观测性与回滚约束"))
+        assertTrue(userPrompt.contains("参考格式"))
+    }
+
+    @Test
     fun `generate should build revise prompt from current artifact baseline`() = runBlocking {
         val llmRouter = mockk<LlmRouter>()
         val generator = SpecGenerator(llmRouter)
@@ -89,6 +147,7 @@ class SpecGeneratorComposeModeTest {
         assertTrue(userPrompt.contains("Add sourceId traceability to the existing design artifact."))
         assertTrue(userPrompt.contains("## Upstream requirements.md Reference"))
         assertTrue(userPrompt.contains("Keep source references traceable."))
+        assertTrue(userPrompt.contains(DesignSectionSupport.englishHeadingSummary()))
         assertTrue(userPrompt.contains("## Incremental Workflow Baseline"))
         assertTrue(userPrompt.contains("## Local Repository Code Context"))
         assertTrue(userPrompt.contains("src/main/kotlin/com/example/WorkflowEngine.kt"))

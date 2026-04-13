@@ -42,14 +42,26 @@ class DesignSectionSupportTest {
             ## 数据模型
             - Stage state and document binding stay consistent.
 
-            ## API Design
+            ## 接口设计
             - Stage advance refreshes summary and document preview together.
 
-            ## 非功能需求
+            ## 非功能设计
             - 离线可用，避免阻塞 EDT。
         """.trimIndent()
 
         assertTrue(DesignSectionSupport.hasRequiredSections(markdown))
         assertEquals(emptyList<DesignSectionId>(), DesignSectionSupport.missingSections(markdown))
+    }
+
+    @Test
+    fun `heading summaries should stay aligned with canonical order`() {
+        assertEquals(
+            listOf("## 架构设计", "## 技术选型", "## 数据模型", "## 接口设计", "## 非功能设计"),
+            DesignSectionSupport.canonicalMarkdownHeadings(),
+        )
+        assertEquals(
+            "Architecture Design, Technology Choices, Data Model, API Design, and Non-Functional Design",
+            DesignSectionSupport.englishHeadingSummary(),
+        )
     }
 }

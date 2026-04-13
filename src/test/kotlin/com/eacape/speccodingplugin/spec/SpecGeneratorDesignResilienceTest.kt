@@ -53,9 +53,7 @@ class SpecGeneratorDesignResilienceTest {
 
         assertTrue(result is SpecGenerationResult.Success)
         val document = (result as SpecGenerationResult.Success).document
-        assertTrue(document.content.contains("## 架构设计"))
-        assertTrue(document.content.contains("## 技术选型"))
-        assertTrue(document.content.contains("## 数据模型"))
+        assertCompleteDesignDocument(document)
         assertTrue(document.content.contains("Kotlin + Spring Boot"))
     }
 
@@ -85,9 +83,7 @@ class SpecGeneratorDesignResilienceTest {
 
         assertTrue(result is SpecGenerationResult.Success)
         val document = (result as SpecGenerationResult.Success).document
-        assertTrue(document.content.contains("## 架构设计"))
-        assertTrue(document.content.contains("## 技术选型"))
-        assertTrue(document.content.contains("## 数据模型"))
+        assertCompleteDesignDocument(document)
     }
 
     @Test
@@ -126,8 +122,16 @@ class SpecGeneratorDesignResilienceTest {
         assertTrue(result is SpecGenerationResult.Success)
         val document = (result as SpecGenerationResult.Success).document
         assertTrue(document.content.contains("180 天"))
+        assertCompleteDesignDocument(document)
+    }
+
+    private fun assertCompleteDesignDocument(document: SpecDocument) {
         assertTrue(document.content.contains("## 架构设计"))
         assertTrue(document.content.contains("## 技术选型"))
         assertTrue(document.content.contains("## 数据模型"))
+        assertTrue(document.content.contains("## 接口设计"))
+        assertTrue(document.content.contains("## 非功能设计"))
+        assertTrue(document.validationResult?.valid == true)
+        assertTrue(DesignSectionSupport.hasRequiredSections(document.content))
     }
 }

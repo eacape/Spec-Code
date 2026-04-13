@@ -2003,25 +2003,6 @@ class SpecEngine(private val project: Project) {
         private val DEFAULT_PROJECT_CONTEXT_CHARSET: Charset = Charsets.UTF_8
         private const val MAX_TOP_LEVEL_ENTRIES = 12
         private const val MAX_KEY_FILE_SNIPPET_LINES = 120
-        private const val STAGE_COMPLETION_RULE_ID = "stage-completion-checks"
-        private val REQUIRED_REQUIREMENTS_SECTION_MARKERS = listOf(
-            listOf("## Functional Requirements", "## 功能需求"),
-            listOf("## Non-Functional Requirements", "## 非功能需求"),
-            listOf("## User Stories", "## 用户故事"),
-            listOf("## Acceptance Criteria", "## 验收标准"),
-        )
-        private val REQUIRED_DESIGN_SECTION_MARKERS = listOf(
-            listOf("## Architecture Design", "## 架构设计"),
-            listOf("## Technology Choices", "## 技术选型"),
-            listOf("## Data Model", "## 数据模型"),
-            listOf("## API Design", "## API 设计"),
-            listOf(
-                "## Non-Functional Design",
-                "## 非功能设计",
-                "## Non-Functional Requirements",
-                "## 非功能需求",
-            ),
-        )
         private const val MAX_KEY_FILE_SNIPPET_CHARS = 4000
         private const val MAX_WORKFLOW_SOURCE_EXCERPT_LINES = 60
         private const val MAX_WORKFLOW_SOURCE_EXCERPT_CHARS = 2000

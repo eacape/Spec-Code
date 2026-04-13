@@ -132,65 +132,6 @@ object SpecValidator {
         )
     }
 
-    private fun validateDesignLegacy(document: SpecDocument): ValidationResult {
-        val errors = mutableListOf<String>()
-        val warnings = mutableListOf<String>()
-        val suggestions = mutableListOf<String>()
-
-        val content = document.content
-
-        // 检查必需章节（兼容标题式与条目式输出）
-        val requiredSections = listOf(
-            SectionRequirement(
-                displayName = "架构设计 (Architecture Design)",
-                markers = listOf("## 架构设计", "架构设计", "系统架构", "Architecture Design", "Architecture"),
-            ),
-            SectionRequirement(
-                displayName = "技术选型 (Technology Stack)",
-                markers = listOf("## 技术选型", "技术选型", "技术方案", "Technology Stack"),
-            ),
-            SectionRequirement(
-                displayName = "数据模型 (Data Model)",
-                markers = listOf("## 数据模型", "数据模型", "实体模型", "Data Model"),
-            ),
-        )
-
-        requiredSections.forEach { requirement ->
-            if (!containsAnyMarker(content, requirement.markers)) {
-                errors.add("缺少必需章节: ${requirement.displayName}")
-            }
-        }
-
-        // 检查内容长度
-        if (content.length < 300) {
-            warnings.add("设计文档内容过短（${content.length} 字符），建议补充更多技术细节")
-        }
-
-        // 检查是否包含架构图
-        if (!content.contains("```") && !content.contains("图")) {
-            suggestions.add("建议添加架构图或流程图以更清晰地展示设计")
-        }
-
-        // 检查是否包含 API 设计
-        if (!content.contains("API") && !content.contains("接口")) {
-            suggestions.add("建议添加 API 设计或接口定义")
-        }
-
-        // 检查是否考虑了非功能需求
-        val nfrKeywords = listOf("性能", "安全", "可扩展", "可维护", "performance", "security", "scalability")
-        val hasNFR = nfrKeywords.any { content.contains(it, ignoreCase = true) }
-        if (!hasNFR) {
-            warnings.add("建议考虑非功能需求（性能、安全、可扩展性等）")
-        }
-
-        return ValidationResult(
-            valid = errors.isEmpty(),
-            errors = errors,
-            warnings = warnings,
-            suggestions = suggestions
-        )
-    }
-
     /**
      * 验证实现文档（Implement 阶段）
      */

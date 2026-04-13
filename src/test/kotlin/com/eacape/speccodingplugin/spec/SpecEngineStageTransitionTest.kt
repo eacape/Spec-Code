@@ -138,6 +138,53 @@ class SpecEngineStageTransitionTest {
     }
 
     @Test
+    fun `advanceWorkflow should allow design aliases that pass shared validation support`() {
+        val engine = SpecEngine(project, storage, generationHandler = ::generateValidDocument)
+        val created = engine.createWorkflow(
+            title = "Design Alias Workflow",
+            description = "shared design validation",
+        ).getOrThrow()
+
+        runBlocking {
+            engine.generateCurrentPhase(created.id, "generate requirements").collect()
+        }
+        engine.advanceWorkflow(created.id).getOrThrow()
+
+        engine.updateDocumentContent(
+            workflowId = created.id,
+            phase = SpecPhase.DESIGN,
+            content = """
+                # Design Document
+
+                ## Architecture
+                - Keep stage transitions auditable.
+
+                ## Technology Stack
+                - Kotlin and IntelliJ Platform SDK.
+
+                ## Data Model
+                - Persist workflow state and stage audit metadata.
+
+                ## API Design
+                - advanceWorkflow() and previewStageTransition() keep the gate explicit.
+
+                ## Non-Functional Requirements
+                - Keep validation deterministic, traceable, and responsive.
+            """.trimIndent(),
+        ).getOrThrow()
+
+        val advanced = engine.advanceWorkflow(created.id).getOrThrow()
+
+        assertEquals(StageId.DESIGN, advanced.fromStage)
+        assertEquals(StageId.TASKS, advanced.targetStage)
+
+        val reloaded = engine.reloadWorkflow(created.id).getOrThrow()
+        assertEquals(StageId.TASKS, reloaded.currentStage)
+        assertEquals(StageProgress.DONE, reloaded.stageStates.getValue(StageId.DESIGN).status)
+        assertEquals(StageProgress.IN_PROGRESS, reloaded.stageStates.getValue(StageId.TASKS).status)
+    }
+
+    @Test
     fun `advanceWorkflow should block when requirements still use scaffold placeholders`() {
         val engine = SpecEngine(project, storage, generationHandler = ::generateValidDocument)
         val created = engine.createWorkflow(

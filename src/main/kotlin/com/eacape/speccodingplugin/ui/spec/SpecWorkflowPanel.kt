@@ -172,6 +172,35 @@ class SpecWorkflowPanel(
         buildUiSnapshot = ::buildWorkflowUiSnapshot,
         buildTaskLiveProgressByTaskId = ::buildTaskLiveProgressByTaskId,
     )
+    private val composerSourceCoordinator = SpecWorkflowComposerSourceCoordinator(
+        sourceImportConstraints = sourceImportConstraints,
+        runBackground = { request ->
+            SpecWorkflowActionSupport.runBackground(
+                project = project,
+                title = request.title,
+                task = {
+                    request.task()
+                },
+                onSuccess = { importedAssets ->
+                    request.onSuccess(importedAssets)
+                },
+                onFailure = { error ->
+                    request.onFailure(error)
+                },
+            )
+        },
+        importWorkflowSource = { workflowId, importedFromStage, importedFromEntry, sourcePath ->
+            specEngine.importWorkflowSource(
+                workflowId = workflowId,
+                importedFromStage = importedFromStage,
+                importedFromEntry = importedFromEntry,
+                sourcePath = sourcePath,
+            )
+        },
+        renderFailureMessage = { error ->
+            compactErrorMessage(error, SpecCodingBundle.message("common.unknown"))
+        },
+    )
     private val taskMutationCoordinator = SpecWorkflowTaskMutationCoordinator(
         runBackground = { request ->
             SpecWorkflowActionSupport.runBackground(
@@ -2746,9 +2775,24 @@ class SpecWorkflowPanel(
         preserveSelection: Boolean,
         preferredSourceIds: Set<String> = emptySet(),
     ) {
-        val workflowId = workflow?.id
-        currentWorkflowSources = assets.sortedBy(WorkflowSourceAsset::sourceId)
+        val presentation = composerSourceCoordinator.buildPresentation(
+            currentStage = workflow?.currentStage,
+            assets = assets,
+            preserveSelection = preserveSelection,
+            existingSelection = workflow?.id?.let { workflowId ->
+                composerSelectedSourceIdsByWorkflowId[workflowId]
+            },
+            preferredSourceIds = preferredSourceIds,
+        )
+        applyWorkflowSourcesPresentation(workflow?.id, presentation)
+    }
+
+    private fun applyWorkflowSourcesPresentation(
+        workflowId: String?,
+        presentation: SpecWorkflowComposerSourcePresentation,
+    ) {
         if (workflowId == null) {
+            currentWorkflowSources = emptyList()
             detailPanel.updateWorkflowSources(
                 workflowId = null,
                 assets = emptyList(),
@@ -2757,118 +2801,55 @@ class SpecWorkflowPanel(
             )
             return
         }
-
-        val existingSelection = composerSelectedSourceIdsByWorkflowId[workflowId]
-        val resolvedSelection = when {
-            !preserveSelection || existingSelection == null -> {
-                currentWorkflowSources.mapTo(linkedSetOf<String>(), WorkflowSourceAsset::sourceId)
-            }
-
-            else -> existingSelection.filterTo(linkedSetOf<String>()) { candidate ->
-                currentWorkflowSources.any { asset -> asset.sourceId == candidate }
-            }
-        }
-        preferredSourceIds.forEach { preferredSourceId ->
-            if (currentWorkflowSources.any { asset -> asset.sourceId == preferredSourceId }) {
-                resolvedSelection += preferredSourceId
-            }
-        }
-        composerSelectedSourceIdsByWorkflowId[workflowId] = resolvedSelection
+        currentWorkflowSources = presentation.assets
+        composerSelectedSourceIdsByWorkflowId[workflowId] = presentation.selectedSourceIds
         detailPanel.updateWorkflowSources(
             workflowId = workflowId,
-            assets = currentWorkflowSources,
-            selectedSourceIds = resolvedSelection,
-            editable = workflow.currentStage in COMPOSER_SOURCE_EDITABLE_STAGES,
+            assets = presentation.assets,
+            selectedSourceIds = presentation.selectedSourceIds,
+            editable = presentation.editable,
         )
     }
 
     private fun onAddWorkflowSourcesRequested() {
         val workflow = currentWorkflow ?: return
-        if (workflow.currentStage !in COMPOSER_SOURCE_EDITABLE_STAGES) {
+        if (!composerSourceCoordinator.isEditable(workflow.currentStage)) {
             return
         }
-
         val selectedPaths = sourceFileChooser(project, sourceImportConstraints)
-        if (selectedPaths.isEmpty()) {
-            return
-        }
-
-        val validation = WorkflowSourceImportSupport.validate(selectedPaths, sourceImportConstraints)
-        if (validation.acceptedPaths.isEmpty()) {
-            showWorkflowSourceValidation(validation.rejectedFiles)
-            setStatusText(
-                SpecCodingBundle.message(
-                    "spec.detail.sources.status.rejected",
-                    validation.rejectedFiles.size,
-                ),
-            )
-            return
-        }
-
-        SpecWorkflowActionSupport.runBackground(
-            project = project,
-            title = SpecCodingBundle.message("spec.detail.sources.importing"),
-            task = {
-                validation.acceptedPaths.map { sourcePath ->
-                    specEngine.importWorkflowSource(
-                        workflowId = workflow.id,
-                        importedFromStage = workflow.currentStage,
-                        importedFromEntry = WORKFLOW_SOURCE_ENTRY_SPEC_COMPOSER,
-                        sourcePath = sourcePath,
-                    ).getOrThrow()
-                }
+        composerSourceCoordinator.importSources(
+            request = SpecWorkflowComposerSourceImportRequest(
+                workflowId = workflow.id,
+                currentStage = workflow.currentStage,
+                selectedPaths = selectedPaths,
+                currentAssets = currentWorkflowSources,
+                existingSelection = composerSelectedSourceIdsByWorkflowId[workflow.id],
+            ),
+            isWorkflowStillSelected = { workflowId ->
+                workflowId == selectedWorkflowId
             },
-            onSuccess = { importedAssets ->
-                if (selectedWorkflowId != workflow.id) {
-                    return@runBackground
-                }
-                val mergedAssets = (currentWorkflowSources + importedAssets)
-                    .associateBy(WorkflowSourceAsset::sourceId)
-                    .values
-                    .sortedBy(WorkflowSourceAsset::sourceId)
-                applyWorkflowSourcesToDetailPanel(
-                    workflow = workflow,
-                    assets = mergedAssets,
-                    preserveSelection = true,
-                    preferredSourceIds = importedAssets.mapTo(linkedSetOf<String>(), WorkflowSourceAsset::sourceId),
-                )
-                if (validation.rejectedFiles.isNotEmpty()) {
-                    showWorkflowSourceValidation(validation.rejectedFiles)
-                }
-                val statusKey = if (validation.rejectedFiles.isEmpty()) {
-                    "spec.detail.sources.status.imported"
-                } else {
-                    "spec.detail.sources.status.importedPartial"
-                }
-                setStatusText(
-                    SpecCodingBundle.message(
-                        statusKey,
-                        importedAssets.size,
-                        validation.rejectedFiles.size,
-                    ),
-                )
+            onRejected = { rejected ->
+                showWorkflowSourceValidationDialog(rejected.validationDialog)
+                setStatusText(rejected.statusText)
             },
-            onFailure = { error ->
-                val message = compactErrorMessage(error, SpecCodingBundle.message("common.unknown"))
-                setStatusText(SpecCodingBundle.message("spec.workflow.error", message))
+            onImported = { imported ->
+                applyWorkflowSourcesPresentation(workflow.id, imported.presentation)
+                imported.validationDialog?.let(::showWorkflowSourceValidationDialog)
+                setStatusText(imported.statusText)
             },
+            onFailure = ::setStatusText,
         )
     }
 
     private fun onRemoveWorkflowSourceRequested(sourceId: String) {
         val workflow = currentWorkflow ?: return
-        val selection = composerSelectedSourceIdsByWorkflowId.getOrPut(workflow.id) {
-            currentWorkflowSources.mapTo(linkedSetOf<String>(), WorkflowSourceAsset::sourceId)
-        }
-        if (!selection.remove(sourceId)) {
-            return
-        }
-        detailPanel.updateWorkflowSources(
-            workflowId = workflow.id,
-            assets = currentWorkflowSources,
-            selectedSourceIds = selection,
-            editable = workflow.currentStage in COMPOSER_SOURCE_EDITABLE_STAGES,
-        )
+        val presentation = composerSourceCoordinator.removeSource(
+            currentStage = workflow.currentStage,
+            sourceId = sourceId,
+            currentAssets = currentWorkflowSources,
+            existingSelection = composerSelectedSourceIdsByWorkflowId[workflow.id],
+        ) ?: return
+        applyWorkflowSourcesPresentation(workflow.id, presentation)
         setStatusText(
             SpecCodingBundle.message(
                 "spec.detail.sources.status.removed",
@@ -2879,11 +2860,13 @@ class SpecWorkflowPanel(
 
     private fun onRestoreWorkflowSourcesRequested() {
         val workflow = currentWorkflow ?: return
-        applyWorkflowSourcesToDetailPanel(
-            workflow = workflow,
+        val presentation = composerSourceCoordinator.buildPresentation(
+            currentStage = workflow.currentStage,
             assets = currentWorkflowSources,
             preserveSelection = false,
+            existingSelection = null,
         )
+        applyWorkflowSourcesPresentation(workflow.id, presentation)
         setStatusText(
             SpecCodingBundle.message(
                 "spec.detail.sources.status.restored",
@@ -2892,41 +2875,13 @@ class SpecWorkflowPanel(
         )
     }
 
-    private fun showWorkflowSourceValidation(rejectedFiles: List<RejectedWorkflowSourceFile>) {
-        if (rejectedFiles.isEmpty()) {
-            return
-        }
-        val lines = rejectedFiles
-            .take(MAX_SOURCE_IMPORT_VALIDATION_LINES)
-            .map { rejectedFile ->
-                val fileName = rejectedFile.path.fileName?.toString().orEmpty().ifBlank { rejectedFile.path.toString() }
-                val reason = when (rejectedFile.reason) {
-                    RejectedWorkflowSourceFile.Reason.NOT_A_FILE ->
-                        SpecCodingBundle.message("spec.detail.sources.validation.notFile")
-
-                    RejectedWorkflowSourceFile.Reason.UNSUPPORTED_EXTENSION ->
-                        SpecCodingBundle.message(
-                            "spec.detail.sources.validation.unsupported",
-                            WorkflowSourceImportSupport.formatAllowedExtensions(sourceImportConstraints),
-                        )
-
-                    RejectedWorkflowSourceFile.Reason.FILE_TOO_LARGE ->
-                        SpecCodingBundle.message(
-                            "spec.detail.sources.validation.tooLarge",
-                            WorkflowSourceImportSupport.formatFileSize(sourceImportConstraints.maxFileSizeBytes),
-                        )
-                }
-                "- $fileName: $reason"
-            }
-            .toMutableList()
-        val remaining = rejectedFiles.size - MAX_SOURCE_IMPORT_VALIDATION_LINES
-        if (remaining > 0) {
-            lines += SpecCodingBundle.message("spec.detail.sources.validation.more", remaining)
-        }
+    private fun showWorkflowSourceValidationDialog(
+        validationDialog: SpecWorkflowComposerSourceValidationDialog,
+    ) {
         warningDialogPresenter(
             project,
-            lines.joinToString(separator = "\n"),
-            SpecCodingBundle.message("spec.detail.sources.validation.title"),
+            validationDialog.message,
+            validationDialog.title,
         )
     }
 
@@ -3613,16 +3568,10 @@ class SpecWorkflowPanel(
     }
 
     private fun resolveComposerSourceUsage(workflowId: String): WorkflowSourceUsage {
-        val knownSourceIds = currentWorkflowSources
-            .mapTo(linkedSetOf<String>(), WorkflowSourceAsset::sourceId)
-        if (knownSourceIds.isEmpty()) {
-            return WorkflowSourceUsage()
-        }
-        val selectedSourceIds = composerSelectedSourceIdsByWorkflowId[workflowId]
-            ?.filterTo(linkedSetOf()) { candidate -> candidate in knownSourceIds }
-            ?.takeIf { it.isNotEmpty() }
-            ?: knownSourceIds
-        return WorkflowSourceUsage(selectedSourceIds = selectedSourceIds.toList())
+        return composerSourceCoordinator.resolveSourceUsage(
+            currentAssets = currentWorkflowSources,
+            existingSelection = composerSelectedSourceIdsByWorkflowId[workflowId],
+        )
     }
 
     private data class WorkflowRefreshTarget(
@@ -5351,13 +5300,6 @@ class SpecWorkflowPanel(
         private const val DOCUMENT_WORKSPACE_CARD_DOCUMENT = "document"
         private const val DOCUMENT_WORKSPACE_CARD_STRUCTURED_TASKS = "structuredTasks"
         private const val DOCUMENT_WORKSPACE_VIEWPORT_HEIGHT = 360
-        private val COMPOSER_SOURCE_EDITABLE_STAGES = setOf(
-            StageId.REQUIREMENTS,
-            StageId.DESIGN,
-            StageId.TASKS,
-        )
-        private const val WORKFLOW_SOURCE_ENTRY_SPEC_COMPOSER = "SPEC_COMPOSER"
-        private const val MAX_SOURCE_IMPORT_VALIDATION_LINES = 6
         private val PLACEHOLDER_ERROR_MESSAGES = setOf("-", "--", "...", "null", "none", "unknown")
         private val PLACEHOLDER_SYMBOLS_REGEX = Regex("""^[\p{Punct}\s]+$""")
         private val ERROR_TEXT_CONTENT_REGEX = Regex("""[A-Za-z0-9\p{IsHan}]""")

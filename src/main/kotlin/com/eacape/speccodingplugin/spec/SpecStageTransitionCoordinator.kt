@@ -906,17 +906,5 @@ internal class SpecStageTransitionCoordinator(
 
     private companion object {
         private const val STAGE_COMPLETION_RULE_ID = "stage-completion-checks"
-        private val REQUIRED_DESIGN_SECTION_MARKERS = listOf(
-            listOf("## Architecture Design", "## 架构设计"),
-            listOf("## Technology Choices", "## 技术选型"),
-            listOf("## Data Model", "## 数据模型"),
-            listOf("## API Design", "## API 设计"),
-            listOf(
-                "## Non-Functional Design",
-                "## 非功能设计",
-                "## Non-Functional Requirements",
-                "## 非功能需求",
-            ),
-        )
     }
 }

@@ -1284,17 +1284,5 @@ internal object SpecWorkflowStageWorkbenchBuilder {
         )
     }
 
-    private val REQUIRED_REQUIREMENTS_SECTIONS = listOf(
-        listOf("## 功能需求", "功能需求", "Functional Requirements"),
-        listOf("## 非功能需求", "非功能需求", "Non-Functional Requirements"),
-        listOf("## 用户故事", "用户故事", "User Stories"),
-    )
-
-    private val REQUIRED_DESIGN_SECTIONS = listOf(
-        listOf("## 架构设计", "架构设计", "系统架构", "Architecture Design", "Architecture"),
-        listOf("## 技术选型", "技术选型", "技术方案", "Technology Stack"),
-        listOf("## 数据模型", "数据模型", "实体模型", "Data Model"),
-    )
-
     private const val BLOCKER_LIMIT = 3
 }
