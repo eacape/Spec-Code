@@ -300,6 +300,11 @@ object SpecArchitectureContract {
             blockedImportPrefixes = infrastructureBlockedImportPrefixes,
         ),
         SourceRule(
+            fileName = "DesignSectionSupport.kt",
+            layer = Layer.DOMAIN,
+            blockedImportPrefixes = domainBlockedImportPrefixes,
+        ),
+        SourceRule(
             fileName = "RequirementsSectionAiSupport.kt",
             layer = Layer.APPLICATION,
         ),

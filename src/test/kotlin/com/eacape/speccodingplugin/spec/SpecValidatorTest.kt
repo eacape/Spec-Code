@@ -91,4 +91,70 @@ class SpecValidatorTest {
         assertTrue(result.errors.any { it.contains("TODO placeholders") })
         assertTrue(result.errors.any { it.contains("<role>/<capability>/<benefit>") })
     }
+
+    @Test
+    fun `design validation accepts shared aliases when all required sections are present`() {
+        val content = """
+            # Design Document
+
+            ## Architecture
+            - Keep stage transitions auditable.
+
+            ## Technology Stack
+            - Kotlin and IntelliJ Platform SDK.
+
+            ## Data Model
+            - Persist stage metadata and workflow snapshots.
+
+            ## API Design
+            - advanceWorkflow() keeps gate transitions explicit.
+
+            ## Non-Functional Requirements
+            - Keep the workflow responsive and traceable.
+        """.trimIndent()
+
+        val document = SpecDocument(
+            id = "design-aliases",
+            phase = SpecPhase.DESIGN,
+            content = content,
+            metadata = SpecMetadata(
+                title = "design",
+                description = "shared aliases",
+            ),
+        )
+
+        val result = SpecValidator.validate(document)
+        assertTrue(result.valid, "Shared DESIGN aliases should stay valid")
+    }
+
+    @Test
+    fun `design validation fails when api and non functional sections are missing`() {
+        val content = """
+            # Design Document
+
+            ## Architecture Design
+            - Keep workflow state deterministic.
+
+            ## Technology Choices
+            - Kotlin and IntelliJ Platform SDK.
+
+            ## Data Model
+            - Represent workflow state and audit events explicitly.
+        """.trimIndent()
+
+        val document = SpecDocument(
+            id = "design-missing-sections",
+            phase = SpecPhase.DESIGN,
+            content = content,
+            metadata = SpecMetadata(
+                title = "design",
+                description = "missing sections",
+            ),
+        )
+
+        val result = SpecValidator.validate(document)
+        assertFalse(result.valid)
+        assertTrue(result.errors.any { it.contains("接口设计 (API Design)") })
+        assertTrue(result.errors.any { it.contains("非功能设计 (Non-Functional Design)") })
+    }
 }

@@ -1,6 +1,7 @@
 package com.eacape.speccodingplugin.ui.spec
 
 import com.eacape.speccodingplugin.SpecCodingBundle
+import com.eacape.speccodingplugin.spec.DesignSectionSupport
 import com.eacape.speccodingplugin.spec.GateResult
 import com.eacape.speccodingplugin.spec.GateStatus
 import com.eacape.speccodingplugin.spec.ImplementStageReadiness
@@ -1171,7 +1172,7 @@ internal object SpecWorkflowStageWorkbenchBuilder {
     private fun hasRequirementsSections(content: String): Boolean = RequirementsSectionSupport.hasRequiredSections(content)
 
     private fun hasDesignSections(content: String): Boolean {
-        return REQUIRED_DESIGN_SECTIONS.all { markers -> containsAnyMarker(content, markers) }
+        return DesignSectionSupport.hasRequiredSections(content)
     }
 
     private fun hasPendingClarificationForFocusedStage(

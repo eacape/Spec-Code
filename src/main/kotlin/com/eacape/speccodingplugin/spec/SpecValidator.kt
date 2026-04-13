@@ -95,6 +95,49 @@ object SpecValidator {
         val suggestions = mutableListOf<String>()
 
         val content = document.content
+        val missingSections = DesignSectionSupport.missingSections(content)
+        val missingSectionIds = missingSections.toSet()
+
+        missingSections.forEach { section ->
+            errors.add("缺少必需章节: ${section.validationDisplayName}")
+        }
+
+        if (content.length < 300) {
+            warnings.add("设计文档内容过短（${content.length} 字符），建议补充更多技术细节")
+        }
+
+        if (!content.contains("```") && !content.contains("图")) {
+            suggestions.add("建议添加架构图或流程图以更清晰地展示设计")
+        }
+
+        if (
+            DesignSectionId.API_DESIGN !in missingSectionIds &&
+            !content.contains("API") &&
+            !content.contains("接口")
+        ) {
+            suggestions.add("建议添加 API 设计或接口定义")
+        }
+
+        val nfrKeywords = listOf("性能", "安全", "可扩展", "可维护", "performance", "security", "scalability")
+        val hasNfrSignal = nfrKeywords.any { keyword -> content.contains(keyword, ignoreCase = true) }
+        if (DesignSectionId.NON_FUNCTIONAL !in missingSectionIds && !hasNfrSignal) {
+            warnings.add("建议考虑非功能需求（性能、安全、可扩展性等）")
+        }
+
+        return ValidationResult(
+            valid = errors.isEmpty(),
+            errors = errors,
+            warnings = warnings,
+            suggestions = suggestions,
+        )
+    }
+
+    private fun validateDesignLegacy(document: SpecDocument): ValidationResult {
+        val errors = mutableListOf<String>()
+        val warnings = mutableListOf<String>()
+        val suggestions = mutableListOf<String>()
+
+        val content = document.content
 
         // 检查必需章节（兼容标题式与条目式输出）
         val requiredSections = listOf(

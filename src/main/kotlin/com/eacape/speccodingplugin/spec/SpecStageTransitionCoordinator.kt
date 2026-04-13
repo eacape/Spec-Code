@@ -547,7 +547,7 @@ internal class SpecStageTransitionCoordinator(
             }
 
             StageId.DESIGN -> buildList {
-                if (designDocument != null && !hasDesignSections(designDocument.content)) {
+                if (designDocument != null && !DesignSectionSupport.hasRequiredSections(designDocument.content)) {
                     add(
                         completionViolation(
                             fileName = StageId.DESIGN.artifactFileName.orEmpty(),
@@ -678,12 +678,6 @@ internal class SpecStageTransitionCoordinator(
             return false
         }
         return state.questionsMarkdown.isNotBlank() || state.structuredQuestions.isNotEmpty()
-    }
-
-    private fun hasDesignSections(content: String): Boolean {
-        return REQUIRED_DESIGN_SECTION_MARKERS.all { markers ->
-            markers.any { marker -> content.contains(marker, ignoreCase = true) }
-        }
     }
 
     private fun implementCompletionBlockers(implementReadiness: ImplementStageReadiness): List<String> {

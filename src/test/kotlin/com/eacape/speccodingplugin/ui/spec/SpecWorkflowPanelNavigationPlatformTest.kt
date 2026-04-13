@@ -1378,6 +1378,9 @@ class SpecWorkflowPanelNavigationPlatformTest : BasePlatformTestCase() {
 
                 ## API Design
                 - Stage advance refreshes workflow metadata and document bindings together.
+
+                ## Non-Functional Design
+                - Stage advance should keep the workspace refresh deterministic and offline-safe.
             """.trimIndent(),
             metadata = SpecMetadata(
                 title = "design.md",
