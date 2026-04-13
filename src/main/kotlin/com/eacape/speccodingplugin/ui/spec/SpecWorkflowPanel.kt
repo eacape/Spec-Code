@@ -45,9 +45,6 @@ import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
-import com.intellij.openapi.vfs.VirtualFileManager
-import com.intellij.openapi.vfs.newvfs.BulkFileListener
-import com.intellij.openapi.vfs.newvfs.events.VFileEvent
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.ui.JBColor
 import com.intellij.ui.SimpleListCellRenderer
@@ -180,8 +177,47 @@ class SpecWorkflowPanel(
         },
     )
     private val workflowNavigationCoordinator = SpecWorkflowNavigationCoordinator()
+    private val workflowLoadEntryCoordinator = SpecWorkflowLoadEntryCoordinator(
+        panelState = workflowPanelState,
+        navigationCoordinator = workflowNavigationCoordinator,
+        requestWorkflowLoad = ::requestWorkflowLoad,
+        refreshWorkflows = { workflowId -> refreshWorkflows(selectWorkflowId = workflowId) },
+        applyOpenRequestToCurrentWorkflow = ::applyOpenRequestToCurrentWorkflow,
+    )
     private val workflowSelectionCoordinator = SpecWorkflowSelectionCoordinator()
+    private val workflowListRefreshCoordinator = SpecWorkflowListRefreshCoordinator(
+        listWorkflowMetadata = specEngine::listWorkflowMetadata,
+        stageLabel = SpecWorkflowOverviewPresenter::stageLabel,
+        selectionCoordinator = workflowSelectionCoordinator,
+    )
     private val workflowExternalEventCoordinator = SpecWorkflowExternalEventCoordinator(SPEC_DOCUMENT_FILE_NAMES)
+    private val workflowExternalEventActionCoordinator = SpecWorkflowExternalEventActionCoordinator(
+        documentReloadCoordinator = SpecWorkflowDocumentReloadCoordinator(
+            debounceMillis = DOCUMENT_RELOAD_DEBOUNCE_MILLIS,
+            scheduleDebounced = { delayMillis, action ->
+                val job = taskCoordinator.launchDefault {
+                    delay(delayMillis)
+                    action()
+                }
+                SpecWorkflowDocumentReloadHandle { job.cancel() }
+            },
+        ),
+        isDisposed = { project.isDisposed || _isDisposed },
+        selectedWorkflowId = { selectedWorkflowId },
+        createWorkflow = ::onCreateWorkflow,
+        openWorkflow = ::openWorkflowFromRequest,
+        refreshWorkflows = { workflowId -> refreshWorkflows(selectWorkflowId = workflowId) },
+        reloadCurrentWorkflow = ::reloadCurrentWorkflow,
+    )
+    private val workflowExternalEventSubscriptionAdapter = SpecWorkflowExternalEventSubscriptionAdapter(
+        subscriber = MessageBusSpecWorkflowExternalEventSubscriber(project, this),
+        externalEventCoordinator = workflowExternalEventCoordinator,
+        selectedWorkflowId = { selectedWorkflowId },
+        projectBasePath = { project.basePath },
+        invokeLater = ::invokeLaterSafe,
+        isDisposed = { project.isDisposed || _isDisposed },
+        onAction = workflowExternalEventActionCoordinator::handle,
+    )
     private val composerSourceCoordinator = SpecWorkflowComposerSourceCoordinator(
         sourceImportConstraints = sourceImportConstraints,
         runBackground = { request ->
@@ -825,11 +861,45 @@ class SpecWorkflowPanel(
         }
 
         override fun loadWorkflow(workflowId: String) {
-            selectWorkflow(workflowId)
+            workflowLoadEntryCoordinator.selectWorkflow(workflowId)
         }
 
         override fun publishWorkflowSelection(workflowId: String) {
             this@SpecWorkflowPanel.publishWorkflowSelection(workflowId)
+        }
+    }
+    private val workflowListRefreshCallbacks = object : SpecWorkflowListRefreshCallbacks {
+        override fun cancelWorkflowSwitcherPopup() {
+            workflowSwitcherPopup?.cancel()
+        }
+
+        override fun updateWorkflowItems(items: List<SpecWorkflowListPanel.WorkflowListItem>) {
+            listPanel.updateWorkflows(items)
+        }
+
+        override fun setStatusText(text: String?) {
+            this@SpecWorkflowPanel.setStatusText(text)
+        }
+
+        override fun setSwitchWorkflowEnabled(enabled: Boolean) {
+            switchWorkflowButton.isEnabled = enabled
+        }
+
+        override fun dropPendingOpenRequestIfInvalid(validWorkflowIds: Set<String>) {
+            workflowPanelState.dropPendingOpenRequestIfInvalid(validWorkflowIds)
+        }
+
+        override fun highlightWorkflow(workflowId: String?) {
+            highlightedWorkflowId = workflowId
+            listPanel.setSelectedWorkflow(workflowId)
+        }
+
+        override fun loadWorkflow(workflowId: String) {
+            workflowLoadEntryCoordinator.selectWorkflow(workflowId)
+        }
+
+        override fun clearOpenedWorkflowUi(resetHighlight: Boolean) {
+            this@SpecWorkflowPanel.clearOpenedWorkflowUi(resetHighlight)
         }
     }
     private val workflowLoadedStateCallbacks = object : SpecWorkflowLoadedStateCallbacks {
@@ -873,7 +943,7 @@ class SpecWorkflowPanel(
         }
 
         override fun applyPendingOpenWorkflowRequest(workflowId: String) {
-            applyPendingOpenWorkflowRequestIfNeeded(workflowId)
+            workflowLoadEntryCoordinator.applyPendingOpenWorkflowRequestIfNeeded(workflowId)
         }
 
         override fun updateWorkflowActionAvailability(workflow: SpecWorkflow) {
@@ -945,7 +1015,6 @@ class SpecWorkflowPanel(
     private val composerSelectedSourceIdsByWorkflowId = mutableMapOf<String, LinkedHashSet<String>>()
     private var activeGenerationJob: Job? = null
     private var activeGenerationRequest: SpecWorkflowActiveGenerationRequest? = null
-    private var pendingDocumentReloadJob: Job? = null
     private val liveProgressRefreshDispatchQueued = AtomicBoolean(false)
     private val liveProgressRefreshLoadInFlight = AtomicBoolean(false)
     @Volatile
@@ -1050,9 +1119,7 @@ class SpecWorkflowPanel(
         CliDiscoveryService.getInstance().addDiscoveryListener(discoveryListener)
         subscribeToLocaleEvents()
         subscribeToGlobalConfigEvents()
-        subscribeToToolWindowControlEvents()
-        subscribeToWorkflowEvents()
-        subscribeToDocumentFileEvents()
+        workflowExternalEventSubscriptionAdapter.register()
         specTaskExecutionService.addLiveProgressListener(liveProgressListener)
         if (deferInitialWorkflowRefresh) {
             initialWorkflowRefreshTriggered = false
@@ -2559,41 +2626,18 @@ class SpecWorkflowPanel(
         preserveListMode: Boolean = false,
     ) {
         taskCoordinator.launchIo {
-            val items = specEngine.listWorkflowMetadata().map { meta ->
-                SpecWorkflowListPanel.WorkflowListItem(
-                    workflowId = meta.workflowId,
-                    title = meta.title?.ifBlank { meta.workflowId } ?: meta.workflowId,
-                    description = meta.description.orEmpty(),
-                    currentPhase = meta.currentPhase,
-                    currentStageLabel = SpecWorkflowOverviewPresenter.stageLabel(meta.currentStage),
-                    status = meta.status,
-                    updatedAt = meta.updatedAt,
-                    changeIntent = meta.changeIntent,
-                    baselineWorkflowId = meta.baselineWorkflowId,
-                )
-            }
+            val loadedState = workflowListRefreshCoordinator.load()
             invokeLaterSafe {
-                workflowSwitcherPopup?.cancel()
-                listPanel.updateWorkflows(items)
-                setStatusText(null)
-                val refreshDecision = workflowSelectionCoordinator.resolveRefresh(
-                    SpecWorkflowSelectionRefreshRequest(
-                        items = items,
+                workflowListRefreshCoordinator.apply(
+                    SpecWorkflowListRefreshApplyRequest(
+                        loadedState = loadedState,
                         selectWorkflowId = selectWorkflowId,
                         selectedWorkflowId = selectedWorkflowId,
                         highlightedWorkflowId = highlightedWorkflowId,
                         preserveListMode = preserveListMode,
                     ),
+                    workflowListRefreshCallbacks,
                 )
-                switchWorkflowButton.isEnabled = refreshDecision.switchWorkflowEnabled
-                workflowPanelState.dropPendingOpenRequestIfInvalid(refreshDecision.validWorkflowIds)
-                highlightedWorkflowId = refreshDecision.targetHighlightedWorkflowId
-                listPanel.setSelectedWorkflow(refreshDecision.targetHighlightedWorkflowId)
-                if (refreshDecision.targetOpenedWorkflowId != null) {
-                    selectWorkflow(refreshDecision.targetOpenedWorkflowId)
-                } else {
-                    clearOpenedWorkflowUi(resetHighlight = refreshDecision.resetHighlightOnClear)
-                }
                 if (showRefreshFeedback) {
                     val successText = SpecCodingBundle.message("common.refresh.success")
                     RefreshFeedback.flashButtonSuccess(refreshButton, successText)
@@ -2633,12 +2677,7 @@ class SpecWorkflowPanel(
     }
 
     private fun selectWorkflow(workflowId: String) {
-        val loadTrigger = workflowNavigationCoordinator.buildSelectionLoadTrigger(
-            workflowId = workflowId,
-            selectedWorkflowId = selectedWorkflowId,
-        ) ?: return
-        workflowPanelState.selectWorkflow(loadTrigger.workflowId)
-        requestWorkflowLoad(loadTrigger)
+        workflowLoadEntryCoordinator.selectWorkflow(workflowId)
     }
 
     private fun onCreateWorkflow(preferredTemplate: WorkflowTemplate? = null) {
@@ -4235,85 +4274,6 @@ class SpecWorkflowPanel(
         )
     }
 
-    private fun subscribeToToolWindowControlEvents() {
-        project.messageBus.connect(this).subscribe(
-            SpecToolWindowControlListener.TOPIC,
-            object : SpecToolWindowControlListener {
-                override fun onCreateWorkflowRequested(preferredTemplate: WorkflowTemplate?) {
-                    invokeLaterSafe {
-                        if (project.isDisposed || _isDisposed) return@invokeLaterSafe
-                        handleWorkflowExternalEvent(
-                            workflowExternalEventCoordinator.resolveCreateWorkflow(preferredTemplate),
-                        )
-                    }
-                }
-
-                override fun onSelectWorkflowRequested(workflowId: String) {
-                    invokeLaterSafe {
-                        if (project.isDisposed || _isDisposed) return@invokeLaterSafe
-                        workflowExternalEventCoordinator.resolveSelectWorkflow(workflowId)
-                            ?.let(::handleWorkflowExternalEvent)
-                    }
-                }
-
-                override fun onOpenWorkflowRequested(request: SpecToolWindowOpenRequest) {
-                    invokeLaterSafe {
-                        if (project.isDisposed || _isDisposed) return@invokeLaterSafe
-                        workflowExternalEventCoordinator.resolveOpenWorkflow(request)
-                            ?.let(::handleWorkflowExternalEvent)
-                    }
-                }
-            },
-        )
-    }
-
-    private fun subscribeToWorkflowEvents() {
-        project.messageBus.connect(this).subscribe(
-            SpecWorkflowChangedListener.TOPIC,
-            object : SpecWorkflowChangedListener {
-                override fun onWorkflowChanged(event: SpecWorkflowChangedEvent) {
-                    workflowExternalEventCoordinator.resolveWorkflowChanged(event)
-                        ?.let(::handleWorkflowExternalEvent)
-                }
-            },
-        )
-    }
-
-    private fun subscribeToDocumentFileEvents() {
-        project.messageBus.connect(this).subscribe(
-            VirtualFileManager.VFS_CHANGES,
-            object : BulkFileListener {
-                override fun after(events: List<VFileEvent>) {
-                    workflowExternalEventCoordinator.resolveDocumentReload(
-                        eventPaths = events.map { event -> event.path },
-                        basePath = project.basePath,
-                        selectedWorkflowId = selectedWorkflowId,
-                    )?.let(::handleWorkflowExternalEvent)
-                }
-            },
-        )
-    }
-
-    private fun handleWorkflowExternalEvent(action: SpecWorkflowExternalEventAction) {
-        when (action) {
-            is SpecWorkflowExternalEventAction.CreateWorkflow -> onCreateWorkflow(action.preferredTemplate)
-            is SpecWorkflowExternalEventAction.OpenWorkflow -> openWorkflowFromRequest(action.request)
-            is SpecWorkflowExternalEventAction.RefreshWorkflows -> refreshWorkflows(selectWorkflowId = action.selectWorkflowId)
-            is SpecWorkflowExternalEventAction.ScheduleDocumentReload -> scheduleDocumentReload(action.workflowId)
-        }
-    }
-
-    private fun scheduleDocumentReload(workflowId: String) {
-        pendingDocumentReloadJob?.cancel()
-        pendingDocumentReloadJob = taskCoordinator.launchDefault {
-            delay(DOCUMENT_RELOAD_DEBOUNCE_MILLIS)
-            if (_isDisposed || project.isDisposed || selectedWorkflowId != workflowId) {
-                return@launchDefault
-            }
-            reloadCurrentWorkflow()
-        }
-    }
-
     private fun refreshLocalizedTexts() {
         workflowSwitcherPopup?.cancel()
         listPanel.refreshLocalizedTexts()
@@ -4508,14 +4468,10 @@ class SpecWorkflowPanel(
         followCurrentPhase: Boolean = false,
         onUpdated: ((SpecWorkflow) -> Unit)? = null,
     ) {
-        val loadTrigger = workflowNavigationCoordinator.buildReloadLoadTrigger(
-            selectedWorkflowId = selectedWorkflowId,
+        workflowLoadEntryCoordinator.reloadCurrentWorkflow(
             followCurrentPhase = followCurrentPhase,
-        ) ?: return
-        if (loadTrigger.followCurrentPhase) {
-            focusedStage = null
-        }
-        requestWorkflowLoad(loadTrigger, onUpdated = onUpdated)
+            onUpdated = onUpdated,
+        )
     }
 
     private fun requestWorkflowLoad(
@@ -4846,30 +4802,13 @@ class SpecWorkflowPanel(
     }
 
     private fun openWorkflowFromRequest(request: SpecToolWindowOpenRequest) {
-        val openRequestDecision = workflowNavigationCoordinator.resolveOpenRequest(
+        workflowLoadEntryCoordinator.openWorkflowFromRequest(
             request = request,
-            selectedWorkflowId = selectedWorkflowId,
             currentWorkflowId = currentWorkflow?.id,
         )
-        val normalizedRequest = openRequestDecision.normalizedRequest ?: run {
-            workflowPanelState.clearPendingOpenRequest()
-            return
-        }
-        workflowPanelState.rememberPendingOpenRequest(normalizedRequest)
-        if (openRequestDecision.shouldApplyToCurrentWorkflow) {
-            applyPendingOpenWorkflowRequestIfNeeded(normalizedRequest.workflowId)
-            if (pendingOpenWorkflowRequest == null) {
-                return
-            }
-        }
-        refreshWorkflows(selectWorkflowId = openRequestDecision.refreshWorkflowId)
     }
 
-    private fun applyPendingOpenWorkflowRequestIfNeeded(workflowId: String) {
-        val request = pendingOpenWorkflowRequest ?: return
-        if (request.workflowId != workflowId) {
-            return
-        }
+    private fun applyOpenRequestToCurrentWorkflow(request: SpecToolWindowOpenRequest) {
         request.focusedStage?.let(::focusStage)
         request.taskId?.let { taskId ->
             syncStructuredTaskSelection(taskId)
@@ -4878,7 +4817,6 @@ class SpecWorkflowPanel(
                 updateDocumentWorkspaceViewPresentation(currentWorkbenchState)
             }
         }
-        workflowPanelState.clearPendingOpenRequest()
     }
 
     private fun publishWorkflowChatRefresh(
@@ -5193,7 +5131,7 @@ class SpecWorkflowPanel(
 
     override fun dispose() {
         _isDisposed = true
-        pendingDocumentReloadJob?.cancel()
+        workflowExternalEventActionCoordinator.cancelPendingDocumentReload()
         CliDiscoveryService.getInstance().removeDiscoveryListener(discoveryListener)
         liveProgressEventCoalesceTimer.stop()
         liveProgressRefreshTimer.stop()
