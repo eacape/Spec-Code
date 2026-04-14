@@ -176,11 +176,179 @@ class SpecWorkflowPanel(
             compactErrorMessage(error, SpecCodingBundle.message("common.unknown"))
         },
     )
+    private val workflowDetailStateHost by lazy(LazyThreadSafetyMode.NONE) {
+        SpecWorkflowDetailStateApplicationHost(
+            detailUi = object : SpecWorkflowDetailStateApplicationUi {
+                override fun updateAutoCodeContext(
+                    workflowId: String?,
+                    codeContextPack: CodeContextPack?,
+                ) {
+                    detailPanel.updateAutoCodeContext(
+                        workflowId = workflowId,
+                        codeContextPack = codeContextPack,
+                    )
+                }
+
+                override fun updateWorkflowSources(
+                    workflowId: String?,
+                    assets: List<WorkflowSourceAsset>,
+                    selectedSourceIds: Set<String>,
+                    editable: Boolean,
+                ) {
+                    detailPanel.updateWorkflowSources(
+                        workflowId = workflowId,
+                        assets = assets,
+                        selectedSourceIds = selectedSourceIds,
+                        editable = editable,
+                    )
+                }
+            },
+            composerSourceCoordinator = composerSourceCoordinator,
+            renderFailureMessage = { error ->
+                compactErrorMessage(error, SpecCodingBundle.message("common.unknown"))
+            },
+        )
+    }
+    private val workflowWorkspaceStateHost by lazy(LazyThreadSafetyMode.NONE) {
+        SpecWorkflowWorkspaceStateApplicationHost(
+            workspaceUi = object : SpecWorkflowWorkspaceStateApplicationUi {
+                override fun showWorkspaceContent() {
+                    this@SpecWorkflowPanel.showWorkspaceContent()
+                }
+
+                override fun updateOverview(
+                    overviewState: SpecWorkflowOverviewState,
+                    workbenchState: SpecWorkflowStageWorkbenchState,
+                ) {
+                    overviewPanel.updateOverview(
+                        state = overviewState,
+                        workbenchState = workbenchState,
+                    )
+                }
+
+                override fun applySummary(presentation: SpecWorkflowWorkspaceSummaryPresentation) {
+                    workspaceSummaryTitleLabel.text = presentation.title
+                    workspaceSummaryMetaLabel.text = presentation.meta
+                    workspaceSummaryFocusLabel.text = presentation.focusTitle
+                    workspaceSummaryHintLabel.text = presentation.focusSummary
+                    updateWorkspaceMetric(metric = workspaceStageMetric, presentation = presentation.stageMetric)
+                    updateWorkspaceMetric(metric = workspaceGateMetric, presentation = presentation.gateMetric)
+                    updateWorkspaceMetric(metric = workspaceTasksMetric, presentation = presentation.tasksMetric)
+                    updateWorkspaceMetric(metric = workspaceVerifyMetric, presentation = presentation.verifyMetric)
+                }
+
+                override fun updateWorkbenchState(
+                    state: SpecWorkflowStageWorkbenchState,
+                    syncSelection: Boolean,
+                ) {
+                    detailPanel.updateWorkbenchState(
+                        state = state,
+                        syncSelection = syncSelection,
+                    )
+                }
+
+                override fun syncStructuredTaskSelection(taskId: String) {
+                    this@SpecWorkflowPanel.syncStructuredTaskSelection(taskId)
+                }
+
+                override fun updateDocumentWorkspaceViewPresentation(workbenchState: SpecWorkflowStageWorkbenchState) {
+                    this@SpecWorkflowPanel.updateDocumentWorkspaceViewPresentation(workbenchState)
+                }
+
+                override fun applyWorkspaceSectionPresentation(
+                    summaries: SpecWorkflowWorkspaceSectionSummaries,
+                    visibleSectionIds: Set<SpecWorkflowWorkspaceSectionId>,
+                    expandedStates: Map<SpecWorkflowWorkspaceSectionId, Boolean>,
+                ) {
+                    if (::overviewSection.isInitialized) {
+                        overviewSection.setSummary(summaries.overview)
+                        tasksSection.setSummary(summaries.tasks)
+                        gateSection.setSummary(summaries.gate)
+                        verifySection.setSummary(summaries.verify)
+                        documentsSection.setSummary(summaries.documents)
+                        workspaceSections().forEach { (sectionId, section) ->
+                            expandedStates[sectionId]?.let { expanded ->
+                                section.setExpanded(expanded, notify = false)
+                            }
+                        }
+                    }
+                    workspaceSectionItems.forEach { (sectionId, item) ->
+                        item.isVisible = visibleSectionIds.contains(sectionId)
+                    }
+                    workspaceCardPanel.revalidate()
+                    workspaceCardPanel.repaint()
+                }
+            },
+            workspacePresentationTelemetry = workspacePresentationTelemetry,
+            resolveWorkbenchState = ::resolveWorkbenchState,
+            supportsStructuredTasksDocumentWorkspaceView = ::supportsStructuredTasksDocumentWorkspaceView,
+        )
+    }
+    private val workflowStateApplicationUi by lazy(LazyThreadSafetyMode.NONE) {
+        SpecWorkflowPanelStateApplicationUiFacade(
+            workflowPanelState = workflowPanelState,
+            panels = SpecWorkflowStateApplicationUiPanels(
+                listPanel = listPanel,
+                phaseIndicator = phaseIndicator,
+                overviewPanel = overviewPanel,
+                verifyDeltaPanel = verifyDeltaPanel,
+                tasksPanel = tasksPanel,
+                detailTasksPanel = detailTasksPanel,
+                gateDetailsPanel = gateDetailsPanel,
+                detailPanel = detailPanel,
+            ),
+            buttons = SpecWorkflowStateApplicationUiButtons(
+                switchWorkflowButton = switchWorkflowButton,
+                createWorktreeButton = createWorktreeButton,
+                mergeWorktreeButton = mergeWorktreeButton,
+                deltaButton = deltaButton,
+                archiveButton = archiveButton,
+            ),
+            onCancelWorkflowSwitcherPopup = {
+                workflowSwitcherPopup?.cancel()
+            },
+            updateStatusText = ::setStatusText,
+            onLoadWorkflow = { workflowId ->
+                workflowLoadEntryCoordinator.selectWorkflow(workflowId)
+            },
+            onClearOpenedWorkflowUi = ::clearOpenedWorkflowUi,
+            setCurrentWorkflow = { workflow ->
+                currentWorkflow = workflow
+            },
+            syncClarificationRetryFromWorkflow = ::syncClarificationRetryFromWorkflow,
+            detailStateHost = workflowDetailStateHost,
+            updateWorkspacePresentation = ::updateWorkspacePresentation,
+            onRestorePendingClarificationState = ::restorePendingClarificationState,
+            onApplyPendingOpenWorkflowRequest = { workflowId ->
+                workflowLoadEntryCoordinator.applyPendingOpenWorkflowRequestIfNeeded(workflowId)
+            },
+            showWorkspaceContent = ::showWorkspaceContent,
+        )
+    }
+    private val workflowStateApplicationAdapter by lazy(LazyThreadSafetyMode.NONE) {
+        SpecWorkflowStateApplicationAdapter(
+            ui = workflowStateApplicationUi,
+        )
+    }
+    private val workflowLoadExecutionCoordinator = SpecWorkflowLoadExecutionCoordinator(
+        loadCoordinator = loadCoordinator,
+        showLoadInProgress = {
+            invokeLaterSafe {
+                showWorkflowLoadInProgress()
+            }
+        },
+        launchLoad = { loadAction ->
+            taskCoordinator.launchIo {
+                loadAction()
+            }
+        },
+        applyLoadedWorkflow = ::applyLoadedWorkflow,
+    )
     private val workflowNavigationCoordinator = SpecWorkflowNavigationCoordinator()
     private val workflowLoadEntryCoordinator = SpecWorkflowLoadEntryCoordinator(
         panelState = workflowPanelState,
         navigationCoordinator = workflowNavigationCoordinator,
-        requestWorkflowLoad = ::requestWorkflowLoad,
+        requestWorkflowLoad = workflowLoadExecutionCoordinator::requestWorkflowLoad,
         refreshWorkflows = { workflowId -> refreshWorkflows(selectWorkflowId = workflowId) },
         applyOpenRequestToCurrentWorkflow = ::applyOpenRequestToCurrentWorkflow,
     )
@@ -189,6 +357,27 @@ class SpecWorkflowPanel(
         listWorkflowMetadata = specEngine::listWorkflowMetadata,
         stageLabel = SpecWorkflowOverviewPresenter::stageLabel,
         selectionCoordinator = workflowSelectionCoordinator,
+    )
+    private val workflowListRefreshExecutionCoordinator = SpecWorkflowListRefreshExecutionCoordinator(
+        loadRefreshState = workflowListRefreshCoordinator::load,
+        selectedWorkflowId = { selectedWorkflowId },
+        highlightedWorkflowId = { highlightedWorkflowId },
+        launchRefreshLoad = { loadAction, onLoaded ->
+            taskCoordinator.launchIo {
+                val loadedState = loadAction()
+                invokeLaterSafe {
+                    onLoaded(loadedState)
+                }
+            }
+        },
+        applyLoadedState = { request ->
+            workflowListRefreshCoordinator.apply(request, workflowStateApplicationAdapter.listRefreshCallbacks)
+        },
+        showRefreshFeedback = {
+            val successText = SpecCodingBundle.message("common.refresh.success")
+            RefreshFeedback.flashButtonSuccess(refreshButton, successText)
+            RefreshFeedback.flashLabelSuccess(statusLabel, successText, STATUS_SUCCESS_FG)
+        },
     )
     private val workflowExternalEventCoordinator = SpecWorkflowExternalEventCoordinator(SPEC_DOCUMENT_FILE_NAMES)
     private val workflowExternalEventActionCoordinator = SpecWorkflowExternalEventActionCoordinator(
@@ -868,92 +1057,6 @@ class SpecWorkflowPanel(
             this@SpecWorkflowPanel.publishWorkflowSelection(workflowId)
         }
     }
-    private val workflowListRefreshCallbacks = object : SpecWorkflowListRefreshCallbacks {
-        override fun cancelWorkflowSwitcherPopup() {
-            workflowSwitcherPopup?.cancel()
-        }
-
-        override fun updateWorkflowItems(items: List<SpecWorkflowListPanel.WorkflowListItem>) {
-            listPanel.updateWorkflows(items)
-        }
-
-        override fun setStatusText(text: String?) {
-            this@SpecWorkflowPanel.setStatusText(text)
-        }
-
-        override fun setSwitchWorkflowEnabled(enabled: Boolean) {
-            switchWorkflowButton.isEnabled = enabled
-        }
-
-        override fun dropPendingOpenRequestIfInvalid(validWorkflowIds: Set<String>) {
-            workflowPanelState.dropPendingOpenRequestIfInvalid(validWorkflowIds)
-        }
-
-        override fun highlightWorkflow(workflowId: String?) {
-            highlightedWorkflowId = workflowId
-            listPanel.setSelectedWorkflow(workflowId)
-        }
-
-        override fun loadWorkflow(workflowId: String) {
-            workflowLoadEntryCoordinator.selectWorkflow(workflowId)
-        }
-
-        override fun clearOpenedWorkflowUi(resetHighlight: Boolean) {
-            this@SpecWorkflowPanel.clearOpenedWorkflowUi(resetHighlight)
-        }
-    }
-    private val workflowLoadedStateCallbacks = object : SpecWorkflowLoadedStateCallbacks {
-        override fun clearOpenedWorkflowUi(resetHighlight: Boolean) {
-            this@SpecWorkflowPanel.clearOpenedWorkflowUi(resetHighlight)
-        }
-
-        override fun applyWorkflowCore(state: SpecWorkflowLoadedCoreUiState) {
-            currentWorkflow = state.workflow
-            syncClarificationRetryFromWorkflow(state.workflow)
-            phaseIndicator.updatePhase(state.workflow)
-            overviewPanel.updateOverview(state.snapshot.overviewState)
-            verifyDeltaPanel.updateState(state.snapshot.verifyDeltaState)
-            gateDetailsPanel.updateGateResult(
-                workflowId = state.workflow.id,
-                gateResult = state.snapshot.gateResult,
-                refreshedAtMillis = state.snapshot.refreshedAtMillis,
-            )
-            detailPanel.updateWorkflow(state.workflow, followCurrentPhase = state.followCurrentPhase)
-            applyAutoCodeContextToDetailPanel(state.workflow, state.codeContextResult)
-        }
-
-        override fun applyWorkflowSources(
-            workflow: SpecWorkflow,
-            assets: List<WorkflowSourceAsset>,
-            preserveSelection: Boolean,
-        ) {
-            applyWorkflowSourcesToDetailPanel(
-                workflow = workflow,
-                assets = assets,
-                preserveSelection = preserveSelection,
-            )
-        }
-
-        override fun applyWorkflowTasks(state: SpecWorkflowLoadedTaskUiState) {
-            applyLoadedWorkflowTaskState(state)
-        }
-
-        override fun restorePendingClarificationState(workflowId: String) {
-            this@SpecWorkflowPanel.restorePendingClarificationState(workflowId)
-        }
-
-        override fun applyPendingOpenWorkflowRequest(workflowId: String) {
-            workflowLoadEntryCoordinator.applyPendingOpenWorkflowRequestIfNeeded(workflowId)
-        }
-
-        override fun updateWorkflowActionAvailability(workflow: SpecWorkflow) {
-            setWorkflowActionAvailability(workflow)
-        }
-
-        override fun setStatusText(text: String) {
-            this@SpecWorkflowPanel.setStatusText(text)
-        }
-    }
     private val statusLabel = JBLabel("")
     private val statusActionPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0))
     private val statusChipPanel = JPanel(BorderLayout())
@@ -1003,16 +1106,18 @@ class SpecWorkflowPanel(
     private lateinit var documentWorkspaceViewSwitcherPanel: JPanel
     private lateinit var documentWorkspaceViewCardPanel: JPanel
     private val workspaceSectionItems = mutableMapOf<SpecWorkflowWorkspaceSectionId, JPanel>()
-    private val workspaceSectionOverrides = mutableMapOf<SpecWorkflowWorkspaceSectionId, Boolean>()
-    private var workspaceSectionPresetToken: String? = null
-    private var currentOverviewState: SpecWorkflowOverviewState? = null
-    private var currentWorkbenchState: SpecWorkflowStageWorkbenchState? = null
-    private var currentVerifyDeltaState: SpecWorkflowVerifyDeltaState? = null
-    private var currentGateResult: GateResult? = null
-    private var currentStructuredTasks: List<StructuredTask> = emptyList()
-    private var currentTaskLiveProgressByTaskId: Map<String, TaskExecutionLiveProgress> = emptyMap()
-    private var currentWorkflowSources: List<WorkflowSourceAsset> = emptyList()
-    private val composerSelectedSourceIdsByWorkflowId = mutableMapOf<String, LinkedHashSet<String>>()
+    private val currentOverviewState: SpecWorkflowOverviewState?
+        get() = workflowWorkspaceStateHost.currentState()?.overviewState
+    private val currentWorkbenchState: SpecWorkflowStageWorkbenchState?
+        get() = workflowWorkspaceStateHost.currentState()?.workbenchState
+    private val currentVerifyDeltaState: SpecWorkflowVerifyDeltaState?
+        get() = workflowWorkspaceStateHost.currentState()?.verifyDeltaState
+    private val currentGateResult: GateResult?
+        get() = workflowWorkspaceStateHost.currentState()?.gateResult
+    private val currentStructuredTasks: List<StructuredTask>
+        get() = workflowWorkspaceStateHost.currentState()?.tasks.orEmpty()
+    private val currentTaskLiveProgressByTaskId: Map<String, TaskExecutionLiveProgress>
+        get() = workflowWorkspaceStateHost.currentState()?.liveProgressByTaskId.orEmpty()
     private var activeGenerationJob: Job? = null
     private var activeGenerationRequest: SpecWorkflowActiveGenerationRequest? = null
     private val liveProgressRefreshDispatchQueued = AtomicBoolean(false)
@@ -1711,7 +1816,7 @@ class SpecWorkflowPanel(
             expandedInitially = true,
             maxExpandedBodyHeight = maxExpandedBodyHeight,
             onExpandedChanged = { expanded ->
-                workspaceSectionOverrides[id] = expanded
+                workflowWorkspaceStateHost.rememberSectionOverride(id, expanded)
             },
         )
     }
@@ -1720,14 +1825,7 @@ class SpecWorkflowPanel(
         showWorkflowListOnlyMode()
         backToListButton.isEnabled = false
         workspaceCardLayout.show(workspaceCardPanel, WORKSPACE_CARD_EMPTY)
-        workspaceSectionOverrides.clear()
-        workspaceSectionPresetToken = null
-        currentOverviewState = null
-        currentWorkbenchState = null
-        currentVerifyDeltaState = null
-        currentGateResult = null
-        currentStructuredTasks = emptyList()
-        currentTaskLiveProgressByTaskId = emptyMap()
+        workflowWorkspaceStateHost.clear()
         liveProgressRefreshTimer.stop()
         focusedStage = null
         workspaceSummaryTitleLabel.text = ""
@@ -2272,7 +2370,6 @@ class SpecWorkflowPanel(
         if (workflow.id != workflowId) {
             return
         }
-        currentTaskLiveProgressByTaskId = updatedLiveProgress
         tasksPanel.updateLiveProgress(
             tasks = currentStructuredTasks,
             liveProgressByTaskId = updatedLiveProgress,
@@ -2386,142 +2483,16 @@ class SpecWorkflowPanel(
         verifyDeltaState: SpecWorkflowVerifyDeltaState,
         gateResult: GateResult?,
     ) {
-        val workspacePresentationStartedAt = workspacePresentationTelemetry.markStart()
-        val previousWorkbenchState = currentWorkbenchState
-        val workbenchState = resolveWorkbenchState(
-            workflow = workflow,
-            state = SpecWorkflowStageWorkbenchBuilder.build(
-                workflow = workflow,
-                overviewState = overviewState,
-                tasks = tasks,
-                liveProgressByTaskId = liveProgressByTaskId,
-                verifyDeltaState = verifyDeltaState,
-                gateResult = gateResult,
-                focusedStage = focusedStage,
-            ),
-        )
-        focusedStage = workbenchState.focusedStage
-        currentOverviewState = overviewState
-        currentWorkbenchState = workbenchState
-        currentVerifyDeltaState = verifyDeltaState
-        currentGateResult = gateResult
-        currentStructuredTasks = tasks
-        currentTaskLiveProgressByTaskId = liveProgressByTaskId
-
-        showWorkspaceContent()
-        overviewPanel.updateOverview(
-            state = overviewState,
-            workbenchState = workbenchState,
-        )
-        val guidance = SpecWorkflowStageGuidanceBuilder.build(
-            state = overviewState,
-            workbenchState = workbenchState,
-        )
-        val summaryPresentation = SpecWorkflowWorkspaceSummaryPresenter.build(
+        updateLiveProgressRefreshTimer(tasks, liveProgressByTaskId)
+        focusedStage = workflowWorkspaceStateHost.apply(
             workflow = workflow,
             overviewState = overviewState,
-            workbenchState = workbenchState,
-            guidance = guidance,
             tasks = tasks,
+            liveProgressByTaskId = liveProgressByTaskId,
             verifyDeltaState = verifyDeltaState,
             gateResult = gateResult,
-        )
-        workspaceSummaryTitleLabel.text = summaryPresentation.title
-        workspaceSummaryMetaLabel.text = summaryPresentation.meta
-        workspaceSummaryFocusLabel.text = summaryPresentation.focusTitle
-        workspaceSummaryHintLabel.text = summaryPresentation.focusSummary
-
-        updateWorkspaceMetric(metric = workspaceStageMetric, presentation = summaryPresentation.stageMetric)
-        updateWorkspaceMetric(metric = workspaceGateMetric, presentation = summaryPresentation.gateMetric)
-        updateWorkspaceMetric(metric = workspaceTasksMetric, presentation = summaryPresentation.tasksMetric)
-        updateLiveProgressRefreshTimer(tasks, liveProgressByTaskId)
-        updateWorkspaceMetric(metric = workspaceVerifyMetric, presentation = summaryPresentation.verifyMetric)
-
-        overviewSection.setSummary(summaryPresentation.sectionSummaries.overview)
-        tasksSection.setSummary(summaryPresentation.sectionSummaries.tasks)
-        gateSection.setSummary(summaryPresentation.sectionSummaries.gate)
-        verifySection.setSummary(summaryPresentation.sectionSummaries.verify)
-        documentsSection.setSummary(summaryPresentation.sectionSummaries.documents)
-        val shouldSyncWorkbenchSelection = previousWorkbenchState?.focusedStage != workbenchState.focusedStage ||
-            previousWorkbenchState?.currentStage != workbenchState.currentStage
-        val telemetryObservation = SpecWorkflowWorkspacePresentationObservation(
-            workflowId = workflow.id,
-            currentStage = workflow.currentStage,
-            focusedStage = workbenchState.focusedStage,
-            taskCount = tasks.size,
-            liveTaskCount = liveProgressByTaskId.size,
-            visibleSectionCount = workbenchState.visibleSections.size,
-            syncSelection = shouldSyncWorkbenchSelection,
-        )
-        try {
-            detailPanel.updateWorkbenchState(
-                state = workbenchState,
-                syncSelection = shouldSyncWorkbenchSelection,
-            )
-            syncWorkbenchTaskSelection(
-                previousWorkbenchState = previousWorkbenchState,
-                workbenchState = workbenchState,
-            )
-            updateDocumentWorkspaceViewPresentation(workbenchState)
-            applyWorkspaceSectionVisibility(workbenchState)
-            applyWorkspaceSectionPreset(workflow, workbenchState)
-        } finally {
-            workspacePresentationTelemetry.record(
-                startedAtNanos = workspacePresentationStartedAt,
-                observation = telemetryObservation,
-            )
-        }
-    }
-
-    private fun syncWorkbenchTaskSelection(
-        previousWorkbenchState: SpecWorkflowStageWorkbenchState?,
-        workbenchState: SpecWorkflowStageWorkbenchState,
-    ) {
-        if (workbenchState.focusedStage != StageId.IMPLEMENT) {
-            return
-        }
-        val taskId = workbenchState.implementationFocus?.taskId ?: return
-        val shouldSyncSelection = previousWorkbenchState?.focusedStage != workbenchState.focusedStage ||
-            previousWorkbenchState?.implementationFocus?.taskId != taskId
-        if (shouldSyncSelection) {
-            syncStructuredTaskSelection(taskId)
-        }
-    }
-
-    private fun applyWorkspaceSectionPreset(
-        workflow: SpecWorkflow,
-        workbenchState: SpecWorkflowStageWorkbenchState,
-    ) {
-        val token = "${workflow.id}:${workflow.currentStage.name}:${workbenchState.focusedStage.name}:${workflow.status.name}"
-        if (workspaceSectionPresetToken != token) {
-            workspaceSectionPresetToken = token
-            workspaceSectionOverrides.clear()
-            val expanded = SpecWorkflowWorkspaceLayout.defaultExpandedSections(
-                currentStage = workbenchState.focusedStage,
-                status = workflow.status,
-            )
-            workspaceSections().forEach { (sectionId, section) ->
-                section.setExpanded(expanded.contains(sectionId), notify = false)
-            }
-            return
-        }
-
-        workspaceSections().forEach { (sectionId, section) ->
-            workspaceSectionOverrides[sectionId]?.let { expanded ->
-                section.setExpanded(expanded, notify = false)
-            }
-        }
-    }
-
-    private fun applyWorkspaceSectionVisibility(workbenchState: SpecWorkflowStageWorkbenchState) {
-        val visibleSections = workbenchState.visibleSections
-        val supportsEmbeddedTasksView = supportsStructuredTasksDocumentWorkspaceView(workbenchState)
-        workspaceSectionItems.forEach { (sectionId, item) ->
-            item.isVisible = visibleSections.contains(sectionId) &&
-                !(supportsEmbeddedTasksView && sectionId == SpecWorkflowWorkspaceSectionId.TASKS)
-        }
-        workspaceCardPanel.revalidate()
-        workspaceCardPanel.repaint()
+            focusedStage = focusedStage,
+        ).workbenchState.focusedStage
     }
 
     private fun workspaceSections(): Map<SpecWorkflowWorkspaceSectionId, SpecCollapsibleWorkspaceSection> {
@@ -2599,8 +2570,7 @@ class SpecWorkflowPanel(
     private fun clearOpenedWorkflowUi(resetHighlight: Boolean = false) {
         workflowPanelState.clearOpenedWorkflow(resetHighlight = resetHighlight)
         currentWorkflow = null
-        currentWorkflowSources = emptyList()
-        currentWorkbenchState = null
+        workflowDetailStateHost.clearCurrentWorkflowSources()
         phaseIndicator.reset()
         overviewPanel.showEmpty()
         tasksPanel.showEmpty()
@@ -2625,26 +2595,13 @@ class SpecWorkflowPanel(
         showRefreshFeedback: Boolean = false,
         preserveListMode: Boolean = false,
     ) {
-        taskCoordinator.launchIo {
-            val loadedState = workflowListRefreshCoordinator.load()
-            invokeLaterSafe {
-                workflowListRefreshCoordinator.apply(
-                    SpecWorkflowListRefreshApplyRequest(
-                        loadedState = loadedState,
-                        selectWorkflowId = selectWorkflowId,
-                        selectedWorkflowId = selectedWorkflowId,
-                        highlightedWorkflowId = highlightedWorkflowId,
-                        preserveListMode = preserveListMode,
-                    ),
-                    workflowListRefreshCallbacks,
-                )
-                if (showRefreshFeedback) {
-                    val successText = SpecCodingBundle.message("common.refresh.success")
-                    RefreshFeedback.flashButtonSuccess(refreshButton, successText)
-                    RefreshFeedback.flashLabelSuccess(statusLabel, successText, STATUS_SUCCESS_FG)
-                }
-            }
-        }
+        workflowListRefreshExecutionCoordinator.refreshWorkflows(
+            SpecWorkflowListRefreshExecutionRequest(
+                selectWorkflowId = selectWorkflowId,
+                showRefreshFeedback = showRefreshFeedback,
+                preserveListMode = preserveListMode,
+            ),
+        )
     }
 
     private fun onWorkflowFocusedByUser(workflowId: String) {
@@ -2867,78 +2824,6 @@ class SpecWorkflowPanel(
         return clarificationRetryStore.hasInput(selectedWorkflowId)
     }
 
-    private fun applyAutoCodeContextToDetailPanel(
-        workflow: SpecWorkflow?,
-        codeContextResult: Result<CodeContextPack>?,
-    ) {
-        if (workflow == null) {
-            detailPanel.updateAutoCodeContext(workflowId = null, codeContextPack = null)
-            return
-        }
-
-        val pack = codeContextResult?.getOrElse { error ->
-            CodeContextPack(
-                phase = workflow.currentPhase,
-                strategy = CodeContextCollectionStrategy.forPhase(workflow.currentPhase),
-                degradationReasons = listOf(
-                    "Automatic code context collection failed: ${compactErrorMessage(error, SpecCodingBundle.message("common.unknown"))}",
-                ),
-            )
-        } ?: CodeContextPack(
-            phase = workflow.currentPhase,
-            strategy = CodeContextCollectionStrategy.forPhase(workflow.currentPhase),
-            degradationReasons = listOf(
-                "Automatic code context collection was skipped for this workflow refresh.",
-            ),
-        )
-        detailPanel.updateAutoCodeContext(
-            workflowId = workflow.id,
-            codeContextPack = pack,
-        )
-    }
-
-    private fun applyWorkflowSourcesToDetailPanel(
-        workflow: SpecWorkflow?,
-        assets: List<WorkflowSourceAsset>,
-        preserveSelection: Boolean,
-        preferredSourceIds: Set<String> = emptySet(),
-    ) {
-        val presentation = composerSourceCoordinator.buildPresentation(
-            currentStage = workflow?.currentStage,
-            assets = assets,
-            preserveSelection = preserveSelection,
-            existingSelection = workflow?.id?.let { workflowId ->
-                composerSelectedSourceIdsByWorkflowId[workflowId]
-            },
-            preferredSourceIds = preferredSourceIds,
-        )
-        applyWorkflowSourcesPresentation(workflow?.id, presentation)
-    }
-
-    private fun applyWorkflowSourcesPresentation(
-        workflowId: String?,
-        presentation: SpecWorkflowComposerSourcePresentation,
-    ) {
-        if (workflowId == null) {
-            currentWorkflowSources = emptyList()
-            detailPanel.updateWorkflowSources(
-                workflowId = null,
-                assets = emptyList(),
-                selectedSourceIds = emptySet(),
-                editable = false,
-            )
-            return
-        }
-        currentWorkflowSources = presentation.assets
-        composerSelectedSourceIdsByWorkflowId[workflowId] = presentation.selectedSourceIds
-        detailPanel.updateWorkflowSources(
-            workflowId = workflowId,
-            assets = presentation.assets,
-            selectedSourceIds = presentation.selectedSourceIds,
-            editable = presentation.editable,
-        )
-    }
-
     private fun onAddWorkflowSourcesRequested() {
         val workflow = currentWorkflow ?: return
         if (!composerSourceCoordinator.isEditable(workflow.currentStage)) {
@@ -2950,8 +2835,8 @@ class SpecWorkflowPanel(
                 workflowId = workflow.id,
                 currentStage = workflow.currentStage,
                 selectedPaths = selectedPaths,
-                currentAssets = currentWorkflowSources,
-                existingSelection = composerSelectedSourceIdsByWorkflowId[workflow.id],
+                currentAssets = workflowDetailStateHost.currentWorkflowSources(),
+                existingSelection = workflowDetailStateHost.selectedSourceIds(workflow.id),
             ),
             isWorkflowStillSelected = { workflowId ->
                 workflowId == selectedWorkflowId
@@ -2961,7 +2846,7 @@ class SpecWorkflowPanel(
                 setStatusText(rejected.statusText)
             },
             onImported = { imported ->
-                applyWorkflowSourcesPresentation(workflow.id, imported.presentation)
+                workflowDetailStateHost.applyWorkflowSourcesPresentation(workflow.id, imported.presentation)
                 imported.validationDialog?.let(::showWorkflowSourceValidationDialog)
                 setStatusText(imported.statusText)
             },
@@ -2974,10 +2859,10 @@ class SpecWorkflowPanel(
         val presentation = composerSourceCoordinator.removeSource(
             currentStage = workflow.currentStage,
             sourceId = sourceId,
-            currentAssets = currentWorkflowSources,
-            existingSelection = composerSelectedSourceIdsByWorkflowId[workflow.id],
+            currentAssets = workflowDetailStateHost.currentWorkflowSources(),
+            existingSelection = workflowDetailStateHost.selectedSourceIds(workflow.id),
         ) ?: return
-        applyWorkflowSourcesPresentation(workflow.id, presentation)
+        workflowDetailStateHost.applyWorkflowSourcesPresentation(workflow.id, presentation)
         setStatusText(
             SpecCodingBundle.message(
                 "spec.detail.sources.status.removed",
@@ -2988,13 +2873,14 @@ class SpecWorkflowPanel(
 
     private fun onRestoreWorkflowSourcesRequested() {
         val workflow = currentWorkflow ?: return
+        val currentWorkflowSources = workflowDetailStateHost.currentWorkflowSources()
         val presentation = composerSourceCoordinator.buildPresentation(
             currentStage = workflow.currentStage,
             assets = currentWorkflowSources,
             preserveSelection = false,
             existingSelection = null,
         )
-        applyWorkflowSourcesPresentation(workflow.id, presentation)
+        workflowDetailStateHost.applyWorkflowSourcesPresentation(workflow.id, presentation)
         setStatusText(
             SpecCodingBundle.message(
                 "spec.detail.sources.status.restored",
@@ -3696,10 +3582,7 @@ class SpecWorkflowPanel(
     }
 
     private fun resolveComposerSourceUsage(workflowId: String): WorkflowSourceUsage {
-        return composerSourceCoordinator.resolveSourceUsage(
-            currentAssets = currentWorkflowSources,
-            existingSelection = composerSelectedSourceIdsByWorkflowId[workflowId],
-        )
+        return workflowDetailStateHost.resolveSourceUsage(workflowId)
     }
 
     private fun rememberClarificationRetry(
@@ -4474,30 +4357,6 @@ class SpecWorkflowPanel(
         )
     }
 
-    private fun requestWorkflowLoad(
-        loadTrigger: SpecWorkflowLoadTrigger,
-        onUpdated: ((SpecWorkflow) -> Unit)? = null,
-    ) {
-        invokeLaterSafe {
-            showWorkflowLoadInProgress()
-        }
-        taskCoordinator.launchIo {
-            val loadedState = loadCoordinator.load(
-                SpecWorkflowPanelLoadRequest(
-                    workflowId = loadTrigger.workflowId,
-                    includeSources = loadTrigger.includeSources,
-                ),
-            )
-            applyLoadedWorkflow(
-                workflowId = loadTrigger.workflowId,
-                loadedState = loadedState,
-                followCurrentPhase = loadTrigger.followCurrentPhase,
-                previousSelectedWorkflowId = loadTrigger.previousSelectedWorkflowId,
-                onUpdated = onUpdated,
-            )
-        }
-    }
-
     private data class WorkspaceChipColors(
         val foreground: Color,
     )
@@ -4509,12 +4368,7 @@ class SpecWorkflowPanel(
     )
 
     private fun showWorkflowLoadInProgress() {
-        overviewPanel.showLoading()
-        verifyDeltaPanel.showLoading()
-        tasksPanel.showLoading()
-        detailTasksPanel.showLoading()
-        gateDetailsPanel.showLoading()
-        showWorkspaceContent()
+        workflowStateApplicationAdapter.showWorkflowLoadInProgress()
     }
 
     private fun applyLoadedWorkflow(
@@ -4533,42 +4387,10 @@ class SpecWorkflowPanel(
                     followCurrentPhase = followCurrentPhase,
                     previousSelectedWorkflowId = previousSelectedWorkflowId,
                 ),
-                callbacks = workflowLoadedStateCallbacks,
+                callbacks = workflowStateApplicationAdapter.loadedStateCallbacks,
                 onUpdated = onUpdated,
             )
         }
-    }
-
-    private fun applyLoadedWorkflowTaskState(
-        state: SpecWorkflowLoadedTaskUiState,
-    ) {
-        tasksPanel.updateTasks(
-            workflowId = state.workflow.id,
-            tasks = state.tasks,
-            liveProgressByTaskId = state.liveProgressByTaskId,
-            refreshedAtMillis = state.refreshedAtMillis,
-        )
-        detailTasksPanel.updateTasks(
-            workflowId = state.workflow.id,
-            tasks = state.tasks,
-            liveProgressByTaskId = state.liveProgressByTaskId,
-            refreshedAtMillis = state.refreshedAtMillis,
-        )
-        updateWorkspacePresentation(
-            workflow = state.workflow,
-            overviewState = state.snapshot.overviewState,
-            tasks = state.tasks,
-            liveProgressByTaskId = state.liveProgressByTaskId,
-            verifyDeltaState = state.snapshot.verifyDeltaState,
-            gateResult = state.snapshot.gateResult,
-        )
-    }
-
-    private fun setWorkflowActionAvailability(workflow: SpecWorkflow) {
-        createWorktreeButton.isEnabled = true
-        mergeWorktreeButton.isEnabled = true
-        deltaButton.isEnabled = true
-        archiveButton.isEnabled = workflow.status == WorkflowStatus.COMPLETED
     }
 
     private fun buildWorkflowUiSnapshot(workflow: SpecWorkflow): SpecWorkflowUiSnapshot {
