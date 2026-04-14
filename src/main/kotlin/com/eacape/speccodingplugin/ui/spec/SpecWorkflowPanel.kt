@@ -134,6 +134,11 @@ class SpecWorkflowPanel(
         buildActions = runtimeTroubleshootingActionBuilder::build,
     )
     private val workspacePresentationTelemetry = SpecWorkflowWorkspacePresentationTelemetryTracker(logger)
+    private val workbenchArtifactBindingResolver = SpecWorkflowWorkbenchArtifactBindingResolver(
+        locateArtifact = { workflowId, fileName ->
+            artifactService.locateArtifact(workflowId, fileName)
+        },
+    )
     private val workflowCreateCoordinator = SpecWorkflowCreateCoordinator(
         createWorkflow = { request ->
             specEngine.createWorkflow(
@@ -209,6 +214,53 @@ class SpecWorkflowPanel(
             },
         )
     }
+    private val documentWorkspaceViewAdapter by lazy(LazyThreadSafetyMode.NONE) {
+        SpecWorkflowDocumentWorkspaceViewAdapter(
+            ui = object : SpecWorkflowDocumentWorkspaceViewUi {
+                override fun setDocumentWorkspaceTabsVisible(visible: Boolean) {
+                    if (!::documentWorkspaceViewTabsPanel.isInitialized) {
+                        return
+                    }
+                    documentWorkspaceViewTabsPanel.isVisible = visible
+                }
+
+                override fun showDocumentWorkspaceCard(view: DocumentWorkspaceView) {
+                    if (!::documentWorkspaceViewCardPanel.isInitialized) {
+                        return
+                    }
+                    (documentWorkspaceViewCardPanel.layout as CardLayout).show(
+                        documentWorkspaceViewCardPanel,
+                        when (view) {
+                            DocumentWorkspaceView.DOCUMENT -> DOCUMENT_WORKSPACE_CARD_DOCUMENT
+                            DocumentWorkspaceView.STRUCTURED_TASKS -> DOCUMENT_WORKSPACE_CARD_STRUCTURED_TASKS
+                        },
+                    )
+                }
+
+                override fun refreshDocumentWorkspaceViewButtons() {
+                    documentWorkspaceViewButtons.values.forEach(::refreshDocumentWorkspaceViewButtonStyle)
+                }
+
+                override fun syncStructuredTaskSelection(taskId: String?) {
+                    this@SpecWorkflowPanel.syncStructuredTaskSelection(taskId)
+                }
+
+                override fun refreshDocumentWorkspaceContainers() {
+                    if (::documentWorkspaceViewTabsPanel.isInitialized) {
+                        documentWorkspaceViewTabsPanel.revalidate()
+                        documentWorkspaceViewTabsPanel.repaint()
+                    }
+                    if (::documentWorkspaceViewCardPanel.isInitialized) {
+                        documentWorkspaceViewCardPanel.revalidate()
+                        documentWorkspaceViewCardPanel.repaint()
+                    }
+                }
+            },
+            selectedView = { selectedDocumentWorkspaceView },
+            selectedStructuredTaskId = { selectedStructuredTaskId },
+            supportsStructuredTasksDocumentWorkspaceView = ::supportsStructuredTasksDocumentWorkspaceView,
+        )
+    }
     private val workflowWorkspaceStateHost by lazy(LazyThreadSafetyMode.NONE) {
         SpecWorkflowWorkspaceStateApplicationHost(
             workspaceUi = object : SpecWorkflowWorkspaceStateApplicationUi {
@@ -252,7 +304,7 @@ class SpecWorkflowPanel(
                 }
 
                 override fun updateDocumentWorkspaceViewPresentation(workbenchState: SpecWorkflowStageWorkbenchState) {
-                    this@SpecWorkflowPanel.updateDocumentWorkspaceViewPresentation(workbenchState)
+                    documentWorkspaceViewAdapter.updatePresentation(workbenchState)
                 }
 
                 override fun applyWorkspaceSectionPresentation(
@@ -280,8 +332,67 @@ class SpecWorkflowPanel(
                 }
             },
             workspacePresentationTelemetry = workspacePresentationTelemetry,
-            resolveWorkbenchState = ::resolveWorkbenchState,
+            resolveWorkbenchState = workbenchArtifactBindingResolver::resolve,
             supportsStructuredTasksDocumentWorkspaceView = ::supportsStructuredTasksDocumentWorkspaceView,
+        )
+    }
+    private val workflowWorkspaceEmptyStateAdapter by lazy(LazyThreadSafetyMode.NONE) {
+        SpecWorkflowWorkspaceEmptyStateAdapter(
+            ui = object : SpecWorkflowWorkspaceEmptyStateUi {
+                override fun showWorkflowListOnlyMode() {
+                    this@SpecWorkflowPanel.showWorkflowListOnlyMode()
+                }
+
+                override fun setBackToListEnabled(enabled: Boolean) {
+                    backToListButton.isEnabled = enabled
+                }
+
+                override fun showWorkspaceEmptyCard() {
+                    workspaceCardLayout.show(workspaceCardPanel, WORKSPACE_CARD_EMPTY)
+                }
+
+                override fun clearWorkspaceState() {
+                    workflowWorkspaceStateHost.clear()
+                }
+
+                override fun stopLiveProgressRefresh() {
+                    liveProgressRefreshTimer.stop()
+                }
+
+                override fun clearFocusedStage() {
+                    focusedStage = null
+                }
+
+                override fun clearWorkspaceSummary() {
+                    workspaceSummaryTitleLabel.text = ""
+                    workspaceSummaryMetaLabel.text = ""
+                    workspaceSummaryFocusLabel.text = ""
+                    workspaceSummaryHintLabel.text = ""
+                    clearWorkspaceMetric(workspaceStageMetric)
+                    clearWorkspaceMetric(workspaceGateMetric)
+                    clearWorkspaceMetric(workspaceTasksMetric)
+                    clearWorkspaceMetric(workspaceVerifyMetric)
+                }
+
+                override fun resetWorkspaceSections() {
+                    if (::overviewSection.isInitialized) {
+                        workspaceSections().values.forEach { section ->
+                            section.setSummary(null)
+                            section.setExpanded(true, notify = false)
+                        }
+                    }
+                }
+
+                override fun showAllWorkspaceSections() {
+                    workspaceSectionItems.values.forEach { item ->
+                        item.isVisible = true
+                    }
+                }
+
+                override fun resetDocumentWorkspaceView() {
+                    documentWorkspaceViewAdapter.updatePresentation(null)
+                }
+            },
         )
     }
     private val workflowStateApplicationUi by lazy(LazyThreadSafetyMode.NONE) {
@@ -1822,29 +1933,7 @@ class SpecWorkflowPanel(
     }
 
     private fun showWorkspaceEmptyState() {
-        showWorkflowListOnlyMode()
-        backToListButton.isEnabled = false
-        workspaceCardLayout.show(workspaceCardPanel, WORKSPACE_CARD_EMPTY)
-        workflowWorkspaceStateHost.clear()
-        liveProgressRefreshTimer.stop()
-        focusedStage = null
-        workspaceSummaryTitleLabel.text = ""
-        workspaceSummaryMetaLabel.text = ""
-        workspaceSummaryFocusLabel.text = ""
-        workspaceSummaryHintLabel.text = ""
-        clearWorkspaceMetric(workspaceStageMetric)
-        clearWorkspaceMetric(workspaceGateMetric)
-        clearWorkspaceMetric(workspaceTasksMetric)
-        clearWorkspaceMetric(workspaceVerifyMetric)
-        if (::overviewSection.isInitialized) {
-            workspaceSections().values.forEach { section ->
-                section.setSummary(null)
-                section.setExpanded(true, notify = false)
-            }
-        }
-        workspaceSectionItems.values.forEach { item ->
-            item.isVisible = true
-        }
+        workflowWorkspaceEmptyStateAdapter.showEmptyState()
     }
 
     private fun showWorkspaceContent() {
@@ -2198,43 +2287,14 @@ class SpecWorkflowPanel(
     }
 
     private fun updateDocumentWorkspaceViewPresentation(workbenchState: SpecWorkflowStageWorkbenchState?) {
-        if (!::documentWorkspaceViewTabsPanel.isInitialized || !::documentWorkspaceViewCardPanel.isInitialized) {
-            return
-        }
-        val supportsStructuredTasksView = supportsStructuredTasksDocumentWorkspaceView(workbenchState)
-        documentWorkspaceViewTabsPanel.isVisible = supportsStructuredTasksView
-        val effectiveView = if (supportsStructuredTasksView) {
-            selectedDocumentWorkspaceView
-        } else {
-            DocumentWorkspaceView.DOCUMENT
-        }
-        (documentWorkspaceViewCardPanel.layout as CardLayout).show(
-            documentWorkspaceViewCardPanel,
-            when (effectiveView) {
-                DocumentWorkspaceView.DOCUMENT -> DOCUMENT_WORKSPACE_CARD_DOCUMENT
-                DocumentWorkspaceView.STRUCTURED_TASKS -> DOCUMENT_WORKSPACE_CARD_STRUCTURED_TASKS
-            },
-        )
-        documentWorkspaceViewButtons.values.forEach(::refreshDocumentWorkspaceViewButtonStyle)
-        if (supportsStructuredTasksView && effectiveView == DocumentWorkspaceView.STRUCTURED_TASKS) {
-            syncStructuredTaskSelection(selectedStructuredTaskId)
-        }
-        documentWorkspaceViewTabsPanel.revalidate()
-        documentWorkspaceViewTabsPanel.repaint()
-        documentWorkspaceViewCardPanel.revalidate()
-        documentWorkspaceViewCardPanel.repaint()
+        documentWorkspaceViewAdapter.updatePresentation(workbenchState)
     }
 
     private fun refreshDocumentWorkspaceViewButtonStyle(button: JButton) {
         val view = button.getClientProperty("documentWorkspaceView") as? DocumentWorkspaceView ?: return
-        val supportsStructuredTasksView = supportsStructuredTasksDocumentWorkspaceView(currentWorkbenchState)
-        val effectiveView = if (supportsStructuredTasksView) {
-            selectedDocumentWorkspaceView
-        } else {
-            DocumentWorkspaceView.DOCUMENT
-        }
-        val selected = view == effectiveView
-        val enabled = view != DocumentWorkspaceView.STRUCTURED_TASKS || supportsStructuredTasksView
+        val presentation = documentWorkspaceViewAdapter.resolvePresentation(currentWorkbenchState)
+        val selected = view == presentation.effectiveView
+        val enabled = view != DocumentWorkspaceView.STRUCTURED_TASKS || presentation.supportsStructuredTasksView
         val hovered = enabled && button.model.isRollover && !selected
         applyDocumentWorkspaceViewButtonStyle(
             button = button,
@@ -2508,40 +2568,6 @@ class SpecWorkflowPanel(
         )
     }
 
-    private fun resolveWorkbenchState(
-        workflow: SpecWorkflow,
-        state: SpecWorkflowStageWorkbenchState,
-    ): SpecWorkflowStageWorkbenchState {
-        val binding = state.artifactBinding
-        val resolvedBinding = when {
-            binding.documentPhase != null -> binding.copy(
-                available = workflow.documents.containsKey(binding.documentPhase),
-                previewContent = workflow.documents[binding.documentPhase]?.content,
-            )
-
-            !binding.fileName.isNullOrBlank() -> {
-                val path = runCatching {
-                    artifactService.locateArtifact(workflow.id, binding.fileName)
-                }.getOrNull()
-                val available = path?.let(Files::exists) == true
-                val previewContent = if (available) {
-                    path?.let { artifactPath ->
-                        runCatching { Files.readString(artifactPath, StandardCharsets.UTF_8) }.getOrNull()
-                    }
-                } else {
-                    null
-                }
-                binding.copy(
-                    available = available,
-                    previewContent = previewContent,
-                )
-            }
-
-            else -> binding
-        }
-        return state.copy(artifactBinding = resolvedBinding)
-    }
-
     private fun updateWorkspaceMetric(
         metric: WorkspaceSummaryMetric,
         presentation: SpecWorkflowWorkspaceMetricPresentation,
@@ -2578,7 +2604,6 @@ class SpecWorkflowPanel(
         gateDetailsPanel.showEmpty()
         verifyDeltaPanel.showEmpty()
         detailPanel.showEmpty()
-        updateDocumentWorkspaceViewPresentation(null)
         createWorktreeButton.isEnabled = false
         mergeWorktreeButton.isEnabled = false
         deltaButton.isEnabled = false
