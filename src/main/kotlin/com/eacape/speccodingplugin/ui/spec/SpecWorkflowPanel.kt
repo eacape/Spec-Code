@@ -32,19 +32,16 @@ import com.eacape.speccodingplugin.window.WindowSessionIsolationService
 import com.eacape.speccodingplugin.ui.worktree.NewWorktreeDialog
 import com.eacape.speccodingplugin.worktree.WorktreeManager
 import com.intellij.ide.BrowserUtil
-import com.intellij.CommonBundle
 import com.intellij.openapi.components.service
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.thisLogger
-import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.ui.JBColor
 import com.intellij.ui.SimpleListCellRenderer
@@ -139,6 +136,137 @@ class SpecWorkflowPanel(
             artifactService.locateArtifact(workflowId, fileName)
         },
     )
+    private val workflowArtifactNavigationCoordinator = SpecWorkflowArtifactNavigationCoordinator(
+        resolvePhaseDocumentPath = { workflowId, phase ->
+            project.basePath?.let { basePath ->
+                Path.of(basePath, ".spec-coding", "specs", workflowId, phase.outputFileName)
+            }
+        },
+        locateArtifact = { workflowId, fileName ->
+            artifactService.locateArtifact(workflowId, fileName)
+        },
+        openFile = { path ->
+            SpecWorkflowActionSupport.openFile(project, path)
+        },
+        runIo = { task ->
+            taskCoordinator.launchIo {
+                task()
+            }
+        },
+        invokeLater = ::invokeLaterSafe,
+        listDocumentHistory = specEngine::listDocumentHistory,
+        loadDocumentSnapshot = specEngine::loadDocumentSnapshot,
+        deleteDocumentSnapshot = specEngine::deleteDocumentSnapshot,
+        pruneDocumentHistory = specEngine::pruneDocumentHistory,
+        exportHistoryDiffSummary = ::exportHistoryDiffSummary,
+        showHistoryDiffDialog = ::showHistoryDiffDialog,
+        setStatusText = ::setStatusText,
+    )
+    private val workflowDeltaCoordinator = SpecWorkflowDeltaCoordinator(
+        listWorkflowIds = specEngine::listWorkflows,
+        loadWorkflow = specEngine::loadWorkflow,
+        compareByWorkflowId = { baselineWorkflowId, targetWorkflowId ->
+            specDeltaService.compareByWorkflowId(
+                baselineWorkflowId = baselineWorkflowId,
+                targetWorkflowId = targetWorkflowId,
+            )
+        },
+        runIo = { task ->
+            taskCoordinator.launchIo {
+                task()
+            }
+        },
+        invokeLater = ::invokeLaterSafe,
+        selectBaselineWorkflow = { currentWorkflowId, workflowOptions ->
+            val selectDialog = SpecBaselineSelectDialog(
+                workflowOptions = workflowOptions,
+                currentWorkflowId = currentWorkflowId,
+            )
+            if (!selectDialog.showAndGet()) {
+                SpecWorkflowDeltaBaselineSelectionResult(confirmed = false)
+            } else {
+                SpecWorkflowDeltaBaselineSelectionResult(
+                    confirmed = true,
+                    baselineWorkflowId = selectDialog.selectedBaselineWorkflowId,
+                )
+            }
+        },
+        showDeltaDialog = { request ->
+            SpecDeltaDialog(
+                project = project,
+                delta = request.delta,
+                onOpenHistoryDiff = request.onOpenHistoryDiff,
+                onExportReport = request.onExportReport,
+                onReportExported = request.onReportExported,
+            ).show()
+        },
+        showHistoryDiff = workflowArtifactNavigationCoordinator::showHistoryDiff,
+        exportReport = specDeltaService::exportReport,
+        setStatusText = ::setStatusText,
+        renderFailureMessage = { error ->
+            compactErrorMessage(error, SpecCodingBundle.message("common.unknown"))
+        },
+    )
+    private val workflowTemplateCloneCoordinator = SpecWorkflowTemplateCloneCoordinator(
+        workflowProvider = { currentWorkflow },
+        previewTemplateSwitch = specEngine::previewTemplateSwitch,
+        cloneWorkflowWithTemplate = specEngine::cloneWorkflowWithTemplate,
+        runPreviewInBackground = { title, task, onSuccess ->
+            SpecWorkflowActionSupport.runBackground(
+                project = project,
+                title = title,
+                task = task,
+                onSuccess = onSuccess,
+            )
+        },
+        runCloneInBackground = { title, task, onSuccess ->
+            SpecWorkflowActionSupport.runBackground(
+                project = project,
+                title = title,
+                task = task,
+                onSuccess = onSuccess,
+            )
+        },
+        showBlockedPreview = { title, message ->
+            Messages.showErrorDialog(project, message, title)
+        },
+        confirmPreview = { title, message ->
+            Messages.showDialog(
+                project,
+                message,
+                title,
+                arrayOf(
+                    SpecCodingBundle.message("spec.action.template.clone.confirm.continue"),
+                    com.intellij.CommonBundle.getCancelButtonText(),
+                ),
+                0,
+                Messages.getQuestionIcon(),
+            ) == 0
+        },
+        editClone = { request ->
+            val dialog = EditSpecWorkflowDialog(
+                initialTitle = request.initialTitle,
+                initialDescription = request.initialDescription,
+                dialogTitle = request.dialogTitle,
+            )
+            if (!dialog.showAndGet()) {
+                null
+            } else {
+                SpecWorkflowTemplateCloneEditResult(
+                    title = dialog.resultTitle.orEmpty(),
+                    description = dialog.resultDescription,
+                )
+            }
+        },
+        notifySuccess = { message ->
+            SpecWorkflowActionSupport.notifySuccess(project, message)
+        },
+        onCloneCreated = { workflowId ->
+            highlightedWorkflowId = workflowId
+            publishWorkflowSelection(workflowId)
+            refreshWorkflows(selectWorkflowId = workflowId)
+        },
+    )
     private val workflowCreateCoordinator = SpecWorkflowCreateCoordinator(
         createWorkflow = { request ->
             specEngine.createWorkflow(
@@ -160,6 +288,57 @@ class SpecWorkflowPanel(
         firstVisibleArtifactExists = { workflowId, artifactFileName ->
             Files.isRegularFile(artifactService.locateArtifact(workflowId, artifactFileName))
         },
+    )
+    private val workflowCreateEditUiHost = SpecWorkflowCreateEditUiHost(
+        project = project,
+        highlightWorkflow = { workflowId ->
+            highlightedWorkflowId = workflowId
+        },
+        refreshWorkflows = { workflowId ->
+            refreshWorkflows(selectWorkflowId = workflowId)
+        },
+        publishWorkflowSelection = ::publishWorkflowSelection,
+        isWorkflowOpened = { workflowId ->
+            selectedWorkflowId == workflowId
+        },
+        applyUpdatedWorkflowToOpenedUi = { updated ->
+            currentWorkflow = updated
+            phaseIndicator.updatePhase(updated)
+            detailPanel.updateWorkflow(updated)
+            archiveButton.isEnabled = updated.status == WorkflowStatus.COMPLETED
+        },
+        setStatusText = ::setStatusText,
+        renderFailureMessage = { error ->
+            compactErrorMessage(error, SpecCodingBundle.message("common.unknown"))
+        },
+        logFailure = { message, error ->
+            logger.warn(message, error)
+        },
+    )
+    private val workflowCreateEditCoordinator = SpecWorkflowCreateEditCoordinator(
+        backgroundRunner = object : SpecWorkflowCreateEditBackgroundRunner {
+            override fun <T> run(request: SpecWorkflowCreateEditBackgroundRequest<T>) {
+                taskCoordinator.launchIo {
+                    runCatching { request.task() }
+                        .onSuccess { outcome ->
+                            invokeLaterSafe {
+                                request.onSuccess(outcome)
+                            }
+                        }
+                        .onFailure { error ->
+                            invokeLaterSafe {
+                                request.onFailure(error)
+                            }
+                        }
+                }
+            }
+        },
+        ui = workflowCreateEditUiHost,
+        createWorkflow = workflowCreateCoordinator::create,
+        loadWorkflowForEdit = { workflowId ->
+            specEngine.loadWorkflow(workflowId).getOrNull()
+        },
+        updateWorkflowMetadata = specEngine::updateWorkflowMetadata,
     )
     private val loadCoordinator = SpecWorkflowPanelLoadCoordinator(
         reloadWorkflow = { workflowId -> specEngine.reloadWorkflow(workflowId) },
@@ -784,7 +963,7 @@ class SpecWorkflowPanel(
                 label = label,
             )
         },
-        showDeltaDialog = ::showDeltaDialog,
+        showDeltaDialog = workflowDeltaCoordinator::showComparisonResult,
         reloadCurrentWorkflow = {
             reloadCurrentWorkflow()
         },
@@ -1048,7 +1227,7 @@ class SpecWorkflowPanel(
     private val overviewPanel = SpecWorkflowOverviewPanel(
         onStageSelected = ::onOverviewStageSelected,
         onWorkbenchActionRequested = ::onWorkbenchActionRequested,
-        onTemplateCloneRequested = ::onTemplateCloneRequested,
+        onTemplateCloneRequested = workflowTemplateCloneCoordinator::requestClone,
     )
     private val tasksPanel = SpecWorkflowTasksPanel(
         onTransitionStatus = ::onTaskStatusTransitionRequested,
@@ -1079,46 +1258,71 @@ class SpecWorkflowPanel(
         showHeader = false,
         fixedViewportHeight = DOCUMENT_WORKSPACE_VIEWPORT_HEIGHT,
     )
-    private val workbenchCommandRouter = SpecWorkflowWorkbenchCommandRouter(
-        callbacks = object : SpecWorkflowWorkbenchCommandCallbacks {
-            override fun advance() = onAdvanceStageRequested()
-
-            override fun jump(workflowId: String, targetStage: StageId) =
-                stageTransitionCoordinator.jump(workflowId, targetStage)
-
-            override fun jumpFallback() = onJumpStageRequested()
-
-            override fun rollback(workflowId: String, targetStage: StageId) =
-                stageTransitionCoordinator.rollback(workflowId, targetStage)
-
-            override fun rollbackFallback() = onRollbackStageRequested()
-
-            override fun selectTask(taskId: String) = syncStructuredTaskSelection(taskId)
-
-            override fun requestTaskExecution(taskId: String): Boolean = tasksPanel.requestExecutionForTask(taskId)
-
-            override fun requestTaskCompletion(taskId: String): Boolean = tasksPanel.requestCompletionForTask(taskId)
-
-            override fun cancelTaskExecution(taskId: String) = onTaskExecutionCancelRequested(taskId)
-
-            override fun openTaskChat(workflowId: String, taskId: String) =
-                taskChatCoordinator.openTaskWorkflowChat(workflowId, taskId)
-
-            override fun runVerify(workflowId: String) = verifyDeltaCoordinator.runVerification(workflowId)
-
-            override fun previewVerifyPlan(workflowId: String) = onPreviewVerificationPlanRequested(workflowId)
-
-            override fun openVerification(workflowId: String) =
-                verifyDeltaCoordinator.openVerificationDocument(workflowId)
-
-            override fun showDelta() = onShowDelta()
-
-            override fun completeWorkflow() = onComplete()
-
-            override fun archiveWorkflow() = onArchiveWorkflow()
-
-            override fun showStatus(text: String) = setStatusText(text)
+    private val workbenchStageSelectionCoordinator = SpecWorkflowWorkbenchStageSelectionCoordinator(
+        workflowMetaProvider = {
+            currentWorkflow?.toWorkflowMeta()
         },
+        showInfo = { title, message ->
+            SpecWorkflowActionSupport.showInfo(
+                project = project,
+                title = title,
+                message = message,
+            )
+        },
+        chooseStage = { request ->
+            SpecWorkflowActionSupport.chooseStage(
+                project = project,
+                stages = request.stages,
+                title = request.title,
+                workflowMeta = request.workflowMeta,
+                onChosen = request.onChosen,
+            )
+        },
+        onJumpSelected = stageTransitionCoordinator::jump,
+        onRollbackSelected = stageTransitionCoordinator::rollback,
+    )
+    private val workbenchActionCoordinator = SpecWorkflowWorkbenchActionCoordinator(
+        onAdvance = ::onAdvanceStageRequested,
+        onJump = stageTransitionCoordinator::jump,
+        onJumpFallback = workbenchStageSelectionCoordinator::requestJumpSelection,
+        onRollback = stageTransitionCoordinator::rollback,
+        onRollbackFallback = workbenchStageSelectionCoordinator::requestRollbackSelection,
+        onSelectTask = ::syncStructuredTaskSelection,
+        requestTaskExecutionAction = tasksPanel::requestExecutionForTask,
+        requestTaskCompletionAction = tasksPanel::requestCompletionForTask,
+        onCancelTaskExecution = ::onTaskExecutionCancelRequested,
+        onOpenTaskChat = taskChatCoordinator::openTaskWorkflowChat,
+        onRunVerify = verifyDeltaCoordinator::runVerification,
+        buildVerifyPlanPreviewSummary = { workflowId ->
+            val plan = specVerificationService.preview(workflowId)
+            val scopeTasks = specTasksService.parse(workflowId).sortedBy(StructuredTask::id)
+            SpecWorkflowActionSupport.verificationPlanSummary(plan, scopeTasks)
+        },
+        runPreviewInBackground = { title, task, onSuccess ->
+            SpecWorkflowActionSupport.runBackground(
+                project = project,
+                title = title,
+                task = task,
+                onSuccess = onSuccess,
+            )
+        },
+        showPreviewSummary = { title, message ->
+            SpecWorkflowActionSupport.showInfo(
+                project = project,
+                title = title,
+                message = message,
+            )
+        },
+        onOpenVerification = verifyDeltaCoordinator::openVerificationDocument,
+        onShowDelta = {
+            workflowDeltaCoordinator.show(currentWorkflow)
+        },
+        onCompleteWorkflow = ::onComplete,
+        onArchiveWorkflow = ::onArchiveWorkflow,
+        onShowStatus = ::setStatusText,
+    )
+    private val workbenchCommandRouter = SpecWorkflowWorkbenchCommandRouter(
+        callbacks = workbenchActionCoordinator,
         taskExecutionFailedMessage = { taskId ->
             SpecCodingBundle.message("spec.toolwindow.tasks.execute.failed", taskId)
         },
@@ -1324,9 +1528,19 @@ class SpecWorkflowPanel(
             onGoBack = ::onGoBack,
             onComplete = ::onComplete,
             onPauseResume = ::onPauseResume,
-            onOpenInEditor = ::onOpenInEditor,
-            onOpenArtifactInEditor = ::onOpenArtifactInEditor,
-            onShowHistoryDiff = ::onShowHistoryDiff,
+            onOpenInEditor = { phase ->
+                workflowArtifactNavigationCoordinator.openPhaseDocument(selectedWorkflowId, phase)
+            },
+            onOpenArtifactInEditor = { fileName ->
+                workflowArtifactNavigationCoordinator.openArtifactInEditor(selectedWorkflowId, fileName)
+            },
+            onShowHistoryDiff = { phase ->
+                workflowArtifactNavigationCoordinator.showHistoryDiff(
+                    workflowId = currentWorkflow?.id,
+                    phase = phase,
+                    currentDocument = currentWorkflow?.documents?.get(phase),
+                )
+            },
             onSaveDocument = ::onSaveDocument,
             onClarificationDraftAutosave = clarificationActionCoordinator::autosave,
         )
@@ -1370,7 +1584,9 @@ class SpecWorkflowPanel(
         createWorkflowButton.addActionListener { onCreateWorkflow() }
         createWorktreeButton.addActionListener { onCreateWorktree() }
         mergeWorktreeButton.addActionListener { onMergeWorktree() }
-        deltaButton.addActionListener { onShowDelta() }
+        deltaButton.addActionListener {
+            workflowDeltaCoordinator.show(currentWorkflow)
+        }
         codeGraphButton.addActionListener { onShowCodeGraph() }
         archiveButton.addActionListener { onArchiveWorkflow() }
         backToListButton.addActionListener { onBackToWorkflowListRequested() }
@@ -2663,119 +2879,14 @@ class SpecWorkflowPanel(
     }
 
     private fun onCreateWorkflow(preferredTemplate: WorkflowTemplate? = null) {
-        val workflowOptions = listPanel.workflowOptionsForCreate()
-        taskCoordinator.launchIo {
-            val configuredDefaultTemplate = runCatching {
-                SpecProjectConfigService(project).load().defaultTemplate
-            }.getOrElse { error ->
-                logger.warn("Failed to load default workflow template for create dialog", error)
-                null
-            }
-            val defaultTemplate = SpecWorkflowEntryPaths.resolveDefaultTemplate(
-                preferredTemplate = preferredTemplate,
-                configuredDefault = configuredDefaultTemplate,
-            )
-
-            invokeLaterSafe {
-                val dialog = NewSpecWorkflowDialog(
-                    project = project,
-                    workflowOptions = workflowOptions,
-                    defaultTemplate = defaultTemplate,
-                )
-                if (!dialog.showAndGet()) {
-                    return@invokeLaterSafe
-                }
-                val title = dialog.resultTitle ?: return@invokeLaterSafe
-                val desc = dialog.resultDescription ?: ""
-                val template = dialog.resultTemplate
-                val verifyEnabled = dialog.resultVerifyEnabled
-                val changeIntent = dialog.resultChangeIntent
-                val baselineWorkflowId = dialog.resultBaselineWorkflowId
-                taskCoordinator.launchIo {
-                    workflowCreateCoordinator.create(
-                        SpecWorkflowCreateRequest(
-                            title = title,
-                            description = desc,
-                            template = template,
-                            verifyEnabled = verifyEnabled,
-                            changeIntent = changeIntent,
-                            baselineWorkflowId = baselineWorkflowId,
-                        ),
-                    ).onSuccess { outcome ->
-                        invokeLaterSafe {
-                            highlightedWorkflowId = outcome.workflow.id
-                            refreshWorkflows(selectWorkflowId = outcome.workflow.id)
-                            publishWorkflowSelection(outcome.workflow.id)
-                            if (!outcome.firstVisibleArtifactMaterialized) {
-                                setStatusText(
-                                    SpecCodingBundle.message(
-                                        "spec.workflow.create.firstArtifactMissing",
-                                        outcome.expectedFirstVisibleArtifactFileName,
-                                        outcome.workflow.id,
-                                    ),
-                                )
-                            }
-                        }
-                    }.onFailure { e ->
-                        logger.warn("Failed to create workflow", e)
-                        invokeLaterSafe {
-                            val message = compactErrorMessage(e, SpecCodingBundle.message("common.unknown"))
-                            setStatusText(SpecCodingBundle.message("spec.workflow.error", message))
-                        }
-                    }
-                }
-            }
-        }
+        workflowCreateEditCoordinator.requestCreate(
+            preferredTemplate = preferredTemplate,
+            workflowOptions = listPanel.workflowOptionsForCreate(),
+        )
     }
 
     private fun onEditWorkflow(workflowId: String) {
-        taskCoordinator.launchIo {
-            val workflow = specEngine.loadWorkflow(workflowId).getOrNull()
-            if (workflow == null) {
-                invokeLaterSafe {
-                    setStatusText(SpecCodingBundle.message("spec.workflow.error", SpecCodingBundle.message("common.unknown")))
-                }
-                return@launchIo
-            }
-
-            invokeLaterSafe {
-                val dialog = EditSpecWorkflowDialog(
-                    initialTitle = workflow.title.ifBlank { workflow.id },
-                    initialDescription = workflow.description,
-                )
-                if (!dialog.showAndGet()) {
-                    return@invokeLaterSafe
-                }
-                val title = dialog.resultTitle ?: return@invokeLaterSafe
-                val description = dialog.resultDescription ?: ""
-
-                taskCoordinator.launchIo {
-                    val result = specEngine.updateWorkflowMetadata(
-                        workflowId = workflowId,
-                        title = title,
-                        description = description,
-                    )
-
-                    invokeLaterSafe {
-                        result.onSuccess { updated ->
-                            setStatusText(null)
-                            val reopenWorkspace = selectedWorkflowId == workflowId
-                            highlightedWorkflowId = workflowId
-                            if (reopenWorkspace) {
-                                currentWorkflow = updated
-                                phaseIndicator.updatePhase(updated)
-                                detailPanel.updateWorkflow(updated)
-                                archiveButton.isEnabled = updated.status == WorkflowStatus.COMPLETED
-                            }
-                            refreshWorkflows(selectWorkflowId = workflowId.takeIf { reopenWorkspace })
-                        }.onFailure { error ->
-                            val message = compactErrorMessage(error, SpecCodingBundle.message("common.unknown"))
-                            setStatusText(SpecCodingBundle.message("spec.workflow.error", message))
-                        }
-                    }
-                }
-            }
-        }
+        workflowCreateEditCoordinator.requestEdit(workflowId)
     }
 
     private fun onDeleteWorkflow(workflowId: String) {
@@ -3667,91 +3778,6 @@ class SpecWorkflowPanel(
             }
     }
 
-    private fun onShowDelta() {
-        val targetWorkflow = currentWorkflow
-        if (targetWorkflow == null) {
-            setStatusText(SpecCodingBundle.message("spec.delta.error.noCurrentWorkflow"))
-            return
-        }
-
-        taskCoordinator.launchIo {
-            val candidateWorkflows = specEngine.listWorkflows()
-                .filter { it != targetWorkflow.id }
-                .mapNotNull { workflowId ->
-                    specEngine.loadWorkflow(workflowId).getOrNull()?.let { workflow ->
-                        SpecBaselineSelectDialog.WorkflowOption(
-                            workflowId = workflow.id,
-                            title = workflow.title.ifBlank { workflow.id },
-                            description = workflow.description,
-                        )
-                    }
-                }
-
-            if (candidateWorkflows.isEmpty()) {
-                invokeLaterSafe {
-                    setStatusText(SpecCodingBundle.message("spec.delta.emptyCandidates"))
-                }
-                return@launchIo
-            }
-
-            invokeLaterSafe {
-                val selectDialog = SpecBaselineSelectDialog(
-                    workflowOptions = candidateWorkflows,
-                    currentWorkflowId = targetWorkflow.id,
-                )
-                if (!selectDialog.showAndGet()) {
-                    return@invokeLaterSafe
-                }
-
-                val baselineWorkflowId = selectDialog.selectedBaselineWorkflowId
-                if (baselineWorkflowId.isNullOrBlank()) {
-                    setStatusText(SpecCodingBundle.message("spec.delta.selectBaseline.required"))
-                    return@invokeLaterSafe
-                }
-
-                taskCoordinator.launchIo {
-                    val result = specDeltaService.compareByWorkflowId(
-                        baselineWorkflowId = baselineWorkflowId,
-                        targetWorkflowId = targetWorkflow.id,
-                    )
-
-                    invokeLaterSafe {
-                        result.onSuccess { delta ->
-                            showDeltaDialog(targetWorkflow, delta)
-                            setStatusText(SpecCodingBundle.message("spec.delta.generated"))
-                        }.onFailure { error ->
-                            setStatusText(SpecCodingBundle.message(
-                                "spec.workflow.error",
-                                error.message ?: SpecCodingBundle.message("common.unknown"),
-                            ))
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private fun showDeltaDialog(
-        targetWorkflow: SpecWorkflow,
-        delta: SpecWorkflowDelta,
-    ) {
-        SpecDeltaDialog(
-            project = project,
-            delta = delta,
-            onOpenHistoryDiff = { phase ->
-                onShowHistoryDiffForWorkflow(
-                    workflowId = targetWorkflow.id,
-                    phase = phase,
-                    currentDoc = targetWorkflow.documents[phase],
-                )
-            },
-            onExportReport = { format -> specDeltaService.exportReport(delta, format) },
-            onReportExported = { export ->
-                setStatusText(SpecCodingBundle.message("spec.delta.export.done", export.fileName))
-            },
-        ).show()
-    }
-
     private fun onArchiveWorkflow() {
         workflowLifecycleCoordinator.archive(
             workflowId = currentWorkflow?.id,
@@ -3864,229 +3890,11 @@ class SpecWorkflowPanel(
         stageTransitionCoordinator.advance(workflowId)
     }
 
-    private fun onJumpStageRequested() {
-        val workflowMeta = currentWorkflow?.toWorkflowMeta() ?: return
-        val targets = SpecWorkflowActionSupport.jumpTargets(workflowMeta)
-        if (targets.isEmpty()) {
-            SpecWorkflowActionSupport.showInfo(
-                project,
-                SpecCodingBundle.message("spec.action.jump.none.title"),
-                SpecCodingBundle.message("spec.action.jump.none.message"),
-            )
-            return
-        }
-        SpecWorkflowActionSupport.chooseStage(
-            project = project,
-            stages = targets,
-            title = SpecCodingBundle.message("spec.action.jump.stage.popup.title"),
-            workflowMeta = workflowMeta,
-            onChosen = { targetStage -> stageTransitionCoordinator.jump(workflowMeta.workflowId, targetStage) },
-        )
-    }
-
-    private fun onRollbackStageRequested() {
-        val workflowMeta = currentWorkflow?.toWorkflowMeta() ?: return
-        val targets = SpecWorkflowActionSupport.rollbackTargets(workflowMeta)
-        if (targets.isEmpty()) {
-            SpecWorkflowActionSupport.showInfo(
-                project,
-                SpecCodingBundle.message("spec.action.rollback.none.title"),
-                SpecCodingBundle.message("spec.action.rollback.none.message"),
-            )
-            return
-        }
-        SpecWorkflowActionSupport.chooseStage(
-            project = project,
-            stages = targets,
-            title = SpecCodingBundle.message("spec.action.rollback.stage.popup.title"),
-            workflowMeta = workflowMeta,
-            onChosen = { targetStage -> stageTransitionCoordinator.rollback(workflowMeta.workflowId, targetStage) },
-        )
-    }
-
-    private fun onTemplateCloneRequested(targetTemplate: WorkflowTemplate) {
-        val workflow = currentWorkflow ?: return
-        if (workflow.template == targetTemplate) {
-            return
-        }
-        SpecWorkflowActionSupport.runBackground(
-            project = project,
-            title = SpecCodingBundle.message("spec.action.template.clone.preview"),
-            task = {
-                specEngine.previewTemplateSwitch(
-                    workflowId = workflow.id,
-                    toTemplate = targetTemplate,
-                ).getOrThrow()
-            },
-            onSuccess = { preview ->
-                val summary = buildTemplateClonePreviewSummary(workflow, preview)
-                val hasBlockingImpact = preview.artifactImpacts.any { impact ->
-                    impact.strategy == TemplateSwitchArtifactStrategy.BLOCK_SWITCH
-                }
-                if (hasBlockingImpact) {
-                    Messages.showErrorDialog(
-                        project,
-                        summary,
-                        SpecCodingBundle.message("spec.action.template.clone.confirm.title"),
-                    )
-                    return@runBackground
-                }
-                val choice = Messages.showDialog(
-                    project,
-                    summary,
-                    SpecCodingBundle.message("spec.action.template.clone.confirm.title"),
-                    arrayOf(
-                        SpecCodingBundle.message("spec.action.template.clone.confirm.continue"),
-                        CommonBundle.getCancelButtonText(),
-                    ),
-                    0,
-                    Messages.getQuestionIcon(),
-                )
-                if (choice != 0) {
-                    return@runBackground
-                }
-                val cloneDialog = EditSpecWorkflowDialog(
-                    initialTitle = suggestedClonedWorkflowTitle(workflow, preview.toTemplate),
-                    initialDescription = workflow.description,
-                    dialogTitle = SpecCodingBundle.message("spec.action.template.clone.dialog.title"),
-                )
-                if (!cloneDialog.showAndGet()) {
-                    return@runBackground
-                }
-                val clonedTitle = cloneDialog.resultTitle ?: return@runBackground
-                executeTemplateClone(
-                    workflowId = workflow.id,
-                    previewId = preview.previewId,
-                    title = clonedTitle,
-                    description = cloneDialog.resultDescription,
-                    targetTemplate = preview.toTemplate,
-                )
-            },
-        )
-    }
-
-    private fun executeTemplateClone(
-        workflowId: String,
-        previewId: String,
-        title: String,
-        description: String?,
-        targetTemplate: WorkflowTemplate,
-    ) {
-        SpecWorkflowActionSupport.runBackground(
-            project = project,
-            title = SpecCodingBundle.message("spec.action.template.clone.executing"),
-            task = {
-                specEngine.cloneWorkflowWithTemplate(
-                    workflowId = workflowId,
-                    previewId = previewId,
-                    title = title,
-                    description = description,
-                ).getOrThrow()
-            },
-            onSuccess = { result ->
-                SpecWorkflowActionSupport.notifySuccess(
-                    project,
-                    SpecCodingBundle.message(
-                        "spec.action.template.clone.success",
-                        result.workflow.title.ifBlank { result.workflow.id },
-                        SpecWorkflowOverviewPresenter.templateLabel(targetTemplate),
-                    ),
-                )
-                highlightedWorkflowId = result.workflow.id
-                publishWorkflowSelection(result.workflow.id)
-                refreshWorkflows(selectWorkflowId = result.workflow.id)
-            },
-        )
-    }
-
     private fun handleStageTransitionCompleted(workflowId: String, successMessage: String) {
         SpecWorkflowActionSupport.notifySuccess(project, successMessage)
         focusedStage = null
         publishWorkflowSelection(workflowId)
         refreshWorkflows(selectWorkflowId = workflowId)
-    }
-
-    private fun buildTemplateClonePreviewSummary(
-        workflow: SpecWorkflow,
-        preview: TemplateSwitchPreview,
-    ): String {
-        val lines = mutableListOf<String>()
-        lines += SpecCodingBundle.message("spec.action.template.clone.summary.workflow", workflow.id)
-        lines += SpecCodingBundle.message(
-            "spec.action.template.clone.summary.templates",
-            SpecWorkflowOverviewPresenter.templateLabel(preview.fromTemplate),
-            SpecWorkflowOverviewPresenter.templateLabel(preview.toTemplate),
-        )
-        lines += SpecCodingBundle.message(
-            "spec.action.template.clone.summary.stage",
-            SpecWorkflowActionSupport.stageLabel(preview.currentStage),
-            SpecWorkflowActionSupport.stageLabel(preview.resultingStage),
-        )
-        if (preview.currentStageChanged) {
-            lines += SpecCodingBundle.message("spec.action.template.clone.summary.stageChanged")
-        }
-        lines += ""
-        lines += SpecCodingBundle.message(
-            "spec.action.template.clone.summary.addedStages",
-            formatStageList(preview.addedActiveStages),
-        )
-        lines += SpecCodingBundle.message(
-            "spec.action.template.clone.summary.deactivatedStages",
-            formatStageList(preview.deactivatedStages),
-        )
-        lines += SpecCodingBundle.message(
-            "spec.action.template.clone.summary.gateAddedStages",
-            formatStageList(preview.gateAddedStages),
-        )
-        lines += SpecCodingBundle.message(
-            "spec.action.template.clone.summary.gateRemovedStages",
-            formatStageList(preview.gateRemovedStages),
-        )
-        lines += ""
-        lines += SpecCodingBundle.message("spec.action.template.clone.summary.artifacts")
-        preview.artifactImpacts.forEach { impact ->
-            lines += SpecCodingBundle.message(
-                "spec.action.template.clone.summary.artifact",
-                impact.fileName,
-                SpecWorkflowActionSupport.stageLabel(impact.stageId),
-                templateSwitchStrategyLabel(impact.strategy),
-            )
-        }
-        if (preview.artifactImpacts.any { impact -> impact.strategy == TemplateSwitchArtifactStrategy.BLOCK_SWITCH }) {
-            lines += ""
-            lines += SpecCodingBundle.message("spec.action.template.clone.summary.blocked")
-        }
-        lines += ""
-        lines += SpecCodingBundle.message("spec.action.template.clone.summary.note")
-        return lines.joinToString("\n")
-    }
-
-    private fun formatStageList(stages: List<StageId>): String {
-        if (stages.isEmpty()) {
-            return SpecCodingBundle.message("spec.action.template.clone.summary.none")
-        }
-        return stages.joinToString(", ") { stage ->
-            SpecWorkflowActionSupport.stageLabel(stage)
-        }
-    }
-
-    private fun templateSwitchStrategyLabel(strategy: TemplateSwitchArtifactStrategy): String {
-        return when (strategy) {
-            TemplateSwitchArtifactStrategy.REUSE_EXISTING ->
-                SpecCodingBundle.message("spec.action.template.clone.strategy.reuse")
-            TemplateSwitchArtifactStrategy.GENERATE_SKELETON ->
-                SpecCodingBundle.message("spec.action.template.clone.strategy.generate")
-            TemplateSwitchArtifactStrategy.BLOCK_SWITCH ->
-                SpecCodingBundle.message("spec.action.template.clone.strategy.block")
-        }
-    }
-
-    private fun suggestedClonedWorkflowTitle(
-        workflow: SpecWorkflow,
-        targetTemplate: WorkflowTemplate,
-    ): String {
-        val baseTitle = workflow.title.ifBlank { workflow.id }
-        return "$baseTitle (${SpecWorkflowOverviewPresenter.templateLabel(targetTemplate)})"
     }
 
     private fun onShowCodeGraph() {
@@ -4243,33 +4051,6 @@ class SpecWorkflowPanel(
         )
     }
 
-    private fun onOpenInEditor(phase: SpecPhase) {
-        val wfId = selectedWorkflowId ?: return
-        val basePath = project.basePath ?: return
-        val filePath = "$basePath/.spec-coding/specs/$wfId/${phase.outputFileName}"
-        val vf = LocalFileSystem.getInstance().refreshAndFindFileByPath(filePath)
-        if (vf != null) {
-            FileEditorManager.getInstance(project).openFile(vf, true)
-        }
-    }
-
-    private fun onOpenArtifactInEditor(fileName: String) {
-        val workflowId = selectedWorkflowId ?: return
-        val path = runCatching { artifactService.locateArtifact(workflowId, fileName) }.getOrNull() ?: return
-        if (!Files.exists(path) || !SpecWorkflowActionSupport.openFile(project, path)) {
-            setStatusText(SpecCodingBundle.message("spec.action.verify.document.unavailable.title"))
-        }
-    }
-
-    private fun onShowHistoryDiff(phase: SpecPhase) {
-        val workflow = currentWorkflow ?: return
-        onShowHistoryDiffForWorkflow(
-            workflowId = workflow.id,
-            phase = phase,
-            currentDoc = workflow.documents[phase],
-        )
-    }
-
     private fun onSaveDocument(
         phase: SpecPhase,
         content: String,
@@ -4301,56 +4082,15 @@ class SpecWorkflowPanel(
         }
     }
 
-    private fun onShowHistoryDiffForWorkflow(
-        workflowId: String,
-        phase: SpecPhase,
-        currentDoc: SpecDocument?,
-    ) {
-        if (currentDoc == null) {
-            setStatusText(SpecCodingBundle.message("spec.history.noCurrentDocument"))
-            return
-        }
-
-        taskCoordinator.launchIo {
-            val history = specEngine.listDocumentHistory(workflowId, phase)
-            val snapshots = history.mapNotNull { entry ->
-                specEngine.loadDocumentSnapshot(workflowId, phase, entry.snapshotId).getOrNull()?.let { snapshotDoc ->
-                    SpecHistoryDiffDialog.SnapshotVersion(
-                        snapshotId = entry.snapshotId,
-                        createdAt = entry.createdAt,
-                        document = snapshotDoc,
-                    )
-                }
-            }
-
-            invokeLaterSafe {
-                if (snapshots.isEmpty()) {
-                    setStatusText(SpecCodingBundle.message("spec.history.noSnapshot"))
-                    return@invokeLaterSafe
-                }
-
-                SpecHistoryDiffDialog(
-                    phase = phase,
-                    currentDocument = currentDoc,
-                    snapshots = snapshots,
-                    onDeleteSnapshot = { snapshot ->
-                        specEngine.deleteDocumentSnapshot(workflowId, phase, snapshot.snapshotId).isSuccess
-                    },
-                    onPruneSnapshots = { keepLatest ->
-                        specEngine.pruneDocumentHistory(workflowId, phase, keepLatest).getOrElse { -1 }
-                    },
-                    onExportSummary = { content ->
-                        exportHistoryDiffSummary(workflowId, phase, content)
-                    },
-                ).show()
-
-                setStatusText(SpecCodingBundle.message(
-                    "spec.history.diff.opened",
-                    phase.displayName,
-                    snapshots.size,
-                ))
-            }
-        }
+    private fun showHistoryDiffDialog(request: SpecWorkflowHistoryDiffDialogRequest) {
+        SpecHistoryDiffDialog(
+            phase = request.phase,
+            currentDocument = request.currentDocument,
+            snapshots = request.snapshots,
+            onDeleteSnapshot = request.onDeleteSnapshot,
+            onPruneSnapshots = request.onPruneSnapshots,
+            onExportSummary = request.onExportSummary,
+        ).show()
     }
 
     private fun exportHistoryDiffSummary(
@@ -4705,25 +4445,6 @@ class SpecWorkflowPanel(
 
     private fun onWorkbenchActionRequested(action: SpecWorkflowWorkbenchAction) {
         workbenchCommandRouter.dispatch(action, currentWorkflow?.id)
-    }
-
-    private fun onPreviewVerificationPlanRequested(workflowId: String) {
-        SpecWorkflowActionSupport.runBackground(
-            project = project,
-            title = SpecCodingBundle.message("spec.action.verify.preview"),
-            task = {
-                val plan = specVerificationService.preview(workflowId)
-                val scopeTasks = specTasksService.parse(workflowId).sortedBy(StructuredTask::id)
-                SpecWorkflowActionSupport.verificationPlanSummary(plan, scopeTasks)
-            },
-            onSuccess = { summary ->
-                SpecWorkflowActionSupport.showInfo(
-                    project = project,
-                    title = SpecCodingBundle.message("spec.action.verify.confirm.title"),
-                    message = summary,
-                )
-            },
-        )
     }
 
     private fun buildPreferredDeltaSummary(delta: SpecWorkflowDelta): String {
