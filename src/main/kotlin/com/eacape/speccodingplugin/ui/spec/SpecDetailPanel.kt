@@ -2500,6 +2500,14 @@ class SpecDetailPanel(
         actionBarButtons.generate.doClick()
     }
 
+    internal fun clickNextPhaseForTest() {
+        actionBarButtons.nextPhase.doClick()
+    }
+
+    internal fun clickGoBackForTest() {
+        actionBarButtons.goBack.doClick()
+    }
+
     internal fun clickEditForTest() {
         actionBarButtons.edit.doClick()
     }

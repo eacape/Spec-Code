@@ -39,7 +39,7 @@ class SpecWorkflowPanelWorktreeTroubleshootingPlatformTest : BasePlatformTestCas
         waitUntil {
             panel.isDetailModeForTest() && panel.selectedWorkflowIdForTest() == workflow.id
         }
-        waitUntil {
+        waitUntil(timeoutMs = 30_000) {
             panel.workspaceSummarySnapshotForTest().getValue("stageValue").isNotBlank()
         }
 

@@ -68,6 +68,52 @@ class SpecWorkflowPanelStageTransitionPlatformTest : BasePlatformTestCase() {
         )
     }
 
+    fun `test detail next phase should still refresh workflow summary and document binding`() {
+        val storage = SpecStorage.getInstance(project)
+        val workflow = SpecEngine.getInstance(project).createWorkflow(
+            title = "Detail Next Phase Smoke",
+            description = "detail next phase should stay wired through the panel",
+        ).getOrThrow()
+        stageWorkflow(
+            workflowId = workflow.id,
+            currentStage = StageId.DESIGN,
+        )
+        val panel = createPanel()
+
+        waitUntil(30_000) {
+            workflow.id in panel.workflowIdsForTest()
+        }
+
+        ApplicationManager.getApplication().invokeAndWait {
+            panel.openWorkflowForTest(workflow.id)
+        }
+
+        waitForDetailNextReady(panel, workflow.id)
+
+        ApplicationManager.getApplication().invokeAndWait {
+            panel.clickDetailNextPhaseForTest()
+        }
+
+        waitUntil(30_000) {
+            storage.loadWorkflow(workflow.id).getOrThrow().currentStage == StageId.TASKS
+        }
+
+        waitUntil(30_000) {
+            panel.focusedStageForTest() == StageId.TASKS &&
+                panel.selectedDocumentPhaseForTest() == SpecPhase.IMPLEMENT.name &&
+                panel.workspaceSummarySnapshotForTest().getValue("stageValue").contains(
+                    SpecWorkflowOverviewPresenter.stageLabel(StageId.TASKS),
+                )
+        }
+
+        val persistedWorkflow = storage.loadWorkflow(workflow.id).getOrThrow()
+
+        assertEquals(StageId.TASKS, persistedWorkflow.currentStage)
+        assertEquals(SpecPhase.IMPLEMENT, persistedWorkflow.currentPhase)
+        assertEquals(StageId.TASKS, panel.focusedStageForTest())
+        assertEquals(SpecPhase.IMPLEMENT.name, panel.selectedDocumentPhaseForTest())
+    }
+
     private fun stageWorkflow(
         workflowId: String,
         currentStage: StageId,
@@ -246,6 +292,32 @@ class SpecWorkflowPanelStageTransitionPlatformTest : BasePlatformTestCase() {
                 "documentPhase=${panel.selectedDocumentPhaseForTest()}, " +
                 "blockers=${overview["blockers"]}, " +
                 "checklist=${overview["checklist"]}",
+        )
+    }
+
+    private fun waitForDetailNextReady(panel: SpecWorkflowPanel, workflowId: String) {
+        val deadline = System.currentTimeMillis() + 30_000
+        while (System.currentTimeMillis() < deadline) {
+            UIUtil.dispatchAllInvocationEvents()
+            val detailButtons = panel.detailButtonStatesForTest()
+            if (
+                panel.isDetailModeForTest() &&
+                panel.selectedWorkflowIdForTest() == workflowId &&
+                panel.focusedStageForTest() == StageId.DESIGN &&
+                detailButtons["nextEnabled"] == true &&
+                panel.selectedDocumentPhaseForTest() == SpecPhase.DESIGN.name
+            ) {
+                return
+            }
+            Thread.sleep(50)
+        }
+        fail(
+            "Detail next action was not ready: " +
+                "detailMode=${panel.isDetailModeForTest()}, " +
+                "selected=${panel.selectedWorkflowIdForTest()}, " +
+                "focusedStage=${panel.focusedStageForTest()}, " +
+                "documentPhase=${panel.selectedDocumentPhaseForTest()}, " +
+                "detailButtons=${panel.detailButtonStatesForTest()}",
         )
     }
 }

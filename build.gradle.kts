@@ -457,7 +457,12 @@ tasks {
         taskDescription = "Run targeted BasePlatformTestCase smoke tests outside the default CI fast path",
         classNames = listOf(
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowSelectionServiceTest",
+            "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelCodeGraphPlatformTest",
+            "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelComposerSourcePlatformTest",
+            "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelDocumentSavePlatformTest",
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowGateDetailsPanelTest",
+            "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelLifecyclePlatformTest",
+            "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelListActionsPlatformTest",
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelStageTransitionPlatformTest",
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelGenerationTroubleshootingPlatformTest",
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelVerifyTroubleshootingPlatformTest",

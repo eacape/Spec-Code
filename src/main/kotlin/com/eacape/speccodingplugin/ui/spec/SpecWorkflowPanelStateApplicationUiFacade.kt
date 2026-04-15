@@ -5,7 +5,6 @@ import com.eacape.speccodingplugin.spec.SpecWorkflow
 import com.eacape.speccodingplugin.spec.StructuredTask
 import com.eacape.speccodingplugin.spec.TaskExecutionLiveProgress
 import com.eacape.speccodingplugin.spec.WorkflowSourceAsset
-import com.eacape.speccodingplugin.spec.WorkflowStatus
 import javax.swing.JButton
 
 internal data class SpecWorkflowStateApplicationUiPanels(
@@ -142,10 +141,11 @@ internal class SpecWorkflowPanelStateApplicationUiFacade(
     }
 
     override fun updateWorkflowActionAvailability(workflow: SpecWorkflow) {
-        buttons.createWorktreeButton.isEnabled = true
-        buttons.mergeWorktreeButton.isEnabled = true
-        buttons.deltaButton.isEnabled = true
-        buttons.archiveButton.isEnabled = workflow.status == WorkflowStatus.COMPLETED
+        val availability = SpecWorkflowToolbarActionAvailabilityBuilder.build(workflow)
+        buttons.createWorktreeButton.isEnabled = availability.createWorktreeEnabled
+        buttons.mergeWorktreeButton.isEnabled = availability.mergeWorktreeEnabled
+        buttons.deltaButton.isEnabled = availability.deltaEnabled
+        buttons.archiveButton.isEnabled = availability.archiveEnabled
     }
 
     override fun showWorkflowLoadInProgress() {

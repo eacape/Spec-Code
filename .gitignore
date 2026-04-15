@@ -79,3 +79,5 @@ logs/
 /.gradle-spec-detail-verify/
 /.gradle-*/
 /.codex-validation-*/
+/platform-test-sandbox/
+/build*/
