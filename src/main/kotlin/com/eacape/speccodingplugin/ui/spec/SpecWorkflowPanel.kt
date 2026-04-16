@@ -46,17 +46,15 @@ import com.intellij.ui.JBColor
 import com.intellij.ui.SimpleListCellRenderer
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
-import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import java.awt.CardLayout
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
 import java.awt.Cursor
 import java.awt.Dimension
-import java.awt.Rectangle
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
 import java.awt.FlowLayout
@@ -65,18 +63,12 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Locale
-import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
-import javax.swing.Box
-import javax.swing.BoxLayout
 import javax.swing.BorderFactory
 import javax.swing.JButton
 import javax.swing.Icon
 import javax.swing.JPanel
 import javax.swing.JSplitPane
-import javax.swing.ScrollPaneConstants
-import javax.swing.Scrollable
-import javax.swing.SwingConstants
 import javax.swing.Timer
 
 class SpecWorkflowPanel(
@@ -539,46 +531,7 @@ class SpecWorkflowPanel(
     }
     private val documentWorkspaceViewAdapter by lazy(LazyThreadSafetyMode.NONE) {
         SpecWorkflowDocumentWorkspaceViewAdapter(
-            ui = object : SpecWorkflowDocumentWorkspaceViewUi {
-                override fun setDocumentWorkspaceTabsVisible(visible: Boolean) {
-                    if (!::documentWorkspaceViewTabsPanel.isInitialized) {
-                        return
-                    }
-                    documentWorkspaceViewTabsPanel.isVisible = visible
-                }
-
-                override fun showDocumentWorkspaceCard(view: DocumentWorkspaceView) {
-                    if (!::documentWorkspaceViewCardPanel.isInitialized) {
-                        return
-                    }
-                    (documentWorkspaceViewCardPanel.layout as CardLayout).show(
-                        documentWorkspaceViewCardPanel,
-                        when (view) {
-                            DocumentWorkspaceView.DOCUMENT -> DOCUMENT_WORKSPACE_CARD_DOCUMENT
-                            DocumentWorkspaceView.STRUCTURED_TASKS -> DOCUMENT_WORKSPACE_CARD_STRUCTURED_TASKS
-                        },
-                    )
-                }
-
-                override fun refreshDocumentWorkspaceViewButtons() {
-                    documentWorkspaceViewButtons.values.forEach(::refreshDocumentWorkspaceViewButtonStyle)
-                }
-
-                override fun syncStructuredTaskSelection(taskId: String?) {
-                    this@SpecWorkflowPanel.syncStructuredTaskSelection(taskId)
-                }
-
-                override fun refreshDocumentWorkspaceContainers() {
-                    if (::documentWorkspaceViewTabsPanel.isInitialized) {
-                        documentWorkspaceViewTabsPanel.revalidate()
-                        documentWorkspaceViewTabsPanel.repaint()
-                    }
-                    if (::documentWorkspaceViewCardPanel.isInitialized) {
-                        documentWorkspaceViewCardPanel.revalidate()
-                        documentWorkspaceViewCardPanel.repaint()
-                    }
-                }
-            },
+            ui = documentWorkspaceViewChrome.uiHost,
             selectedView = { selectedDocumentWorkspaceView },
             selectedStructuredTaskId = { selectedStructuredTaskId },
             supportsStructuredTasksDocumentWorkspaceView = ::supportsStructuredTasksDocumentWorkspaceView,
@@ -588,7 +541,7 @@ class SpecWorkflowPanel(
         SpecWorkflowWorkspaceStateApplicationHost(
             workspaceUi = object : SpecWorkflowWorkspaceStateApplicationUi {
                 override fun showWorkspaceContent() {
-                    this@SpecWorkflowPanel.showWorkspaceContent()
+                    workspaceChromeUiHost.showWorkspaceContent()
                 }
 
                 override fun updateOverview(
@@ -602,14 +555,7 @@ class SpecWorkflowPanel(
                 }
 
                 override fun applySummary(presentation: SpecWorkflowWorkspaceSummaryPresentation) {
-                    workspaceSummaryTitleLabel.text = presentation.title
-                    workspaceSummaryMetaLabel.text = presentation.meta
-                    workspaceSummaryFocusLabel.text = presentation.focusTitle
-                    workspaceSummaryHintLabel.text = presentation.focusSummary
-                    updateWorkspaceMetric(metric = workspaceStageMetric, presentation = presentation.stageMetric)
-                    updateWorkspaceMetric(metric = workspaceGateMetric, presentation = presentation.gateMetric)
-                    updateWorkspaceMetric(metric = workspaceTasksMetric, presentation = presentation.tasksMetric)
-                    updateWorkspaceMetric(metric = workspaceVerifyMetric, presentation = presentation.verifyMetric)
+                    workspacePresentationUiHost.applySummary(presentation)
                 }
 
                 override fun updateWorkbenchState(
@@ -635,23 +581,11 @@ class SpecWorkflowPanel(
                     visibleSectionIds: Set<SpecWorkflowWorkspaceSectionId>,
                     expandedStates: Map<SpecWorkflowWorkspaceSectionId, Boolean>,
                 ) {
-                    if (::overviewSection.isInitialized) {
-                        overviewSection.setSummary(summaries.overview)
-                        tasksSection.setSummary(summaries.tasks)
-                        gateSection.setSummary(summaries.gate)
-                        verifySection.setSummary(summaries.verify)
-                        documentsSection.setSummary(summaries.documents)
-                        workspaceSections().forEach { (sectionId, section) ->
-                            expandedStates[sectionId]?.let { expanded ->
-                                section.setExpanded(expanded, notify = false)
-                            }
-                        }
-                    }
-                    workspaceSectionItems.forEach { (sectionId, item) ->
-                        item.isVisible = visibleSectionIds.contains(sectionId)
-                    }
-                    workspaceCardPanel.revalidate()
-                    workspaceCardPanel.repaint()
+                    workspacePresentationUiHost.applyWorkspaceSectionPresentation(
+                        summaries = summaries,
+                        visibleSectionIds = visibleSectionIds,
+                        expandedStates = expandedStates,
+                    )
                 }
             },
             workspacePresentationTelemetry = workspacePresentationTelemetry,
@@ -663,15 +597,15 @@ class SpecWorkflowPanel(
         SpecWorkflowWorkspaceEmptyStateAdapter(
             ui = object : SpecWorkflowWorkspaceEmptyStateUi {
                 override fun showWorkflowListOnlyMode() {
-                    this@SpecWorkflowPanel.showWorkflowListOnlyMode()
+                    workspaceChromeUiHost.showWorkflowListOnlyMode()
                 }
 
                 override fun setBackToListEnabled(enabled: Boolean) {
-                    backToListButton.isEnabled = enabled
+                    workspaceChromeUiHost.setBackToListEnabled(enabled)
                 }
 
                 override fun showWorkspaceEmptyCard() {
-                    workspaceCardLayout.show(workspaceCardPanel, WORKSPACE_CARD_EMPTY)
+                    workspaceChromeUiHost.showWorkspaceEmptyCard()
                 }
 
                 override fun clearWorkspaceState() {
@@ -687,29 +621,15 @@ class SpecWorkflowPanel(
                 }
 
                 override fun clearWorkspaceSummary() {
-                    workspaceSummaryTitleLabel.text = ""
-                    workspaceSummaryMetaLabel.text = ""
-                    workspaceSummaryFocusLabel.text = ""
-                    workspaceSummaryHintLabel.text = ""
-                    clearWorkspaceMetric(workspaceStageMetric)
-                    clearWorkspaceMetric(workspaceGateMetric)
-                    clearWorkspaceMetric(workspaceTasksMetric)
-                    clearWorkspaceMetric(workspaceVerifyMetric)
+                    workspacePresentationUiHost.clearSummary()
                 }
 
                 override fun resetWorkspaceSections() {
-                    if (::overviewSection.isInitialized) {
-                        workspaceSections().values.forEach { section ->
-                            section.setSummary(null)
-                            section.setExpanded(true, notify = false)
-                        }
-                    }
+                    workspacePresentationUiHost.resetWorkspaceSections()
                 }
 
                 override fun showAllWorkspaceSections() {
-                    workspaceSectionItems.values.forEach { item ->
-                        item.isVisible = true
-                    }
+                    workspacePresentationUiHost.showAllWorkspaceSections()
                 }
 
                 override fun resetDocumentWorkspaceView() {
@@ -750,7 +670,7 @@ class SpecWorkflowPanel(
                 }
 
                 override fun showWorkspaceEmptyState() {
-                    this@SpecWorkflowPanel.showWorkspaceEmptyState()
+                    workflowWorkspaceEmptyStateAdapter.showEmptyState()
                 }
             },
         )
@@ -796,7 +716,7 @@ class SpecWorkflowPanel(
             onApplyPendingOpenWorkflowRequest = { workflowId ->
                 workflowLoadEntryCoordinator.applyPendingOpenWorkflowRequestIfNeeded(workflowId)
             },
-            showWorkspaceContent = ::showWorkspaceContent,
+            showWorkspaceContent = { workspaceChromeUiHost.showWorkspaceContent() },
         )
     }
     private val workflowStateApplicationAdapter by lazy(LazyThreadSafetyMode.NONE) {
@@ -884,7 +804,7 @@ class SpecWorkflowPanel(
         showRefreshFeedback = {
             val successText = SpecCodingBundle.message("common.refresh.success")
             RefreshFeedback.flashButtonSuccess(refreshButton, successText)
-            RefreshFeedback.flashLabelSuccess(statusLabel, successText, STATUS_SUCCESS_FG)
+            RefreshFeedback.flashLabelSuccess(statusStripUiHost.statusLabel, successText, STATUS_SUCCESS_FG)
         },
     )
     private val workflowExternalEventCoordinator = SpecWorkflowExternalEventCoordinator(SPEC_DOCUMENT_FILE_NAMES)
@@ -1198,6 +1118,122 @@ class SpecWorkflowPanel(
             compactErrorMessage(error, fallback)
         },
     )
+    private val generationExecutionCoordinator = SpecWorkflowGenerationExecutionCoordinator(
+        backgroundRunner = object : SpecWorkflowGenerationExecutionBackgroundRunner {
+            override fun launch(task: suspend () -> Unit): SpecWorkflowGenerationExecutionHandle {
+                val job = taskCoordinator.launchIo {
+                    task()
+                }
+                return SpecWorkflowGenerationExecutionHandle { reason ->
+                    job.cancel(CancellationException(reason))
+                }
+            }
+        },
+        ui = object : SpecWorkflowGenerationExecutionUi {
+            override fun invokeLater(action: () -> Unit) {
+                invokeLaterSafe(action)
+            }
+
+            override fun isWorkflowSelected(workflowId: String): Boolean {
+                return selectedWorkflowId == workflowId
+            }
+
+            override fun showClarificationGenerating(prepared: SpecWorkflowPreparedClarificationDraftRequest) {
+                detailPanel.showClarificationGenerating(
+                    phase = prepared.context.phase,
+                    input = prepared.input,
+                    suggestedDetails = prepared.safeSuggestedDetails,
+                )
+                appendProcessTimelineEntries(prepared.initialTimelineEntries)
+                setStatusText(prepared.loadingStatusText)
+            }
+
+            override fun applyClarificationDraftResult(
+                prepared: SpecWorkflowPreparedClarificationDraftRequest,
+                result: SpecWorkflowClarificationDraftResult,
+            ) {
+                detailPanel.showClarificationDraft(
+                    phase = result.phase,
+                    input = prepared.input,
+                    questionsMarkdown = result.questionsMarkdown,
+                    suggestedDetails = prepared.safeSuggestedDetails,
+                    structuredQuestions = result.structuredQuestions,
+                )
+                rememberClarificationRetry(
+                    workflowId = prepared.context.workflowId,
+                    input = prepared.input,
+                    confirmedContext = prepared.safeSuggestedDetails,
+                    questionsMarkdown = result.questionsMarkdown,
+                    structuredQuestions = result.structuredQuestions,
+                    clarificationRound = prepared.clarificationRound,
+                    lastError = result.errorText,
+                )
+                appendProcessTimelineEntries(listOf(result.timelineEntry))
+                if (result.troubleshootingTrigger != null) {
+                    setRuntimeTroubleshootingStatus(
+                        prepared.context.workflowId,
+                        result.statusText,
+                        result.troubleshootingTrigger,
+                    )
+                } else {
+                    setStatusText(result.statusText)
+                }
+            }
+
+            override fun applyGenerationProgress(
+                workflowId: String,
+                input: String,
+                update: SpecWorkflowGenerationProgressUpdate,
+            ) {
+                applyGenerationProgressUpdate(
+                    workflowId = workflowId,
+                    input = input,
+                    update = update,
+                )
+            }
+
+            override fun handleClarificationInterrupted(
+                workflowId: String,
+                input: String,
+                options: GenerationOptions,
+            ) {
+                val interruptedMessage = SpecCodingBundle.message("spec.workflow.generation.interrupted")
+                if (selectedWorkflowId != workflowId) {
+                    return
+                }
+                detailPanel.appendProcessTimelineEntry(
+                    text = SpecCodingBundle.message("spec.workflow.process.clarify.failed", interruptedMessage),
+                    state = SpecDetailPanel.ProcessTimelineState.FAILED,
+                )
+                rememberClarificationRetry(
+                    workflowId = workflowId,
+                    input = input,
+                    confirmedContext = options.confirmedContext,
+                    clarificationRound = clarificationRetryStore.current(workflowId)?.clarificationRound,
+                    lastError = interruptedMessage,
+                )
+                detailPanel.showGenerationFailed()
+                setStatusText(SpecCodingBundle.message("spec.workflow.error", interruptedMessage))
+            }
+        },
+        generationCoordinator = generationCoordinator,
+        draftClarification = { workflowId, input, options ->
+            specEngine.draftCurrentPhaseClarification(
+                workflowId = workflowId,
+                input = input,
+                options = options,
+            )
+        },
+        generateCurrentPhase = specEngine::generateCurrentPhase,
+        cancelRequestAcrossProviders = { providerId, requestId ->
+            llmRouter.cancel(providerId = providerId, requestId = requestId)
+            llmRouter.cancel(providerId = ClaudeCliLlmProvider.ID, requestId = requestId)
+            llmRouter.cancel(providerId = CodexCliLlmProvider.ID, requestId = requestId)
+        },
+        logClarificationDraftFailure = { workflowId, error ->
+            logger.warn("Failed to draft clarification for workflow=$workflowId", error)
+        },
+    )
     private val clarificationRetryStore = SpecWorkflowClarificationRetryStore(
         persistState = { workflowId, state ->
             taskCoordinator.launchIo {
@@ -1208,56 +1244,6 @@ class SpecWorkflowPanel(
                     logger.warn("Failed to persist clarification retry state for workflow=$workflowId", error)
                 }
             }
-        },
-    )
-    private val clarificationActionCoordinator = SpecWorkflowClarificationActionCoordinator(
-        retryStore = clarificationRetryStore,
-        resolveSelectedWorkflow = ::resolveSelectedWorkflowForClarification,
-        resolveGenerationContext = ::resolveGenerationContext,
-        selectedWorkflowId = { selectedWorkflowId },
-        currentWorkflow = { currentWorkflow },
-        appendTimelineEntry = { entry ->
-            appendProcessTimelineEntries(listOf(entry))
-        },
-        setStatusText = ::setStatusText,
-        unlockClarificationChecklistInteractions = {
-            detailPanel.unlockClarificationChecklistInteractions()
-        },
-        cancelActiveGenerationRequest = ::cancelActiveGenerationRequest,
-        requestClarificationDraft = { request ->
-            requestClarificationDraft(
-                context = request.context,
-                input = request.input,
-                options = request.options,
-                suggestedDetails = request.suggestedDetails,
-                seedQuestionsMarkdown = request.seedQuestionsMarkdown,
-                seedStructuredQuestions = request.seedStructuredQuestions,
-                clarificationRound = request.clarificationRound,
-            )
-        },
-        runGeneration = { request ->
-            runGeneration(
-                workflowId = request.workflowId,
-                input = request.input,
-                options = request.options,
-            )
-        },
-        launchRequirementsRepairClarification = { request ->
-            launchRequirementsRepairClarification(
-                workflow = request.workflow,
-                input = request.input,
-                suggestedDetails = request.suggestedDetails,
-                pendingRetry = request.pendingRetry,
-                clarificationRound = request.clarificationRound,
-            )
-        },
-        continueRequirementsRepairAfterClarification = { request ->
-            continueRequirementsRepairAfterClarification(
-                workflowId = request.workflowId,
-                pendingRetry = request.pendingRetry,
-                input = request.input,
-                confirmedContext = request.confirmedContext,
-            )
         },
     )
     private val gateRequirementsRepairCoordinator = SpecWorkflowGateRequirementsRepairCoordinator(
@@ -1273,6 +1259,134 @@ class SpecWorkflowPanel(
                 error = error,
             )
         },
+    )
+    private val requirementsRepairClarificationCoordinator = SpecWorkflowRequirementsRepairClarificationCoordinator(
+        retryStore = clarificationRetryStore,
+        gateRequirementsRepairCoordinator = gateRequirementsRepairCoordinator,
+        resolveProviderId = { providerComboBox.selectedItem as? String },
+        resolveModelId = { (modelComboBox.selectedItem as? ModelInfo)?.id },
+        resolveWorkflowSourceUsage = ::resolveComposerSourceUsage,
+        requestClarificationDraft = generationExecutionCoordinator::requestClarificationDraft,
+        previewAndApply = { request ->
+            RequirementsSectionRepairUiSupport.previewAndApply(
+                project = project,
+                workflowId = request.workflowId,
+                missingSections = request.missingSections,
+                confirmedContextOverride = request.confirmedContextOverride,
+                previewTitle = SpecCodingBundle.message("spec.toolwindow.gate.quickFix.clarify.progress.preview"),
+                applyTitle = SpecCodingBundle.message("spec.toolwindow.gate.quickFix.clarify.progress.apply"),
+                onPreviewCancelled = request.onPreviewCancelled,
+                onNoop = request.onNoop,
+                onApplied = {
+                    request.onApplied()
+                },
+                onFailure = request.onFailure,
+            )
+        },
+        appendTimelineEntry = { entry ->
+            appendProcessTimelineEntries(listOf(entry))
+        },
+        showClarificationManualFallback = { fallback ->
+            detailPanel.showClarificationDraft(
+                phase = fallback.phase,
+                input = fallback.input,
+                questionsMarkdown = fallback.questionsMarkdown,
+                suggestedDetails = fallback.suggestedDetails,
+                structuredQuestions = emptyList(),
+            )
+        },
+        setStatusText = ::setStatusText,
+        unlockClarificationChecklistInteractions = {
+            detailPanel.unlockClarificationChecklistInteractions()
+        },
+        exitClarificationMode = { clearInput ->
+            detailPanel.exitClarificationMode(clearInput = clearInput)
+        },
+        reloadRequirementsWorkflow = { focusRequirements ->
+            reloadCurrentWorkflow(followCurrentPhase = true) {
+                if (focusRequirements) {
+                    focusStage(StageId.REQUIREMENTS)
+                }
+            }
+        },
+        openRequirementsDocument = { path ->
+            runCatching {
+                SpecWorkflowActionSupport.openFile(project, path)
+            }
+        },
+        showInfo = { title, message ->
+            SpecWorkflowActionSupport.showInfo(
+                project,
+                title,
+                message,
+            )
+        },
+        renderFailureMessage = { error ->
+            compactErrorMessage(error, SpecCodingBundle.message("common.unknown"))
+        },
+    )
+    private val requirementsRepairEntryCoordinator = SpecWorkflowRequirementsRepairEntryCoordinator(
+        retryStore = clarificationRetryStore,
+        resolveWorkflow = { workflowId ->
+            currentWorkflow?.takeIf { workflow -> workflow.id == workflowId }
+        },
+        gateRequirementsRepairCoordinator = gateRequirementsRepairCoordinator,
+        showWorkspaceContent = {
+            workspaceChromeUiHost.showWorkspaceContent()
+        },
+        focusStage = ::focusStage,
+        clearProcessTimeline = {
+            detailPanel.clearProcessTimeline()
+        },
+        appendTimelineEntry = { entry ->
+            appendProcessTimelineEntries(listOf(entry))
+        },
+        launchClarification = requirementsRepairClarificationCoordinator::launchClarification,
+    )
+    private val clarificationActionCoordinator = SpecWorkflowClarificationActionCoordinator(
+        retryStore = clarificationRetryStore,
+        resolveSelectedWorkflow = ::resolveSelectedWorkflowForClarification,
+        resolveGenerationContext = ::resolveGenerationContext,
+        selectedWorkflowId = { selectedWorkflowId },
+        currentWorkflow = { currentWorkflow },
+        appendTimelineEntry = { entry ->
+            appendProcessTimelineEntries(listOf(entry))
+        },
+        setStatusText = ::setStatusText,
+        unlockClarificationChecklistInteractions = {
+            detailPanel.unlockClarificationChecklistInteractions()
+        },
+        cancelActiveGenerationRequest = generationExecutionCoordinator::cancelActiveRequest,
+        requestClarificationDraft = generationExecutionCoordinator::requestClarificationDraft,
+        runGeneration = { request ->
+            generationExecutionCoordinator.runGeneration(
+                SpecWorkflowGenerationExecutionRequest(
+                    workflowId = request.workflowId,
+                    phase = currentWorkflow?.currentPhase ?: SpecPhase.SPECIFY,
+                    input = request.input,
+                    options = request.options,
+                ),
+            )
+        },
+        launchRequirementsRepairClarification = requirementsRepairClarificationCoordinator::launchClarification,
+        continueRequirementsRepairAfterClarification = requirementsRepairClarificationCoordinator::continueAfterClarification,
+    )
+    private val generationLaunchCoordinator = SpecWorkflowGenerationLaunchCoordinator(
+        retryStore = clarificationRetryStore,
+        resolveSelectedWorkflow = ::resolveSelectedWorkflowForClarification,
+        resolveGenerationContext = ::resolveGenerationContext,
+        clearProcessTimeline = {
+            detailPanel.clearProcessTimeline()
+        },
+        appendTimelineEntry = { entry ->
+            appendProcessTimelineEntries(listOf(entry))
+        },
+        generationCoordinator = generationCoordinator,
+        gateRequirementsRepairCoordinator = gateRequirementsRepairCoordinator,
+        runGeneration = generationExecutionCoordinator::runGeneration,
+        requestClarificationDraft = generationExecutionCoordinator::requestClarificationDraft,
+        launchRequirementsRepairClarification = requirementsRepairClarificationCoordinator::launchClarification,
+        continueRequirementsRepairAfterClarification = requirementsRepairClarificationCoordinator::continueAfterClarification,
     )
     private val gateArtifactRepairCoordinator = SpecWorkflowGateArtifactRepairCoordinator(
         backgroundRunner = object : SpecWorkflowGateArtifactRepairBackgroundRunner {
@@ -1598,7 +1712,7 @@ class SpecWorkflowPanel(
     private val gateDetailsPanel = SpecWorkflowGateDetailsPanel(
         project = project,
         showHeader = false,
-        onClarifyThenFillRequested = ::startRequirementsClarifyThenFill,
+        onClarifyThenFillRequested = requirementsRepairEntryCoordinator::startClarifyThenFill,
         onRepairRequirementsRequested = ::repairRequirementsArtifactFromGate,
         onRepairTasksRequested = ::repairTasksArtifactFromGate,
     )
@@ -1619,9 +1733,6 @@ class SpecWorkflowPanel(
             this@SpecWorkflowPanel.publishWorkflowSelection(workflowId)
         }
     }
-    private val statusLabel = JBLabel("")
-    private val statusActionPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0))
-    private val statusChipPanel = JPanel(BorderLayout())
     private val statusTroubleshootingActionDispatcher = SpecWorkflowTroubleshootingActionDispatcher(
         SpecWorkflowRuntimeTroubleshootingActionCallbacks(
             openSettingsAction = ::openTroubleshootingSettings,
@@ -1630,6 +1741,13 @@ class SpecWorkflowPanel(
                 onCreateWorkflow(template)
             },
         ),
+    )
+    private val statusStripUiHost = SpecWorkflowStatusStripUiHost(
+        statusChipBackground = STATUS_CHIP_BG,
+        statusChipBorder = STATUS_CHIP_BORDER,
+        statusTextColor = STATUS_TEXT_FG,
+        styleActionButton = ::styleToolbarButton,
+        performAction = statusTroubleshootingActionDispatcher::perform,
     )
     private val modelLabel = JBLabel(SpecCodingBundle.message("toolwindow.model.label"))
     private val providerComboBox = ComboBox<String>()
@@ -1643,30 +1761,21 @@ class SpecWorkflowPanel(
     private val archiveButton = JButton()
     private val backToListButton = JButton()
     private val refreshButton = JButton()
-    private val documentWorkspaceViewButtons = linkedMapOf<DocumentWorkspaceView, JButton>()
     private lateinit var centerContentPanel: JPanel
+    private lateinit var workspaceChromeUiHost: SpecWorkflowWorkspaceChromeUiHost
+    private lateinit var workspacePresentationUiHost: SpecWorkflowWorkspacePresentationUiHost
+    private lateinit var documentWorkspaceViewChrome: SpecWorkflowDocumentWorkspaceViewChrome
     private lateinit var listSectionContainer: JPanel
     private lateinit var workspacePanelContainer: JPanel
     private lateinit var mainSplitPane: JSplitPane
     private val workspaceCardLayout = CardLayout()
     private val workspaceCardPanel = JPanel(workspaceCardLayout)
-    private lateinit var documentWorkspaceViewLabel: JBLabel
-    private val workspaceSummaryTitleLabel = JBLabel()
-    private val workspaceSummaryMetaLabel = JBLabel()
-    private val workspaceSummaryFocusLabel = JBLabel()
-    private val workspaceSummaryHintLabel = JBLabel()
-    private val workspaceStageMetric = createWorkspaceSummaryMetric()
-    private val workspaceGateMetric = createWorkspaceSummaryMetric()
-    private val workspaceTasksMetric = createWorkspaceSummaryMetric()
-    private val workspaceVerifyMetric = createWorkspaceSummaryMetric()
+    private lateinit var workspaceSummaryUi: SpecWorkflowWorkspaceSummaryUi
     private lateinit var overviewSection: SpecCollapsibleWorkspaceSection
     private lateinit var tasksSection: SpecCollapsibleWorkspaceSection
     private lateinit var gateSection: SpecCollapsibleWorkspaceSection
     private lateinit var verifySection: SpecCollapsibleWorkspaceSection
     private lateinit var documentsSection: SpecCollapsibleWorkspaceSection
-    private lateinit var documentWorkspaceViewTabsPanel: JPanel
-    private lateinit var documentWorkspaceViewSwitcherPanel: JPanel
-    private lateinit var documentWorkspaceViewCardPanel: JPanel
     private val workspaceSectionItems = mutableMapOf<SpecWorkflowWorkspaceSectionId, JPanel>()
     private val currentWorkspaceState: SpecWorkflowWorkspaceAppliedState?
         get() = workflowWorkspaceStateHost.currentState()
@@ -1674,8 +1783,6 @@ class SpecWorkflowPanel(
         get() = currentWorkspaceState?.workbenchState
     private val currentStructuredTasks: List<StructuredTask>
         get() = currentWorkspaceState?.tasks.orEmpty()
-    private var activeGenerationJob: Job? = null
-    private var activeGenerationRequest: SpecWorkflowActiveGenerationRequest? = null
     private val liveProgressRefreshDispatchQueued = AtomicBoolean(false)
     private val liveProgressRefreshLoadInFlight = AtomicBoolean(false)
     @Volatile
@@ -1846,8 +1953,6 @@ class SpecWorkflowPanel(
         styleToolbarButton(codeGraphButton)
         styleToolbarButton(archiveButton)
 
-        statusLabel.font = JBUI.Fonts.smallFont()
-        statusLabel.foreground = STATUS_TEXT_FG
         setupGenerationControls()
 
         val controlsRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
@@ -1855,7 +1960,7 @@ class SpecWorkflowPanel(
             add(providerComboBox)
             add(modelLabel)
             add(modelComboBox)
-            add(statusChipPanel)
+            add(statusStripUiHost.statusChipPanel)
         }
         val actionsRow = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(2), 0)).apply {
             isOpaque = false
@@ -1870,21 +1975,6 @@ class SpecWorkflowPanel(
             add(controlsRow, BorderLayout.CENTER)
             add(actionsRow, BorderLayout.EAST)
         }
-        statusChipPanel.isOpaque = true
-        statusChipPanel.background = STATUS_CHIP_BG
-        statusChipPanel.border = SpecUiStyle.roundedCardBorder(
-            lineColor = STATUS_CHIP_BORDER,
-            arc = JBUI.scale(10),
-            top = 1,
-            left = 6,
-            bottom = 1,
-            right = 6,
-        )
-        statusActionPanel.isOpaque = false
-        statusActionPanel.isVisible = false
-        statusChipPanel.removeAll()
-        statusChipPanel.add(statusLabel, BorderLayout.CENTER)
-        statusChipPanel.add(statusActionPanel, BorderLayout.EAST)
         val toolbarCard = JPanel(BorderLayout()).apply {
             isOpaque = true
             background = TOOLBAR_BG
@@ -1949,8 +2039,31 @@ class SpecWorkflowPanel(
             isOpaque = false
         }
         add(centerContentPanel, BorderLayout.CENTER)
+        workspaceChromeUiHost = SpecWorkflowWorkspaceChromeUiHost(
+            centerContentPanel = centerContentPanel,
+            listSectionContainer = listSectionContainer,
+            workspacePanelContainer = workspacePanelContainer,
+            workspaceCardLayout = workspaceCardLayout,
+            workspaceCardPanel = workspaceCardPanel,
+            backToListButton = backToListButton,
+            setWorkspaceMode = { isWorkspaceMode = it },
+            emptyCardId = WORKSPACE_CARD_EMPTY,
+            contentCardId = WORKSPACE_CARD_CONTENT,
+        )
+        workspacePresentationUiHost = SpecWorkflowWorkspacePresentationUiHostBuilder(
+            summaryUi = workspaceSummaryUi,
+            sections = SpecWorkflowWorkspaceCardSections(
+                overview = overviewSection,
+                tasks = tasksSection,
+                gate = gateSection,
+                verify = verifySection,
+                documents = documentsSection,
+            ),
+            sectionItems = workspaceSectionItems,
+            sectionContainer = workspaceCardPanel,
+        ).build()
         setStatusText(null)
-        showWorkspaceEmptyState()
+        workflowWorkspaceEmptyStateAdapter.showEmptyState()
     }
 
     private fun clampDividerLocation(split: JSplitPane) {
@@ -1968,434 +2081,50 @@ class SpecWorkflowPanel(
         detailDividerLocation = clamped
     }
 
-    private fun showWorkflowListOnlyMode() {
-        isWorkspaceMode = false
-        reparentToCenter(listSectionContainer)
-    }
-
-    private fun showWorkflowWorkspaceMode() {
-        isWorkspaceMode = true
-        reparentToCenter(workspacePanelContainer)
-    }
-
-    private fun reparentToCenter(component: Component) {
-        detachFromParent(component)
-        if (centerContentPanel.componentCount == 1 && centerContentPanel.getComponent(0) === component) {
-            return
-        }
-        centerContentPanel.removeAll()
-        centerContentPanel.add(component, BorderLayout.CENTER)
-        centerContentPanel.revalidate()
-        centerContentPanel.repaint()
-    }
-
-    private fun detachFromParent(component: Component) {
-        component.parent?.remove(component)
-    }
-
-    private fun createWorkspaceSummaryMetric(): WorkspaceSummaryMetric {
-        val titleLabel = JBLabel().apply {
-            font = JBUI.Fonts.smallFont().deriveFont(10.5f)
-            foreground = WORKSPACE_SUMMARY_LABEL_FG
-            isOpaque = false
-            border = JBUI.Borders.empty()
-        }
-        val valueLabel = JBLabel().apply {
-            font = JBUI.Fonts.smallFont().deriveFont(Font.BOLD, 10.5f)
-            isOpaque = false
-            border = JBUI.Borders.empty()
-        }
-        val root = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(3), 0)).apply {
-            isOpaque = false
-            isVisible = false
-            add(titleLabel)
-            add(valueLabel)
-        }
-        return WorkspaceSummaryMetric(
-            root = root,
-            titleLabel = titleLabel,
-            valueLabel = valueLabel,
-        )
-    }
-
-    private fun workspaceChipColors(tone: SpecWorkflowWorkspaceChipTone): WorkspaceChipColors {
-        return when (tone) {
-            SpecWorkflowWorkspaceChipTone.INFO -> WorkspaceChipColors(
-                foreground = WORKSPACE_INFO_CHIP_FG,
-            )
-
-            SpecWorkflowWorkspaceChipTone.SUCCESS -> WorkspaceChipColors(
-                foreground = WORKSPACE_SUCCESS_CHIP_FG,
-            )
-
-            SpecWorkflowWorkspaceChipTone.WARNING -> WorkspaceChipColors(
-                foreground = WORKSPACE_WARNING_CHIP_FG,
-            )
-
-            SpecWorkflowWorkspaceChipTone.ERROR -> WorkspaceChipColors(
-                foreground = WORKSPACE_ERROR_CHIP_FG,
-            )
-
-            SpecWorkflowWorkspaceChipTone.MUTED -> WorkspaceChipColors(
-                foreground = WORKSPACE_MUTED_CHIP_FG,
-            )
-        }
-    }
-
     private fun buildWorkspaceCardPanel(): JPanel {
-        val sectionsStack = object : JPanel(), Scrollable {
-            override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
-
-            override fun getScrollableUnitIncrement(
-                visibleRect: Rectangle,
-                orientation: Int,
-                direction: Int,
-            ): Int = JBUI.scale(WORKSPACE_SCROLL_UNIT_INCREMENT)
-
-            override fun getScrollableBlockIncrement(
-                visibleRect: Rectangle,
-                orientation: Int,
-                direction: Int,
-            ): Int {
-                val unit = getScrollableUnitIncrement(visibleRect, orientation, direction)
-                return if (orientation == SwingConstants.VERTICAL) {
-                    (visibleRect.height - unit).coerceAtLeast(unit)
-                } else {
-                    (visibleRect.width - unit).coerceAtLeast(unit)
-                }
-            }
-
-            override fun getScrollableTracksViewportWidth(): Boolean = true
-
-            override fun getScrollableTracksViewportHeight(): Boolean = false
-        }.apply {
-            layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            isOpaque = false
-            border = JBUI.Borders.empty(0, 0, 4, 0)
-        }
-
-        val summaryCard = buildWorkspaceSummaryCard()
-        sectionsStack.add(createWorkspaceStackItem(summaryCard))
-        sectionsStack.add(Box.createVerticalStrut(JBUI.scale(6)))
-
-        overviewSection = createWorkspaceSection(
-            id = SpecWorkflowWorkspaceSectionId.OVERVIEW,
-            titleProvider = { SpecCodingBundle.message("spec.toolwindow.section.overview") },
-            content = overviewPanel,
-        )
-        tasksSection = createWorkspaceSection(
-            id = SpecWorkflowWorkspaceSectionId.TASKS,
-            titleProvider = { SpecCodingBundle.message("spec.toolwindow.section.tasks") },
-            content = tasksPanel,
-            maxExpandedBodyHeight = SCROLLABLE_WORKSPACE_SECTION_MAX_HEIGHT,
-        )
-        gateSection = createWorkspaceSection(
-            id = SpecWorkflowWorkspaceSectionId.GATE,
-            titleProvider = { SpecCodingBundle.message("spec.toolwindow.section.gate") },
-            content = gateDetailsPanel,
-            maxExpandedBodyHeight = SCROLLABLE_WORKSPACE_SECTION_MAX_HEIGHT,
-        )
-        verifySection = createWorkspaceSection(
-            id = SpecWorkflowWorkspaceSectionId.VERIFY,
-            titleProvider = { SpecCodingBundle.message("spec.toolwindow.section.verify") },
-            content = verifyDeltaPanel,
-            maxExpandedBodyHeight = SCROLLABLE_WORKSPACE_SECTION_MAX_HEIGHT,
-        )
-        documentsSection = createWorkspaceSection(
-            id = SpecWorkflowWorkspaceSectionId.DOCUMENTS,
-            titleProvider = { SpecCodingBundle.message("spec.toolwindow.section.documents") },
-            content = buildDocumentWorkspaceContent(),
-        )
-
-        workspaceSectionItems.clear()
-        listOf(
-            SpecWorkflowWorkspaceSectionId.OVERVIEW to overviewSection,
-            SpecWorkflowWorkspaceSectionId.TASKS to tasksSection,
-            SpecWorkflowWorkspaceSectionId.GATE to gateSection,
-            SpecWorkflowWorkspaceSectionId.VERIFY to verifySection,
-            SpecWorkflowWorkspaceSectionId.DOCUMENTS to documentsSection,
-        ).forEachIndexed { index, (sectionId, section) ->
-            val item = createWorkspaceSectionItem(
-                content = section,
-                addBottomGap = index < 4,
-            )
-            workspaceSectionItems[sectionId] = item
-            sectionsStack.add(item)
-        }
-
-        val contentPanel = JPanel(BorderLayout()).apply {
-            isOpaque = false
-            val workspaceScrollPane = JBScrollPane(sectionsStack).apply {
-                border = JBUI.Borders.empty()
-                horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
-                verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
-                viewport.isOpaque = false
-                isOpaque = false
-                SpecUiStyle.applyFastVerticalScrolling(
-                    scrollPane = this,
-                    unitIncrement = WORKSPACE_SCROLL_UNIT_INCREMENT,
-                    blockIncrement = WORKSPACE_SCROLL_BLOCK_INCREMENT,
-                )
-            }
-            add(
-                workspaceScrollPane,
-                BorderLayout.CENTER,
-            )
-        }
-
-        workspaceCardPanel.apply {
-            isOpaque = false
-            add(buildWorkspaceEmptyState(), WORKSPACE_CARD_EMPTY)
-            add(contentPanel, WORKSPACE_CARD_CONTENT)
-        }
+        val workspaceCardChrome = SpecWorkflowWorkspaceCardBuilder(
+            workspaceCardPanel = workspaceCardPanel,
+            backToListButton = backToListButton,
+            overviewContent = overviewPanel,
+            tasksContent = tasksPanel,
+            gateContent = gateDetailsPanel,
+            verifyContent = verifyDeltaPanel,
+            documentsContent = buildDocumentWorkspaceContent(),
+            sectionItems = workspaceSectionItems,
+            onSectionExpandedChanged = { id, expanded ->
+                workflowWorkspaceStateHost.rememberSectionOverride(id, expanded)
+            },
+            emptyCardId = WORKSPACE_CARD_EMPTY,
+            contentCardId = WORKSPACE_CARD_CONTENT,
+        ).build()
+        workspaceSummaryUi = workspaceCardChrome.summaryUi
+        val sections = workspaceCardChrome.sections
+        overviewSection = sections.overview
+        tasksSection = sections.tasks
+        gateSection = sections.gate
+        verifySection = sections.verify
+        documentsSection = sections.documents
         return workspaceCardPanel
     }
 
     private fun buildDocumentWorkspaceContent(): JPanel {
-        documentWorkspaceViewButtons.clear()
-        documentWorkspaceViewLabel = JBLabel(SpecCodingBundle.message("spec.toolwindow.documents.view.label")).apply {
-            foreground = DOCUMENT_WORKSPACE_VIEW_LABEL_FG
-            font = JBUI.Fonts.smallFont().deriveFont(DOCUMENT_WORKSPACE_VIEW_LABEL_FONT_SIZE)
-        }
-        documentWorkspaceViewSwitcherPanel = JPanel(
-            FlowLayout(
-                FlowLayout.LEFT,
-                JBUI.scale(DOCUMENT_WORKSPACE_VIEW_SWITCHER_GAP),
-                0,
-            ),
-        ).apply {
-            isOpaque = true
-            background = DOCUMENT_WORKSPACE_VIEW_GROUP_BG
-            border = BorderFactory.createCompoundBorder(
-                SpecUiStyle.roundedLineBorder(
-                    DOCUMENT_WORKSPACE_VIEW_GROUP_BORDER,
-                    JBUI.scale(DOCUMENT_WORKSPACE_VIEW_GROUP_ARC),
-                ),
-                JBUI.Borders.empty(
-                    DOCUMENT_WORKSPACE_VIEW_GROUP_INSET,
-                    DOCUMENT_WORKSPACE_VIEW_GROUP_INSET,
-                ),
-            )
-        }
-        documentWorkspaceViewTabsPanel = JPanel(
-            FlowLayout(
-                FlowLayout.LEFT,
-                JBUI.scale(DOCUMENT_WORKSPACE_VIEW_ROW_GAP),
-                0,
-            ),
-        ).apply {
-            isOpaque = false
-            add(documentWorkspaceViewLabel)
-            add(documentWorkspaceViewSwitcherPanel)
-        }
-        documentWorkspaceViewSwitcherPanel.add(
-            createDocumentWorkspaceViewButton(
-                view = DocumentWorkspaceView.DOCUMENT,
-                labelKey = "spec.toolwindow.documents.view.document",
-                tooltipKey = "spec.toolwindow.documents.view.document.tooltip",
-            ),
-        )
-        documentWorkspaceViewSwitcherPanel.add(
-            createDocumentWorkspaceViewButton(
-                view = DocumentWorkspaceView.STRUCTURED_TASKS,
-                labelKey = "spec.toolwindow.documents.view.structuredTasks",
-                tooltipKey = "spec.toolwindow.documents.view.structuredTasks.tooltip",
-            ),
-        )
-        documentWorkspaceViewCardPanel = JPanel(CardLayout()).apply {
-            isOpaque = false
-            add(detailPanel, DOCUMENT_WORKSPACE_CARD_DOCUMENT)
-            add(detailTasksPanel, DOCUMENT_WORKSPACE_CARD_STRUCTURED_TASKS)
-        }
-        val container = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
-            isOpaque = false
-            add(documentWorkspaceViewTabsPanel, BorderLayout.NORTH)
-            add(documentWorkspaceViewCardPanel, BorderLayout.CENTER)
-        }
-        updateDocumentWorkspaceViewPresentation(null)
-        return container
-    }
-
-    private fun createDocumentWorkspaceViewButton(
-        view: DocumentWorkspaceView,
-        labelKey: String,
-        tooltipKey: String,
-    ): JButton {
-        return JButton().apply {
-            isFocusable = false
-            isFocusPainted = false
-            isOpaque = true
-            isBorderPainted = true
-            isContentAreaFilled = true
-            isRolloverEnabled = true
-            margin = JBUI.emptyInsets()
-            installToolbarButtonCursorTracking(this)
-            addActionListener {
+        documentWorkspaceViewChrome = SpecWorkflowDocumentWorkspaceViewChromeBuilder(
+            documentContent = detailPanel,
+            structuredTasksContent = detailTasksPanel,
+            installToolbarButtonCursorTracking = ::installToolbarButtonCursorTracking,
+            onViewSelected = { view ->
                 selectedDocumentWorkspaceView = view
                 updateDocumentWorkspaceViewPresentation(currentWorkbenchState)
-            }
-            model.addChangeListener {
-                refreshDocumentWorkspaceViewButtonStyle(this)
-            }
-            putClientProperty("documentWorkspaceView", view)
-            text = SpecCodingBundle.message(labelKey)
-            toolTipText = SpecCodingBundle.message(tooltipKey)
-            font = JBUI.Fonts.smallFont()
-        }
-            .also { documentWorkspaceViewButtons[view] = it }
-    }
-
-    private fun createWorkspaceSectionItem(
-        content: Component,
-        addBottomGap: Boolean,
-    ): JPanel {
-        return createWorkspaceStackItem(
-            component = createSectionContainer(
-                content,
-                padding = WORKSPACE_SECTION_CARD_PADDING,
-                backgroundColor = DETAIL_SECTION_BG,
-                borderColor = DETAIL_SECTION_BORDER,
-            ),
-            addBottomGap = addBottomGap,
-        )
-    }
-
-    private fun createWorkspaceStackItem(
-        component: Component,
-        addBottomGap: Boolean = false,
-    ): JPanel {
-        return object : JPanel(BorderLayout()) {
-            override fun getMaximumSize(): Dimension {
-                val preferred = preferredSize
-                return Dimension(Int.MAX_VALUE, preferred.height)
-            }
-        }.apply {
-            isOpaque = false
-            alignmentX = Component.LEFT_ALIGNMENT
-            if (addBottomGap) {
-                border = JBUI.Borders.emptyBottom(6)
-            }
-            add(component, BorderLayout.CENTER)
-        }
-    }
-
-    private fun buildWorkspaceSummaryCard(): JPanel {
-        workspaceSummaryTitleLabel.font = JBUI.Fonts.label().deriveFont(Font.BOLD, 13f)
-        workspaceSummaryTitleLabel.foreground = WORKSPACE_SUMMARY_TITLE_FG
-        workspaceSummaryMetaLabel.font = JBUI.Fonts.smallFont()
-        workspaceSummaryMetaLabel.foreground = WORKSPACE_SUMMARY_META_FG
-        workspaceSummaryFocusLabel.font = JBUI.Fonts.label().deriveFont(Font.BOLD, 12.5f)
-        workspaceSummaryFocusLabel.foreground = WORKSPACE_SUMMARY_TITLE_FG
-        workspaceSummaryHintLabel.font = JBUI.Fonts.smallFont()
-        workspaceSummaryHintLabel.foreground = WORKSPACE_SUMMARY_META_FG
-
-        val titleStack = JPanel().apply {
-            layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            isOpaque = false
-            add(workspaceSummaryTitleLabel)
-            add(Box.createVerticalStrut(JBUI.scale(2)))
-            add(workspaceSummaryMetaLabel)
-            add(Box.createVerticalStrut(JBUI.scale(4)))
-            add(workspaceSummaryFocusLabel)
-            add(Box.createVerticalStrut(JBUI.scale(2)))
-            add(workspaceSummaryHintLabel)
-        }
-        val headerRow = JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
-            isOpaque = false
-            add(
-                JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
-                    isOpaque = false
-                    add(backToListButton)
-                },
-                BorderLayout.WEST,
-            )
-            add(titleStack, BorderLayout.CENTER)
-        }
-        val chipRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(12), 0)).apply {
-            isOpaque = false
-            add(workspaceStageMetric.root)
-            add(workspaceGateMetric.root)
-            add(workspaceTasksMetric.root)
-            add(workspaceVerifyMetric.root)
-        }
-
-        return JPanel(BorderLayout(0, JBUI.scale(6))).apply {
-            name = "workspaceSummaryCard"
-            isOpaque = true
-            background = WORKSPACE_SUMMARY_BG
-            border = SpecUiStyle.roundedCardBorder(
-                lineColor = WORKSPACE_SUMMARY_BORDER,
-                arc = JBUI.scale(16),
-                top = 8,
-                left = 10,
-                bottom = 8,
-                right = 10,
-            )
-            add(
-                JPanel(BorderLayout(0, JBUI.scale(4))).apply {
-                    isOpaque = false
-                    add(headerRow, BorderLayout.NORTH)
-                    add(chipRow, BorderLayout.SOUTH)
-                },
-                BorderLayout.CENTER,
-            )
-        }
-    }
-
-    private fun buildWorkspaceEmptyState(): JPanel {
-        val titleLabel = JBLabel(SpecCodingBundle.message("spec.detail.noWorkflow")).apply {
-            font = JBUI.Fonts.label().deriveFont(Font.BOLD, 13f)
-            foreground = WORKSPACE_EMPTY_TITLE_FG
-        }
-        val descriptionLabel = JBLabel(
-            "<html>${SpecCodingBundle.message("spec.toolwindow.overview.empty")}</html>",
-        ).apply {
-            font = JBUI.Fonts.smallFont()
-            foreground = WORKSPACE_EMPTY_DESCRIPTION_FG
-        }
-        return JPanel(BorderLayout(0, JBUI.scale(6))).apply {
-            isOpaque = true
-            background = DETAIL_SECTION_BG
-            border = SpecUiStyle.roundedCardBorder(
-                lineColor = DETAIL_SECTION_BORDER,
-                arc = JBUI.scale(16),
-                top = 18,
-                left = 18,
-                bottom = 18,
-                right = 18,
-            )
-            add(titleLabel, BorderLayout.NORTH)
-            add(descriptionLabel, BorderLayout.CENTER)
-        }
-    }
-
-    private fun createWorkspaceSection(
-        id: SpecWorkflowWorkspaceSectionId,
-        titleProvider: () -> String,
-        content: Component,
-        maxExpandedBodyHeight: Int? = null,
-    ): SpecCollapsibleWorkspaceSection {
-        return SpecCollapsibleWorkspaceSection(
-            titleProvider = titleProvider,
-            content = content,
-            expandedInitially = true,
-            maxExpandedBodyHeight = maxExpandedBodyHeight,
-            onExpandedChanged = { expanded ->
-                workflowWorkspaceStateHost.rememberSectionOverride(id, expanded)
             },
-        )
+            resolvePresentation = {
+                documentWorkspaceViewAdapter.resolvePresentation(currentWorkbenchState)
+            },
+            message = SpecCodingBundle::message,
+            syncStructuredTaskSelectionUi = ::syncStructuredTaskSelection,
+        ).build()
+        updateDocumentWorkspaceViewPresentation(null)
+        return documentWorkspaceViewChrome.container
     }
-
-    private fun showWorkspaceEmptyState() {
-        workflowWorkspaceEmptyStateAdapter.showEmptyState()
-    }
-
-    private fun showWorkspaceContent() {
-        showWorkflowWorkspaceMode()
-        backToListButton.isEnabled = true
-        workspaceCardLayout.show(workspaceCardPanel, WORKSPACE_CARD_CONTENT)
-    }
-
 
     private fun styleToolbarButton(button: JButton) {
         val iconOnly = button.icon != null && button.text.isNullOrBlank()
@@ -2633,14 +2362,14 @@ class SpecWorkflowPanel(
     private fun toUiLowercase(value: String): String = value.lowercase(Locale.ROOT)
 
     private fun setStatusText(text: String?) {
-        applyStatusPresentation(runtimeTroubleshootingStatusCoordinator.plain(text))
+        statusStripUiHost.apply(runtimeTroubleshootingStatusCoordinator.plain(text))
     }
 
     private fun setStatusWithTroubleshooting(
         text: String?,
         actions: List<SpecWorkflowTroubleshootingAction>,
     ) {
-        applyStatusPresentation(
+        statusStripUiHost.apply(
             runtimeTroubleshootingStatusCoordinator.withActions(
                 text = text,
                 actions = actions,
@@ -2660,7 +2389,7 @@ class SpecWorkflowPanel(
         text: String?,
         trigger: SpecWorkflowRuntimeTroubleshootingTrigger,
     ) {
-        applyStatusPresentation(
+        statusStripUiHost.apply(
             runtimeTroubleshootingStatusCoordinator.runtime(
                 SpecWorkflowRuntimeTroubleshootingStatusRequest(
                     workflowId = workflowId,
@@ -2669,29 +2398,6 @@ class SpecWorkflowPanel(
                 ),
             ),
         )
-    }
-
-    private fun applyStatusPresentation(presentation: SpecWorkflowStatusPresentation) {
-        statusLabel.text = presentation.text
-        updateStatusTroubleshootingActions(presentation.actions)
-        statusChipPanel.isVisible = presentation.text.isNotEmpty()
-        statusChipPanel.revalidate()
-        statusChipPanel.repaint()
-    }
-
-    private fun updateStatusTroubleshootingActions(actions: List<SpecWorkflowTroubleshootingAction>) {
-        statusActionPanel.removeAll()
-        actions.forEach { action ->
-            statusActionPanel.add(createStatusTroubleshootingButton(action))
-        }
-        statusActionPanel.isVisible = actions.isNotEmpty()
-    }
-
-    private fun createStatusTroubleshootingButton(action: SpecWorkflowTroubleshootingAction): JButton {
-        return JButton(action.label).apply {
-            addActionListener { statusTroubleshootingActionDispatcher.perform(action) }
-            styleToolbarButton(this)
-        }
     }
 
     private fun openTroubleshootingSettings() {
@@ -2751,82 +2457,6 @@ class SpecWorkflowPanel(
         documentWorkspaceViewAdapter.updatePresentation(workbenchState)
     }
 
-    private fun refreshDocumentWorkspaceViewButtonStyle(button: JButton) {
-        val view = button.getClientProperty("documentWorkspaceView") as? DocumentWorkspaceView ?: return
-        val presentation = documentWorkspaceViewAdapter.resolvePresentation(currentWorkbenchState)
-        val selected = view == presentation.effectiveView
-        val enabled = view != DocumentWorkspaceView.STRUCTURED_TASKS || presentation.supportsStructuredTasksView
-        val hovered = enabled && button.model.isRollover && !selected
-        applyDocumentWorkspaceViewButtonStyle(
-            button = button,
-            selected = selected,
-            enabled = enabled,
-            hovered = hovered,
-        )
-    }
-
-    private fun applyDocumentWorkspaceViewButtonStyle(
-        button: JButton,
-        selected: Boolean,
-        enabled: Boolean,
-        hovered: Boolean,
-    ) {
-        button.isEnabled = enabled
-        button.background = when {
-            !enabled -> DOCUMENT_WORKSPACE_VIEW_GROUP_BG
-            selected -> DOCUMENT_WORKSPACE_VIEW_SELECTED_BG
-            hovered -> DOCUMENT_WORKSPACE_VIEW_HOVER_BG
-            else -> DOCUMENT_WORKSPACE_VIEW_IDLE_BG
-        }
-        button.foreground = when {
-            !enabled -> DOCUMENT_WORKSPACE_VIEW_DISABLED_FG
-            selected -> DOCUMENT_WORKSPACE_VIEW_SELECTED_FG
-            hovered -> DOCUMENT_WORKSPACE_VIEW_HOVER_FG
-            else -> DOCUMENT_WORKSPACE_VIEW_IDLE_FG
-        }
-        button.border = BorderFactory.createCompoundBorder(
-            if (selected || hovered) {
-                SpecUiStyle.roundedLineBorder(
-                    if (selected) DOCUMENT_WORKSPACE_VIEW_SELECTED_BORDER else DOCUMENT_WORKSPACE_VIEW_HOVER_BORDER,
-                    JBUI.scale(DOCUMENT_WORKSPACE_VIEW_BUTTON_ARC),
-                )
-            } else {
-                JBUI.Borders.empty()
-            },
-            JBUI.Borders.empty(
-                DOCUMENT_WORKSPACE_VIEW_BUTTON_VERTICAL_PADDING,
-                DOCUMENT_WORKSPACE_VIEW_BUTTON_HORIZONTAL_PADDING,
-            ),
-        )
-        button.font = JBUI.Fonts.smallFont().deriveFont(
-            if (selected) Font.BOLD else Font.PLAIN,
-            DOCUMENT_WORKSPACE_VIEW_BUTTON_FONT_SIZE,
-        )
-        val labelFont = JBUI.Fonts.smallFont().deriveFont(
-            Font.BOLD,
-            DOCUMENT_WORKSPACE_VIEW_BUTTON_FONT_SIZE,
-        )
-        val width = documentWorkspaceViewButtonTargetWidth(labelFont)
-        val size = JBUI.size(width, JBUI.scale(DOCUMENT_WORKSPACE_VIEW_BUTTON_HEIGHT))
-        button.preferredSize = size
-        button.minimumSize = size
-        button.maximumSize = size
-    }
-
-    private fun documentWorkspaceViewButtonTargetWidth(labelFont: Font): Int {
-        val scaledMinWidth = JBUI.scale(DOCUMENT_WORKSPACE_VIEW_BUTTON_MIN_WIDTH)
-        val scaledTextPadding = JBUI.scale(
-            DOCUMENT_WORKSPACE_VIEW_BUTTON_HORIZONTAL_PADDING * 2 +
-                DOCUMENT_WORKSPACE_VIEW_BUTTON_EXTRA_WIDTH_PADDING,
-        )
-        return maxOf(
-            documentWorkspaceViewButtons.values.maxOfOrNull { candidate ->
-                candidate.getFontMetrics(labelFont).stringWidth(candidate.text.orEmpty()) + scaledTextPadding
-            } ?: scaledMinWidth,
-            scaledMinWidth,
-        )
-    }
-
     private fun supportsStructuredTasksDocumentWorkspaceView(
         workbenchState: SpecWorkflowStageWorkbenchState?,
     ): Boolean {
@@ -2872,7 +2502,7 @@ class SpecWorkflowPanel(
         )
         if (request == null) {
             if (selectedWorkflowId == null) {
-                showWorkspaceEmptyState()
+                workflowWorkspaceEmptyStateAdapter.showEmptyState()
             }
             return
         }
@@ -3021,36 +2651,6 @@ class SpecWorkflowPanel(
         )
     }
 
-    private fun workspaceSections(): Map<SpecWorkflowWorkspaceSectionId, SpecCollapsibleWorkspaceSection> {
-        if (!::overviewSection.isInitialized) {
-            return emptyMap()
-        }
-        return linkedMapOf(
-            SpecWorkflowWorkspaceSectionId.OVERVIEW to overviewSection,
-            SpecWorkflowWorkspaceSectionId.TASKS to tasksSection,
-            SpecWorkflowWorkspaceSectionId.GATE to gateSection,
-            SpecWorkflowWorkspaceSectionId.VERIFY to verifySection,
-            SpecWorkflowWorkspaceSectionId.DOCUMENTS to documentsSection,
-        )
-    }
-
-    private fun updateWorkspaceMetric(
-        metric: WorkspaceSummaryMetric,
-        presentation: SpecWorkflowWorkspaceMetricPresentation,
-    ) {
-        val colors = workspaceChipColors(presentation.tone)
-        metric.titleLabel.text = "${presentation.title}:"
-        metric.valueLabel.text = presentation.value
-        metric.valueLabel.foreground = colors.foreground
-        metric.root.isVisible = presentation.value.isNotBlank()
-    }
-
-    private fun clearWorkspaceMetric(metric: WorkspaceSummaryMetric) {
-        metric.titleLabel.text = ""
-        metric.valueLabel.text = ""
-        metric.root.isVisible = false
-    }
-
     private fun phaseLabel(phase: SpecPhase): String {
         return when (phase) {
             SpecPhase.SPECIFY -> SpecCodingBundle.message("spec.detail.step.requirements")
@@ -3130,117 +2730,7 @@ class SpecWorkflowPanel(
     }
 
     private fun onGenerate(input: String) {
-        val workflow = resolveSelectedWorkflowForClarification() ?: return
-        val pendingRetry = clarificationRetryStore.current(workflow.id)
-        if (pendingRetry?.followUp == ClarificationFollowUp.REQUIREMENTS_SECTION_REPAIR) {
-            val resumePlan = gateRequirementsRepairCoordinator.buildResumePlan(
-                input = input,
-                pendingRetry = pendingRetry,
-            )
-            if (resumePlan.resumeWithConfirmedContext) {
-                detailPanel.appendProcessTimelineEntry(
-                    text = SpecCodingBundle.message("spec.workflow.process.retryContextReuse"),
-                    state = SpecDetailPanel.ProcessTimelineState.INFO,
-                )
-                continueRequirementsRepairAfterClarification(
-                    workflowId = workflow.id,
-                    pendingRetry = pendingRetry,
-                    input = resumePlan.input,
-                    confirmedContext = pendingRetry.confirmedContext,
-                )
-                return
-            }
-            if (resumePlan.shouldClearProcessTimeline) {
-                detailPanel.clearProcessTimeline()
-            }
-            detailPanel.appendProcessTimelineEntry(
-                text = SpecCodingBundle.message("spec.workflow.process.clarify.round", resumePlan.clarificationRound),
-                state = SpecDetailPanel.ProcessTimelineState.ACTIVE,
-            )
-            detailPanel.appendProcessTimelineEntry(
-                text = SpecCodingBundle.message("spec.workflow.process.retryContextReuse"),
-                state = SpecDetailPanel.ProcessTimelineState.INFO,
-            )
-            rememberClarificationRetry(
-                workflowId = workflow.id,
-                input = resumePlan.input,
-                confirmedContext = resumePlan.suggestedDetails,
-                clarificationRound = resumePlan.clarificationRound,
-                lastError = pendingRetry.lastError,
-                confirmed = false,
-                followUp = ClarificationFollowUp.REQUIREMENTS_SECTION_REPAIR,
-                requirementsRepairSections = pendingRetry.requirementsRepairSections,
-            )
-            launchRequirementsRepairClarification(
-                workflow = workflow,
-                input = resumePlan.input,
-                suggestedDetails = resumePlan.suggestedDetails,
-                pendingRetry = clarificationRetryStore.current(workflow.id),
-                clarificationRound = resumePlan.clarificationRound,
-            )
-            return
-        }
-
-        val context = resolveGenerationContext() ?: return
-        when (
-            val launchPlan = generationCoordinator.buildLaunchPlan(
-                input = input,
-                pendingRetry = pendingRetry,
-                context = context,
-            )
-        ) {
-            is SpecWorkflowGenerationLaunchPlan.ResumeGeneration -> {
-                if (launchPlan.shouldShowRetryContextReuse) {
-                    detailPanel.appendProcessTimelineEntry(
-                        text = SpecCodingBundle.message("spec.workflow.process.retryContextReuse"),
-                        state = SpecDetailPanel.ProcessTimelineState.INFO,
-                    )
-                }
-                runGeneration(
-                    workflowId = launchPlan.workflowId,
-                    input = launchPlan.input,
-                    options = launchPlan.options,
-                )
-            }
-
-            is SpecWorkflowGenerationLaunchPlan.RequestClarification -> {
-                if (launchPlan.shouldClearProcessTimeline) {
-                    detailPanel.clearProcessTimeline()
-                }
-                detailPanel.appendProcessTimelineEntry(
-                    text = SpecCodingBundle.message(
-                        "spec.workflow.process.clarify.round",
-                        launchPlan.clarificationRound,
-                    ),
-                    state = SpecDetailPanel.ProcessTimelineState.ACTIVE,
-                )
-                if (launchPlan.shouldShowRetryContextReuse) {
-                    detailPanel.appendProcessTimelineEntry(
-                        text = SpecCodingBundle.message("spec.workflow.process.retryContextReuse"),
-                        state = SpecDetailPanel.ProcessTimelineState.INFO,
-                    )
-                }
-                rememberClarificationRetry(
-                    workflowId = launchPlan.context.workflowId,
-                    input = launchPlan.input,
-                    confirmedContext = launchPlan.suggestedDetails,
-                    clarificationRound = launchPlan.clarificationRound,
-                    lastError = launchPlan.retryLastError,
-                    confirmed = false,
-                    followUp = ClarificationFollowUp.GENERATION,
-                    requirementsRepairSections = emptyList(),
-                )
-                requestClarificationDraft(
-                    context = launchPlan.context,
-                    input = launchPlan.input,
-                    options = launchPlan.options,
-                    suggestedDetails = launchPlan.suggestedDetails,
-                    seedQuestionsMarkdown = launchPlan.seedQuestionsMarkdown,
-                    seedStructuredQuestions = launchPlan.seedStructuredQuestions,
-                    clarificationRound = launchPlan.clarificationRound,
-                )
-            }
-        }
+        generationLaunchCoordinator.generate(input)
     }
 
     private fun resolveSelectedWorkflowForClarification(): SpecWorkflow? {
@@ -3262,370 +2752,8 @@ class SpecWorkflowPanel(
         return true
     }
 
-    private fun startRequirementsClarifyThenFill(
-        workflowId: String,
-        missingSections: List<RequirementsSectionId>,
-    ): Boolean {
-        val workflow = currentWorkflow?.takeIf { it.id == workflowId } ?: return false
-        val previous = clarificationRetryStore.current(workflowId)
-        val plan = gateRequirementsRepairCoordinator.buildClarifyThenFillPlan(
-            missingSections = missingSections,
-            previousRetry = previous,
-        ) ?: return false
-        showWorkspaceContent()
-        focusStage(StageId.REQUIREMENTS)
-
-        if (!plan.reusedPreviousRetry) {
-            detailPanel.clearProcessTimeline()
-        }
-        detailPanel.appendProcessTimelineEntry(
-            text = SpecCodingBundle.message("spec.workflow.process.clarify.round", plan.clarificationRound),
-            state = SpecDetailPanel.ProcessTimelineState.ACTIVE,
-        )
-        if (plan.reusedPreviousRetry) {
-            detailPanel.appendProcessTimelineEntry(
-                text = SpecCodingBundle.message("spec.workflow.process.retryContextReuse"),
-                state = SpecDetailPanel.ProcessTimelineState.INFO,
-            )
-        }
-        rememberClarificationRetry(
-            workflowId = workflowId,
-            input = plan.input,
-            confirmedContext = plan.suggestedDetails,
-            questionsMarkdown = previous?.questionsMarkdown,
-            structuredQuestions = previous?.structuredQuestions,
-            clarificationRound = plan.clarificationRound,
-            lastError = previous?.lastError,
-            confirmed = false,
-            followUp = ClarificationFollowUp.REQUIREMENTS_SECTION_REPAIR,
-            requirementsRepairSections = plan.normalizedSections,
-        )
-        launchRequirementsRepairClarification(
-            workflow = workflow,
-            input = plan.input,
-            suggestedDetails = plan.suggestedDetails,
-            pendingRetry = clarificationRetryStore.current(workflowId),
-            clarificationRound = plan.clarificationRound,
-        )
-        return true
-    }
-
-    private fun launchRequirementsRepairClarification(
-        workflow: SpecWorkflow,
-        input: String,
-        suggestedDetails: String,
-        pendingRetry: ClarificationRetryPayload?,
-        clarificationRound: Int,
-    ) {
-        when (
-            val launch = gateRequirementsRepairCoordinator.prepareClarificationLaunch(
-                workflow = workflow,
-                providerId = providerComboBox.selectedItem as? String,
-                modelId = (modelComboBox.selectedItem as? ModelInfo)?.id,
-                workflowSourceUsage = resolveComposerSourceUsage(workflow.id),
-                pendingRetry = pendingRetry,
-                input = input,
-                suggestedDetails = suggestedDetails,
-                clarificationRound = clarificationRound,
-            )
-        ) {
-            is SpecWorkflowGateRequirementsClarificationLaunch.RequestDraft -> {
-                requestClarificationDraft(
-                    context = SpecWorkflowGenerationContext(
-                        workflowId = launch.workflowId,
-                        phase = launch.phase,
-                        options = launch.options,
-                    ),
-                    input = launch.input,
-                    options = launch.options,
-                    suggestedDetails = launch.suggestedDetails,
-                    seedQuestionsMarkdown = launch.seedQuestionsMarkdown,
-                    seedStructuredQuestions = launch.seedStructuredQuestions,
-                    clarificationRound = launch.clarificationRound,
-                )
-            }
-
-            is SpecWorkflowGateRequirementsClarificationLaunch.ManualFallback -> {
-                rememberClarificationRetry(
-                    workflowId = launch.workflowId,
-                    input = launch.input,
-                    confirmedContext = launch.suggestedDetails,
-                    questionsMarkdown = launch.questionsMarkdown,
-                    structuredQuestions = emptyList(),
-                    clarificationRound = launch.clarificationRound,
-                    lastError = launch.reason,
-                    confirmed = false,
-                    followUp = ClarificationFollowUp.REQUIREMENTS_SECTION_REPAIR,
-                    requirementsRepairSections = clarificationRetryStore.current(launch.workflowId)?.requirementsRepairSections.orEmpty(),
-                )
-                detailPanel.showClarificationDraft(
-                    phase = launch.phase,
-                    input = launch.input,
-                    questionsMarkdown = launch.questionsMarkdown,
-                    suggestedDetails = launch.suggestedDetails,
-                    structuredQuestions = emptyList(),
-                )
-                detailPanel.appendProcessTimelineEntry(
-                    text = SpecCodingBundle.message("spec.workflow.process.clarify.prepare"),
-                    state = SpecDetailPanel.ProcessTimelineState.DONE,
-                )
-                detailPanel.appendProcessTimelineEntry(
-                    text = SpecCodingBundle.message("spec.toolwindow.gate.quickFix.clarify.manualFallback.timeline"),
-                    state = SpecDetailPanel.ProcessTimelineState.INFO,
-                )
-                setStatusText(launch.statusMessage)
-            }
-        }
-    }
-
-    private fun continueRequirementsRepairAfterClarification(
-        workflowId: String,
-        pendingRetry: ClarificationRetryPayload,
-        input: String,
-        confirmedContext: String?,
-    ) {
-        when (
-            val continuation = gateRequirementsRepairCoordinator.continueAfterClarification(
-                SpecWorkflowGateRequirementsRepairAfterClarificationRequest(
-                    workflowId = workflowId,
-                    pendingRetry = pendingRetry,
-                    confirmedContext = confirmedContext,
-                ),
-            )
-        ) {
-            is SpecWorkflowGateRequirementsRepairContinuation.Noop -> {
-                detailPanel.unlockClarificationChecklistInteractions()
-                setStatusText(continuation.statusMessage)
-            }
-
-            is SpecWorkflowGateRequirementsRepairContinuation.ManualFallback -> {
-                detailPanel.unlockClarificationChecklistInteractions()
-                detailPanel.exitClarificationMode(clearInput = false)
-                setStatusText(continuation.statusMessage)
-                continuation.requirementsDocumentPath?.let { path ->
-                    runCatching {
-                        SpecWorkflowActionSupport.openFile(
-                            project,
-                            path,
-                        )
-                    }
-                }
-                SpecWorkflowActionSupport.showInfo(
-                    project,
-                    continuation.infoTitle,
-                    continuation.infoMessage,
-                )
-            }
-
-            is SpecWorkflowGateRequirementsRepairContinuation.PreviewAndApply -> {
-                RequirementsSectionRepairUiSupport.previewAndApply(
-                    project = project,
-                    workflowId = workflowId,
-                    missingSections = continuation.missingSections,
-                    confirmedContextOverride = continuation.confirmedContextOverride,
-                    previewTitle = SpecCodingBundle.message("spec.toolwindow.gate.quickFix.clarify.progress.preview"),
-                    applyTitle = SpecCodingBundle.message("spec.toolwindow.gate.quickFix.clarify.progress.apply"),
-                    onPreviewCancelled = {
-                        detailPanel.unlockClarificationChecklistInteractions()
-                        setStatusText(SpecCodingBundle.message("spec.toolwindow.gate.quickFix.clarify.previewCancelled"))
-                    },
-                    onNoop = {
-                        clearClarificationRetry(workflowId)
-                        detailPanel.exitClarificationMode(clearInput = true)
-                        detailPanel.unlockClarificationChecklistInteractions()
-                        reloadCurrentWorkflow(followCurrentPhase = true)
-                    },
-                    onApplied = {
-                        clearClarificationRetry(workflowId)
-                        detailPanel.exitClarificationMode(clearInput = true)
-                        detailPanel.unlockClarificationChecklistInteractions()
-                        reloadCurrentWorkflow(followCurrentPhase = true) {
-                            focusStage(StageId.REQUIREMENTS)
-                        }
-                    },
-                    onFailure = { error ->
-                        detailPanel.unlockClarificationChecklistInteractions()
-                        rememberClarificationRetry(
-                            workflowId = workflowId,
-                            input = input,
-                            confirmedContext = confirmedContext ?: pendingRetry.confirmedContext,
-                            clarificationRound = pendingRetry.clarificationRound,
-                            lastError = compactErrorMessage(error, SpecCodingBundle.message("common.unknown")),
-                            confirmed = pendingRetry.confirmed,
-                            followUp = ClarificationFollowUp.REQUIREMENTS_SECTION_REPAIR,
-                            requirementsRepairSections = continuation.missingSections,
-                        )
-                        setStatusText(
-                            SpecCodingBundle.message(
-                                "spec.workflow.error",
-                                compactErrorMessage(error, SpecCodingBundle.message("common.unknown")),
-                            ),
-                        )
-                    },
-                )
-            }
-        }
-    }
-
     private fun onSwitchWorkflowRequested() {
         workflowListActionCoordinator.requestSwitch()
-    }
-
-    private fun requestClarificationDraft(
-        context: SpecWorkflowGenerationContext,
-        input: String,
-        options: GenerationOptions = context.options,
-        suggestedDetails: String = input,
-        seedQuestionsMarkdown: String? = null,
-        seedStructuredQuestions: List<String> = emptyList(),
-        clarificationRound: Int = 1,
-    ) {
-        cancelActiveGenerationRequest("Superseded by new clarification request")
-        val prepared = generationCoordinator.prepareClarificationDraft(
-            context = context,
-            input = input,
-            options = options,
-            suggestedDetails = suggestedDetails,
-            seedQuestionsMarkdown = seedQuestionsMarkdown,
-            seedStructuredQuestions = seedStructuredQuestions,
-            clarificationRound = clarificationRound,
-        )
-        activeGenerationRequest = prepared.activeRequest
-        activeGenerationJob = taskCoordinator.launchIo {
-            try {
-                invokeLaterSafe {
-                    if (selectedWorkflowId != prepared.context.workflowId) {
-                        return@invokeLaterSafe
-                    }
-                    detailPanel.showClarificationGenerating(
-                        phase = prepared.context.phase,
-                        input = prepared.input,
-                        suggestedDetails = prepared.safeSuggestedDetails,
-                    )
-                    appendProcessTimelineEntries(prepared.initialTimelineEntries)
-                    setStatusText(prepared.loadingStatusText)
-                }
-                val draftResult = try {
-                    Result.success(
-                        specEngine.draftCurrentPhaseClarification(
-                            workflowId = prepared.context.workflowId,
-                            input = prepared.input,
-                            options = prepared.requestOptions,
-                        ).getOrThrow(),
-                    )
-                } catch (cancel: CancellationException) {
-                    throw cancel
-                } catch (error: Throwable) {
-                    Result.failure(error)
-                }
-
-                val draft = draftResult.getOrNull()
-                val draftError = draftResult.exceptionOrNull()
-                if (draft == null) {
-                    logger.warn("Failed to draft clarification for workflow=${prepared.context.workflowId}", draftError)
-                }
-                val result = generationCoordinator.buildClarificationDraftResult(
-                    prepared = prepared,
-                    draft = draft,
-                    error = draftError,
-                )
-                invokeLaterSafe {
-                    if (selectedWorkflowId != prepared.context.workflowId) {
-                        return@invokeLaterSafe
-                    }
-                    detailPanel.showClarificationDraft(
-                        phase = result.phase,
-                        input = prepared.input,
-                        questionsMarkdown = result.questionsMarkdown,
-                        suggestedDetails = prepared.safeSuggestedDetails,
-                        structuredQuestions = result.structuredQuestions,
-                    )
-                    rememberClarificationRetry(
-                        workflowId = prepared.context.workflowId,
-                        input = prepared.input,
-                        confirmedContext = prepared.safeSuggestedDetails,
-                        questionsMarkdown = result.questionsMarkdown,
-                        structuredQuestions = result.structuredQuestions,
-                        clarificationRound = prepared.clarificationRound,
-                        lastError = result.errorText,
-                    )
-                    appendProcessTimelineEntries(listOf(result.timelineEntry))
-                    if (result.troubleshootingTrigger != null) {
-                        setRuntimeTroubleshootingStatus(
-                            prepared.context.workflowId,
-                            result.statusText,
-                            result.troubleshootingTrigger,
-                        )
-                    } else {
-                        setStatusText(result.statusText)
-                    }
-                }
-            } catch (cancel: CancellationException) {
-                if (isActiveGenerationRequest(prepared.activeRequest)) {
-                    handleGenerationInterrupted(
-                        workflowId = prepared.context.workflowId,
-                        input = input,
-                        options = prepared.requestOptions,
-                        processMessageKey = "spec.workflow.process.clarify.failed",
-                    )
-                }
-                throw cancel
-            } finally {
-                clearActiveGenerationRequest(prepared.activeRequest)
-            }
-        }
-    }
-
-    private fun runGeneration(
-        workflowId: String,
-        input: String,
-        options: GenerationOptions,
-    ) {
-        cancelActiveGenerationRequest("Superseded by new generation request")
-        val prepared = generationCoordinator.prepareGeneration(
-            workflowId = workflowId,
-            phase = currentWorkflow?.currentPhase ?: SpecPhase.SPECIFY,
-            input = input,
-            options = options,
-        )
-        activeGenerationRequest = prepared.activeRequest
-        activeGenerationJob = taskCoordinator.launchIo {
-            try {
-                var tracker = SpecWorkflowGenerationProgressTracker()
-                specEngine.generateCurrentPhase(workflowId, input, prepared.requestOptions).collect { progress ->
-                    val progressUpdate = generationCoordinator.advanceGenerationProgress(
-                        prepared = prepared,
-                        tracker = tracker,
-                        progress = progress,
-                    )
-                    tracker = progressUpdate.tracker
-                    invokeLaterSafe {
-                        applyGenerationProgressUpdate(
-                            workflowId = workflowId,
-                            input = input,
-                            update = progressUpdate,
-                        )
-                    }
-                }
-            } catch (cancel: CancellationException) {
-                if (isActiveGenerationRequest(prepared.activeRequest)) {
-                    val interruptedUpdate = generationCoordinator.buildInterruptedProgressUpdate(
-                        prepared = prepared,
-                        interruptedMessage = SpecCodingBundle.message("spec.workflow.generation.interrupted"),
-                    )
-                    invokeLaterSafe {
-                        applyGenerationProgressUpdate(
-                            workflowId = workflowId,
-                            input = input,
-                            update = interruptedUpdate,
-                        )
-                    }
-                }
-                throw cancel
-            } finally {
-                clearActiveGenerationRequest(prepared.activeRequest)
-            }
-        }
     }
 
     private fun applyGenerationProgressUpdate(
@@ -3700,68 +2828,6 @@ class SpecWorkflowPanel(
             SpecWorkflowTimelineEntryState.FAILED -> SpecDetailPanel.ProcessTimelineState.FAILED
             SpecWorkflowTimelineEntryState.INFO -> SpecDetailPanel.ProcessTimelineState.INFO
         }
-    }
-
-    private fun handleGenerationInterrupted(
-        workflowId: String,
-        input: String,
-        options: GenerationOptions,
-        processMessageKey: String,
-    ) {
-        val interruptedMessage = SpecCodingBundle.message("spec.workflow.generation.interrupted")
-        invokeLaterSafe {
-            if (selectedWorkflowId != workflowId) {
-                return@invokeLaterSafe
-            }
-            detailPanel.appendProcessTimelineEntry(
-                text = SpecCodingBundle.message(processMessageKey, interruptedMessage),
-                state = SpecDetailPanel.ProcessTimelineState.FAILED,
-            )
-            rememberClarificationRetry(
-                workflowId = workflowId,
-                input = input,
-                confirmedContext = options.confirmedContext,
-                clarificationRound = clarificationRetryStore.current(workflowId)?.clarificationRound,
-                lastError = interruptedMessage,
-            )
-            detailPanel.showGenerationFailed()
-            setStatusText(SpecCodingBundle.message("spec.workflow.error", interruptedMessage))
-        }
-    }
-
-    private fun cancelActiveGenerationRequest(reason: String) {
-        val activeRequest = activeGenerationRequest
-        if (activeRequest != null && activeRequest.requestId.isNotBlank()) {
-            cancelRequestAcrossProviders(
-                providerId = activeRequest.providerId,
-                requestId = activeRequest.requestId,
-            )
-        }
-        activeGenerationJob?.cancel(CancellationException(reason))
-        activeGenerationJob = null
-        activeGenerationRequest = null
-    }
-
-    private fun cancelRequestAcrossProviders(
-        providerId: String?,
-        requestId: String,
-    ) {
-        llmRouter.cancel(providerId = providerId, requestId = requestId)
-        llmRouter.cancel(providerId = ClaudeCliLlmProvider.ID, requestId = requestId)
-        llmRouter.cancel(providerId = CodexCliLlmProvider.ID, requestId = requestId)
-    }
-
-    private fun isActiveGenerationRequest(request: SpecWorkflowActiveGenerationRequest): Boolean {
-        val active = activeGenerationRequest ?: return false
-        return active.workflowId == request.workflowId && active.requestId == request.requestId
-    }
-
-    private fun clearActiveGenerationRequest(request: SpecWorkflowActiveGenerationRequest) {
-        if (!isActiveGenerationRequest(request)) {
-            return
-        }
-        activeGenerationJob = null
-        activeGenerationRequest = null
     }
 
     private fun resolveGenerationContext(): SpecWorkflowGenerationContext? {
@@ -4004,23 +3070,8 @@ class SpecWorkflowPanel(
             verifySection.refreshLocalizedTexts()
             documentsSection.refreshLocalizedTexts()
         }
-        if (::documentWorkspaceViewTabsPanel.isInitialized) {
-            if (::documentWorkspaceViewLabel.isInitialized) {
-                documentWorkspaceViewLabel.text = SpecCodingBundle.message("spec.toolwindow.documents.view.label")
-            }
-            documentWorkspaceViewButtons.forEach { (view, button) ->
-                when (view) {
-                    DocumentWorkspaceView.DOCUMENT -> {
-                        button.text = SpecCodingBundle.message("spec.toolwindow.documents.view.document")
-                        button.toolTipText = SpecCodingBundle.message("spec.toolwindow.documents.view.document.tooltip")
-                    }
-
-                    DocumentWorkspaceView.STRUCTURED_TASKS -> {
-                        button.text = SpecCodingBundle.message("spec.toolwindow.documents.view.structuredTasks")
-                        button.toolTipText = SpecCodingBundle.message("spec.toolwindow.documents.view.structuredTasks.tooltip")
-                    }
-                }
-            }
+        if (::documentWorkspaceViewChrome.isInitialized) {
+            documentWorkspaceViewChrome.uiHost.refreshLocalizedTexts()
             updateDocumentWorkspaceViewPresentation(currentWorkbenchState)
         }
         applyToolbarButtonPresentation()
@@ -4077,16 +3128,6 @@ class SpecWorkflowPanel(
             onUpdated = onUpdated,
         )
     }
-
-    private data class WorkspaceChipColors(
-        val foreground: Color,
-    )
-
-    private data class WorkspaceSummaryMetric(
-        val root: JPanel,
-        val titleLabel: JBLabel,
-        val valueLabel: JBLabel,
-    )
 
     private fun showWorkflowLoadInProgress() {
         workflowStateApplicationAdapter.showWorkflowLoadInProgress()
@@ -4322,49 +3363,49 @@ class SpecWorkflowPanel(
     internal fun detailButtonStatesForTest(): Map<String, Any> = detailPanel.buttonStatesForTest()
 
     internal fun documentWorkspaceViewForTest(): String =
-        if (::documentWorkspaceViewTabsPanel.isInitialized && documentWorkspaceViewTabsPanel.isVisible) {
+        if (::documentWorkspaceViewChrome.isInitialized && documentWorkspaceViewChrome.tabsPanel.isVisible) {
             selectedDocumentWorkspaceView.name
         } else {
             DocumentWorkspaceView.DOCUMENT.name
         }
 
     internal fun isDocumentWorkspaceViewTabsVisibleForTest(): Boolean =
-        ::documentWorkspaceViewTabsPanel.isInitialized && documentWorkspaceViewTabsPanel.isVisible
+        ::documentWorkspaceViewChrome.isInitialized && documentWorkspaceViewChrome.tabsPanel.isVisible
 
     internal fun clickDocumentWorkspaceViewForTest(view: String) {
         val targetView = runCatching { DocumentWorkspaceView.valueOf(view) }.getOrNull() ?: return
-        documentWorkspaceViewButtons[targetView]?.doClick()
+        documentWorkspaceViewChrome.buttons[targetView]?.doClick()
     }
 
     internal fun documentWorkspaceViewButtonsForTest(): List<String> =
         DocumentWorkspaceView.entries.mapNotNull { view ->
-            documentWorkspaceViewButtons[view]?.text?.takeIf(String::isNotBlank)?.let { label ->
+            documentWorkspaceViewChrome.buttons[view]?.text?.takeIf(String::isNotBlank)?.let { label ->
                 "${view.name}:$label"
             }
         }
 
     internal fun documentWorkspaceViewLabelForTest(): String =
-        if (::documentWorkspaceViewLabel.isInitialized) {
-            documentWorkspaceViewLabel.text.orEmpty()
+        if (::documentWorkspaceViewChrome.isInitialized) {
+            documentWorkspaceViewChrome.label.text.orEmpty()
         } else {
             ""
         }
 
     internal fun documentWorkspaceViewSwitcherHeightForTest(): Int =
-        if (::documentWorkspaceViewSwitcherPanel.isInitialized) {
-            documentWorkspaceViewSwitcherPanel.preferredSize.height
+        if (::documentWorkspaceViewChrome.isInitialized) {
+            documentWorkspaceViewChrome.switcherPanel.preferredSize.height
         } else {
             0
         }
 
     internal fun documentWorkspaceViewButtonHeightsForTest(): Map<String, Int> =
         DocumentWorkspaceView.entries.associate { view ->
-            view.name to (documentWorkspaceViewButtons[view]?.preferredSize?.height ?: 0)
+            view.name to (documentWorkspaceViewChrome.buttons[view]?.preferredSize?.height ?: 0)
         }
 
     internal fun documentWorkspaceViewButtonWidthsForTest(): Map<String, Int> =
         DocumentWorkspaceView.entries.associate { view ->
-            view.name to (documentWorkspaceViewButtons[view]?.preferredSize?.width ?: 0)
+            view.name to (documentWorkspaceViewChrome.buttons[view]?.preferredSize?.width ?: 0)
         }
 
     internal fun selectTaskForTest(taskId: String): Boolean {
@@ -4470,14 +3511,9 @@ class SpecWorkflowPanel(
 
     internal fun composerCodeContextHintTextForTest(): String = detailPanel.composerCodeContextHintTextForTest()
 
-    internal fun currentStatusTextForTest(): String = statusLabel.text.orEmpty()
+    internal fun currentStatusTextForTest(): String = statusStripUiHost.currentStatusTextForTest()
 
-    internal fun currentStatusActionLabelsForTest(): List<String> {
-        return statusActionPanel.components
-            .filterIsInstance<JButton>()
-            .map { button -> button.text.orEmpty() }
-            .filter { label -> label.isNotBlank() }
-    }
+    internal fun currentStatusActionLabelsForTest(): List<String> = statusStripUiHost.currentStatusActionLabelsForTest()
 
     internal fun isComposerSourceRestoreVisibleForTest(): Boolean = detailPanel.isComposerSourceRestoreVisibleForTest()
 
@@ -4548,21 +3584,10 @@ class SpecWorkflowPanel(
     internal fun startRequirementsClarifyThenFillForTest(
         workflowId: String,
         missingSections: List<RequirementsSectionId>,
-    ): Boolean = startRequirementsClarifyThenFill(workflowId, missingSections)
+    ): Boolean = requirementsRepairEntryCoordinator.startClarifyThenFill(workflowId, missingSections)
 
     internal fun workspaceSummarySnapshotForTest(): Map<String, String> {
-        return mapOf(
-            "stageTitle" to workspaceStageMetric.titleLabel.text.orEmpty(),
-            "stageValue" to workspaceStageMetric.valueLabel.text.orEmpty(),
-            "gateTitle" to workspaceGateMetric.titleLabel.text.orEmpty(),
-            "gateValue" to workspaceGateMetric.valueLabel.text.orEmpty(),
-            "tasksTitle" to workspaceTasksMetric.titleLabel.text.orEmpty(),
-            "tasksValue" to workspaceTasksMetric.valueLabel.text.orEmpty(),
-            "verifyTitle" to workspaceVerifyMetric.titleLabel.text.orEmpty(),
-            "verifyValue" to workspaceVerifyMetric.valueLabel.text.orEmpty(),
-            "focusTitle" to workspaceSummaryFocusLabel.text.orEmpty(),
-            "focusHint" to workspaceSummaryHintLabel.text.orEmpty(),
-        )
+        return workspacePresentationUiHost.summarySnapshotForTest()
     }
 
     override fun dispose() {
@@ -4573,25 +3598,13 @@ class SpecWorkflowPanel(
         liveProgressRefreshTimer.stop()
         specTaskExecutionService.removeLiveProgressListener(liveProgressListener)
         workflowSwitcherUiHost.cancel()
-        cancelActiveGenerationRequest("Spec workflow panel disposed")
+        generationExecutionCoordinator.cancelActiveRequest("Spec workflow panel disposed")
         taskCoordinator.dispose()
     }
 
     companion object {
         private val TOOLBAR_BG = JBColor(Color(248, 250, 254), Color(58, 64, 74))
         private val TOOLBAR_BORDER = JBColor(Color(212, 222, 239), Color(89, 100, 117))
-        private val WORKSPACE_SUMMARY_BG = JBColor(Color(245, 249, 255), Color(56, 62, 72))
-        private val WORKSPACE_SUMMARY_BORDER = JBColor(Color(201, 214, 235), Color(86, 96, 110))
-        private val WORKSPACE_SUMMARY_TITLE_FG = JBColor(Color(42, 59, 94), Color(214, 223, 236))
-        private val WORKSPACE_SUMMARY_META_FG = JBColor(Color(94, 110, 139), Color(160, 171, 188))
-        private val WORKSPACE_SUMMARY_LABEL_FG = JBColor(Color(112, 124, 143), Color(172, 182, 196))
-        private val WORKSPACE_EMPTY_TITLE_FG = JBColor(Color(57, 72, 104), Color(214, 223, 236))
-        private val WORKSPACE_EMPTY_DESCRIPTION_FG = JBColor(Color(101, 117, 145), Color(166, 176, 193))
-        private val WORKSPACE_INFO_CHIP_FG = JBColor(Color(48, 74, 112), Color(210, 220, 235))
-        private val WORKSPACE_SUCCESS_CHIP_FG = JBColor(Color(42, 118, 71), Color(177, 225, 194))
-        private val WORKSPACE_WARNING_CHIP_FG = JBColor(Color(140, 96, 28), Color(239, 210, 146))
-        private val WORKSPACE_ERROR_CHIP_FG = JBColor(Color(152, 52, 52), Color(244, 182, 182))
-        private val WORKSPACE_MUTED_CHIP_FG = JBColor(Color(98, 109, 126), Color(173, 181, 194))
         private val BUTTON_BG = JBColor(Color(239, 246, 255), Color(64, 70, 81))
         private val BUTTON_BORDER = JBColor(Color(179, 197, 224), Color(102, 114, 132))
         private val BUTTON_FG = JBColor(Color(44, 68, 108), Color(204, 216, 236))
@@ -4607,37 +3620,7 @@ class SpecWorkflowPanel(
         private val PHASE_SECTION_BG = JBColor(Color(240, 246, 255), Color(62, 69, 80))
         private val DETAIL_SECTION_BG = JBColor(Color(249, 252, 255), Color(50, 56, 65))
         private val DETAIL_SECTION_BORDER = JBColor(Color(204, 217, 236), Color(84, 94, 109))
-        private val DOCUMENT_WORKSPACE_VIEW_LABEL_FG = JBColor(Color(112, 124, 143), Color(172, 182, 196))
-        private val DOCUMENT_WORKSPACE_VIEW_GROUP_BG = JBColor(Color(242, 247, 255), Color(57, 63, 73))
-        private val DOCUMENT_WORKSPACE_VIEW_GROUP_BORDER = JBColor(Color(202, 215, 236), Color(89, 100, 116))
-        private val DOCUMENT_WORKSPACE_VIEW_SELECTED_BG = JBColor(Color(233, 242, 255), Color(71, 80, 95))
-        private val DOCUMENT_WORKSPACE_VIEW_SELECTED_BORDER = JBColor(Color(174, 196, 229), Color(112, 126, 148))
-        private val DOCUMENT_WORKSPACE_VIEW_SELECTED_FG = JBColor(Color(43, 67, 105), Color(214, 224, 238))
-        private val DOCUMENT_WORKSPACE_VIEW_IDLE_BG = DOCUMENT_WORKSPACE_VIEW_GROUP_BG
-        private val DOCUMENT_WORKSPACE_VIEW_IDLE_FG = JBColor(Color(89, 103, 130), Color(177, 188, 203))
-        private val DOCUMENT_WORKSPACE_VIEW_HOVER_BG = JBColor(Color(247, 250, 255), Color(63, 71, 82))
-        private val DOCUMENT_WORKSPACE_VIEW_HOVER_BORDER = JBColor(Color(198, 213, 237), Color(96, 108, 125))
-        private val DOCUMENT_WORKSPACE_VIEW_HOVER_FG = JBColor(Color(71, 89, 122), Color(192, 202, 216))
-        private val DOCUMENT_WORKSPACE_VIEW_DISABLED_FG = JBColor(Color(146, 156, 171), Color(124, 132, 145))
-        private const val DOCUMENT_WORKSPACE_VIEW_LABEL_FONT_SIZE = 10.5f
-        private const val DOCUMENT_WORKSPACE_VIEW_BUTTON_FONT_SIZE = 10.5f
-        private const val DOCUMENT_WORKSPACE_VIEW_ROW_GAP = 6
-        private const val DOCUMENT_WORKSPACE_VIEW_SWITCHER_GAP = 2
-        private const val DOCUMENT_WORKSPACE_VIEW_GROUP_INSET = 2
-        private const val DOCUMENT_WORKSPACE_VIEW_GROUP_ARC = 11
-        private const val DOCUMENT_WORKSPACE_VIEW_BUTTON_ARC = 10
-        private const val DOCUMENT_WORKSPACE_VIEW_BUTTON_HEIGHT = 22
-        private const val DOCUMENT_WORKSPACE_VIEW_BUTTON_MIN_WIDTH = 52
-        private const val DOCUMENT_WORKSPACE_VIEW_BUTTON_HORIZONTAL_PADDING = 10
-        private const val DOCUMENT_WORKSPACE_VIEW_BUTTON_VERTICAL_PADDING = 2
-        private const val DOCUMENT_WORKSPACE_VIEW_BUTTON_EXTRA_WIDTH_PADDING = 16
         private const val LIVE_PROGRESS_EVENT_COALESCE_MILLIS = 180
-        private const val WORKSPACE_SECTION_CARD_PADDING = 12
-        private val SCROLLABLE_WORKSPACE_SECTION_MAX_HEIGHT = JBUI.scale(320)
-        private const val WORKSPACE_SCROLL_UNIT_INCREMENT = 24
-        private const val WORKSPACE_SCROLL_BLOCK_INCREMENT = 96
-        private const val DOCUMENT_WORKSPACE_CARD_DOCUMENT = "document"
-        private const val DOCUMENT_WORKSPACE_CARD_STRUCTURED_TASKS = "structuredTasks"
         private const val DOCUMENT_WORKSPACE_VIEWPORT_HEIGHT = 360
         private val PLACEHOLDER_ERROR_MESSAGES = setOf("-", "--", "...", "null", "none", "unknown")
         private val PLACEHOLDER_SYMBOLS_REGEX = Regex("""^[\p{Punct}\s]+$""")
