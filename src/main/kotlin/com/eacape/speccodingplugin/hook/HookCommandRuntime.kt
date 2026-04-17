@@ -1,5 +1,9 @@
 package com.eacape.speccodingplugin.hook
 
+import com.eacape.speccodingplugin.core.ExternalProcessLaunchSpec
+import com.eacape.speccodingplugin.core.ExternalProcessLauncher
+import com.eacape.speccodingplugin.core.ExternalProcessStartupFailureClassifier
+import com.eacape.speccodingplugin.core.ExternalProcessStartupFailureKind
 import com.eacape.speccodingplugin.core.ManagedMergedOutputProcess
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -49,10 +53,13 @@ internal data class HookCommandStartupDiagnostic(
 
 internal class HookCommandRuntime(
     private val processStarter: (String?, List<String>) -> Process = { basePath, command ->
-        ProcessBuilder(command)
-            .directory(basePath?.let(::File))
-            .redirectErrorStream(true)
-            .start()
+        ExternalProcessLauncher.start(
+            ExternalProcessLaunchSpec(
+                command = command,
+                workingDirectory = basePath?.let(::File),
+                redirectErrorStream = true,
+            ),
+        )
     },
     private val outputLimitChars: Int = DEFAULT_OUTPUT_LIMIT_CHARS,
     private val outputJoinTimeoutMillis: Long = DEFAULT_OUTPUT_JOIN_TIMEOUT_MILLIS,
@@ -139,34 +146,24 @@ internal object HookCommandFailureDiagnostics {
         basePath: String?,
         startupErrorMessage: String,
     ): HookCommandFailureKind {
-        val workingDirectory = basePath?.let(::File)
-        if (workingDirectory != null && !workingDirectory.isDirectory) {
-            return HookCommandFailureKind.WORKING_DIRECTORY_UNAVAILABLE
-        }
-
-        val normalized = startupErrorMessage.lowercase()
-        return when {
-            normalized.contains("createprocess error=5") ||
-                normalized.contains("access is denied") ||
-                normalized.contains("permission denied") ->
-                HookCommandFailureKind.ACCESS_DENIED
-
-            normalized.contains("createprocess error=2") ||
-                normalized.contains("no such file or directory") ||
-                normalized.contains("cannot find the file specified") ||
-                normalized.contains("error=2,") ||
-                normalized.contains("missing tool") ||
-                normalized.contains("missing executable") ||
-                normalized.contains("executable not found") ||
-                normalized.contains("command not found") ->
+        return when (
+            ExternalProcessStartupFailureClassifier.classify(
+                startupErrorMessage = startupErrorMessage,
+                workingDirectory = basePath?.let(::File),
+                missingExecutableHints = setOf("missing tool"),
+            )
+        ) {
+            ExternalProcessStartupFailureKind.EXECUTABLE_NOT_FOUND ->
                 HookCommandFailureKind.EXECUTABLE_NOT_FOUND
 
-            normalized.contains("createprocess error=267") ||
-                normalized.contains("the directory name is invalid") ||
-                normalized.contains("not a directory") ->
+            ExternalProcessStartupFailureKind.WORKING_DIRECTORY_UNAVAILABLE ->
                 HookCommandFailureKind.WORKING_DIRECTORY_UNAVAILABLE
 
-            else -> HookCommandFailureKind.STARTUP_FAILED
+            ExternalProcessStartupFailureKind.ACCESS_DENIED ->
+                HookCommandFailureKind.ACCESS_DENIED
+
+            ExternalProcessStartupFailureKind.STARTUP_FAILED ->
+                HookCommandFailureKind.STARTUP_FAILED
         }
     }
 }

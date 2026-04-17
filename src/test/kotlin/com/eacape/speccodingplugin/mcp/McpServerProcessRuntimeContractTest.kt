@@ -16,9 +16,12 @@ class McpServerProcessRuntimeContractTest {
             StandardCharsets.UTF_8,
         )
 
-        assertTrue(source.contains("ProcessBuilder(request.launchCommand)"))
-        assertTrue(source.contains("redirectErrorStream(false)"))
+        assertTrue(source.contains("ExternalProcessLauncher.start("))
+        assertTrue(source.contains("ExternalProcessLaunchSpec("))
+        assertTrue(source.contains("environmentOverrides = request.config.env"))
+        assertTrue(source.contains("redirectErrorStream = false"))
         assertTrue(source.contains("McpProcessLaunchFailureDiagnostics.diagnoseLaunch("))
+        assertFalse(source.contains("ProcessBuilder("))
         assertFalse(source.contains("process.waitFor("))
         assertFalse(source.contains("process.inputStream.bufferedReader().use"))
     }

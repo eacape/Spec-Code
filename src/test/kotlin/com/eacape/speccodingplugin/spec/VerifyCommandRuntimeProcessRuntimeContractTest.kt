@@ -16,10 +16,13 @@ class VerifyCommandRuntimeProcessRuntimeContractTest {
             StandardCharsets.UTF_8,
         )
 
-        assertTrue(source.contains("ProcessBuilder(request.command)"))
+        assertTrue(source.contains("ExternalProcessLauncher.start("))
+        assertTrue(source.contains("ExternalProcessLaunchSpec("))
         assertTrue(source.contains("ManagedSplitOutputProcess.start("))
         assertTrue(source.contains("runtime.awaitCompletion("))
         assertTrue(source.contains("VerifyCommandFailureDiagnostics.diagnoseStartup("))
+        assertTrue(source.contains("redirectErrorStream = false"))
+        assertFalse(source.contains("ProcessBuilder("))
         assertFalse(source.contains("process.inputStream.bufferedReader().use"))
         assertFalse(source.contains("process.errorStream.bufferedReader().use"))
         assertFalse(source.contains("process.waitFor(request.timeoutMs.toLong(), TimeUnit.MILLISECONDS)"))

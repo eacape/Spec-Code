@@ -17,14 +17,13 @@ internal data class GitCliProcessResult(
 
 internal class GitCliProcessRuntime(
     private val processStarter: (File?, List<String>) -> Process = { workingDir, args ->
-        ProcessBuilder(buildCommand(args))
-            .apply {
-                if (workingDir != null) {
-                    directory(workingDir)
-                }
-                redirectErrorStream(true)
-            }
-            .start()
+        ExternalProcessLauncher.start(
+            ExternalProcessLaunchSpec(
+                command = buildCommand(args),
+                workingDirectory = workingDir,
+                redirectErrorStream = true,
+            ),
+        )
     },
     private val outputLimitChars: Int = DEFAULT_OUTPUT_LIMIT_CHARS,
     private val outputJoinTimeoutMillis: Long = DEFAULT_OUTPUT_JOIN_TIMEOUT_MILLIS,

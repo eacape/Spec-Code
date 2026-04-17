@@ -1,5 +1,9 @@
 package com.eacape.speccodingplugin.spec
 
+import com.eacape.speccodingplugin.core.ExternalProcessLaunchSpec
+import com.eacape.speccodingplugin.core.ExternalProcessLauncher
+import com.eacape.speccodingplugin.core.ExternalProcessStartupFailureClassifier
+import com.eacape.speccodingplugin.core.ExternalProcessStartupFailureKind
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 
@@ -59,10 +63,13 @@ internal data class VerifyCommandRuntimeResult(
 
 internal class VerifyCommandRuntime(
     private val processStarter: (VerifyCommandExecutionRequest) -> Process = { request ->
-        ProcessBuilder(request.command)
-            .directory(request.workingDirectory.toFile())
-            .redirectErrorStream(false)
-            .start()
+        ExternalProcessLauncher.start(
+            ExternalProcessLaunchSpec(
+                command = request.command,
+                workingDirectory = request.workingDirectory.toFile(),
+                redirectErrorStream = false,
+            ),
+        )
     },
     private val outputJoinTimeoutMillis: Long = DEFAULT_OUTPUT_JOIN_TIMEOUT_MILLIS,
     private val timeoutDestroyGraceWaitMillis: Long = DEFAULT_TIMEOUT_DESTROY_GRACE_WAIT_MILLIS,
@@ -141,31 +148,23 @@ internal object VerifyCommandFailureDiagnostics {
         workingDirectory: Path,
         startupErrorMessage: String,
     ): VerifyCommandFailureKind {
-        if (!java.nio.file.Files.isDirectory(workingDirectory)) {
-            return VerifyCommandFailureKind.WORKING_DIRECTORY_UNAVAILABLE
-        }
-
-        val normalized = startupErrorMessage.lowercase()
-        return when {
-            normalized.contains("createprocess error=5") ||
-                normalized.contains("access is denied") ||
-                normalized.contains("permission denied") ->
-                VerifyCommandFailureKind.ACCESS_DENIED
-
-            normalized.contains("createprocess error=2") ||
-                normalized.contains("no such file or directory") ||
-                normalized.contains("cannot find the file specified") ||
-                normalized.contains("error=2,") ||
-                normalized.contains("missing executable") ||
-                normalized.contains("executable not found") ->
+        return when (
+            ExternalProcessStartupFailureClassifier.classify(
+                startupErrorMessage = startupErrorMessage,
+                workingDirectory = workingDirectory.toFile(),
+            )
+        ) {
+            ExternalProcessStartupFailureKind.EXECUTABLE_NOT_FOUND ->
                 VerifyCommandFailureKind.EXECUTABLE_NOT_FOUND
 
-            normalized.contains("createprocess error=267") ||
-                normalized.contains("the directory name is invalid") ||
-                normalized.contains("not a directory") ->
+            ExternalProcessStartupFailureKind.WORKING_DIRECTORY_UNAVAILABLE ->
                 VerifyCommandFailureKind.WORKING_DIRECTORY_UNAVAILABLE
 
-            else -> VerifyCommandFailureKind.STARTUP_FAILED
+            ExternalProcessStartupFailureKind.ACCESS_DENIED ->
+                VerifyCommandFailureKind.ACCESS_DENIED
+
+            ExternalProcessStartupFailureKind.STARTUP_FAILED ->
+                VerifyCommandFailureKind.STARTUP_FAILED
         }
     }
 }

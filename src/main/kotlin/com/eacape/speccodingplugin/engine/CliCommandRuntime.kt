@@ -1,5 +1,9 @@
 package com.eacape.speccodingplugin.engine
 
+import com.eacape.speccodingplugin.core.ExternalProcessLaunchSpec
+import com.eacape.speccodingplugin.core.ExternalProcessLauncher
+import com.eacape.speccodingplugin.core.ExternalProcessStartupFailureClassifier
+import com.eacape.speccodingplugin.core.ExternalProcessStartupFailureKind
 import com.eacape.speccodingplugin.core.ManagedMergedOutputProcess
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -84,15 +88,14 @@ internal data class CliCommandLaunchPlan(
 
 internal class CliCommandRuntime(
     private val processStarter: (CliCommandLaunchPlan) -> Process = { plan ->
-        ProcessBuilder(plan.command)
-            .apply {
-                plan.workingDirectory?.let(::directory)
-                if (plan.environmentOverrides.isNotEmpty()) {
-                    environment().putAll(plan.environmentOverrides)
-                }
-                redirectErrorStream(plan.redirectErrorStream)
-            }
-            .start()
+        ExternalProcessLauncher.start(
+            ExternalProcessLaunchSpec(
+                command = plan.command,
+                workingDirectory = plan.workingDirectory,
+                environmentOverrides = plan.environmentOverrides,
+                redirectErrorStream = plan.redirectErrorStream,
+            ),
+        )
     },
     private val osNameProvider: () -> String = { System.getProperty("os.name").orEmpty() },
     private val environmentProvider: () -> Map<String, String> = System::getenv,
@@ -305,32 +308,23 @@ internal object CliCommandFailureDiagnostics {
         workingDirectory: File?,
         startupErrorMessage: String,
     ): CliCommandFailureKind {
-        if (workingDirectory != null && !workingDirectory.isDirectory) {
-            return CliCommandFailureKind.WORKING_DIRECTORY_UNAVAILABLE
-        }
-
-        val normalized = startupErrorMessage.lowercase()
-        return when {
-            normalized.contains("createprocess error=5") ||
-                normalized.contains("access is denied") ||
-                normalized.contains("permission denied") ->
-                CliCommandFailureKind.ACCESS_DENIED
-
-            normalized.contains("createprocess error=2") ||
-                normalized.contains("no such file or directory") ||
-                normalized.contains("cannot find the file specified") ||
-                normalized.contains("error=2,") ||
-                normalized.contains("missing executable") ||
-                normalized.contains("executable not found") ||
-                normalized.contains("command not found") ->
+        return when (
+            ExternalProcessStartupFailureClassifier.classify(
+                startupErrorMessage = startupErrorMessage,
+                workingDirectory = workingDirectory,
+            )
+        ) {
+            ExternalProcessStartupFailureKind.EXECUTABLE_NOT_FOUND ->
                 CliCommandFailureKind.EXECUTABLE_NOT_FOUND
 
-            normalized.contains("createprocess error=267") ||
-                normalized.contains("the directory name is invalid") ||
-                normalized.contains("not a directory") ->
+            ExternalProcessStartupFailureKind.WORKING_DIRECTORY_UNAVAILABLE ->
                 CliCommandFailureKind.WORKING_DIRECTORY_UNAVAILABLE
 
-            else -> CliCommandFailureKind.STARTUP_FAILED
+            ExternalProcessStartupFailureKind.ACCESS_DENIED ->
+                CliCommandFailureKind.ACCESS_DENIED
+
+            ExternalProcessStartupFailureKind.STARTUP_FAILED ->
+                CliCommandFailureKind.STARTUP_FAILED
         }
     }
 }

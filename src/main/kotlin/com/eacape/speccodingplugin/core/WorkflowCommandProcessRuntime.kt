@@ -90,10 +90,13 @@ internal data class WorkflowCommandProcessExecutionResult(
 
 internal class WorkflowCommandProcessRuntime(
     private val processStarter: (File?, List<String>) -> Process = { workingDirectory, command ->
-        ProcessBuilder(command)
-            .directory(workingDirectory)
-            .redirectErrorStream(true)
-            .start()
+        ExternalProcessLauncher.start(
+            ExternalProcessLaunchSpec(
+                command = command,
+                workingDirectory = workingDirectory,
+                redirectErrorStream = true,
+            ),
+        )
     },
     private val outputLimitChars: Int = DEFAULT_OUTPUT_LIMIT_CHARS,
     private val outputJoinTimeoutMillis: Long = DEFAULT_OUTPUT_JOIN_TIMEOUT_MILLIS,
@@ -245,32 +248,23 @@ internal object WorkflowCommandFailureDiagnostics {
         workingDirectory: File?,
         startupErrorMessage: String,
     ): WorkflowCommandFailureKind {
-        if (workingDirectory != null && !workingDirectory.isDirectory) {
-            return WorkflowCommandFailureKind.WORKING_DIRECTORY_UNAVAILABLE
-        }
-
-        val normalized = startupErrorMessage.lowercase()
-        return when {
-            normalized.contains("createprocess error=5") ||
-                normalized.contains("access is denied") ||
-                normalized.contains("permission denied") ->
-                WorkflowCommandFailureKind.ACCESS_DENIED
-
-            normalized.contains("createprocess error=2") ||
-                normalized.contains("no such file or directory") ||
-                normalized.contains("cannot find the file specified") ||
-                normalized.contains("error=2,") ||
-                normalized.contains("missing executable") ||
-                normalized.contains("executable not found") ||
-                normalized.contains("command not found") ->
+        return when (
+            ExternalProcessStartupFailureClassifier.classify(
+                startupErrorMessage = startupErrorMessage,
+                workingDirectory = workingDirectory,
+            )
+        ) {
+            ExternalProcessStartupFailureKind.EXECUTABLE_NOT_FOUND ->
                 WorkflowCommandFailureKind.EXECUTABLE_NOT_FOUND
 
-            normalized.contains("createprocess error=267") ||
-                normalized.contains("the directory name is invalid") ||
-                normalized.contains("not a directory") ->
+            ExternalProcessStartupFailureKind.WORKING_DIRECTORY_UNAVAILABLE ->
                 WorkflowCommandFailureKind.WORKING_DIRECTORY_UNAVAILABLE
 
-            else -> WorkflowCommandFailureKind.STARTUP_FAILED
+            ExternalProcessStartupFailureKind.ACCESS_DENIED ->
+                WorkflowCommandFailureKind.ACCESS_DENIED
+
+            ExternalProcessStartupFailureKind.STARTUP_FAILED ->
+                WorkflowCommandFailureKind.STARTUP_FAILED
         }
     }
 }

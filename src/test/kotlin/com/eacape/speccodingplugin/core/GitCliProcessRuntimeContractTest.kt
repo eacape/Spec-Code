@@ -16,8 +16,10 @@ class GitCliProcessRuntimeContractTest {
             StandardCharsets.UTF_8,
         )
 
+        assertTrue(source.contains("ExternalProcessLauncher.start("))
         assertTrue(source.contains("ManagedMergedOutputProcess.start("))
         assertTrue(source.contains("runtime.awaitCompletion("))
+        assertFalse(source.contains("ProcessBuilder("))
         assertFalse(source.contains("process.waitFor("))
         assertFalse(source.contains("process.inputStream.bufferedReader().use"))
         assertFalse(source.contains("process.destroyForcibly()"))

@@ -1,5 +1,6 @@
 package com.eacape.speccodingplugin.core
 
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.nio.charset.StandardCharsets
@@ -15,10 +16,13 @@ class WorkflowCommandProcessRuntimeContractTest {
             StandardCharsets.UTF_8,
         )
 
-        assertTrue(source.contains("ProcessBuilder(command)"))
+        assertTrue(source.contains("ExternalProcessLauncher.start("))
+        assertTrue(source.contains("ExternalProcessLaunchSpec("))
         assertTrue(source.contains("ManagedMergedOutputProcess.start("))
         assertTrue(source.contains("runningCommands = ConcurrentHashMap"))
         assertTrue(source.contains("WorkflowCommandFailureDiagnostics.diagnoseStartup("))
         assertTrue(source.contains("fun stop(commandKey: String): WorkflowCommandProcessStopResult"))
+        assertTrue(source.contains("redirectErrorStream = true"))
+        assertFalse(source.contains("ProcessBuilder("))
     }
 }

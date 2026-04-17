@@ -1,5 +1,9 @@
 package com.eacape.speccodingplugin.mcp
 
+import com.eacape.speccodingplugin.core.ExternalProcessLaunchSpec
+import com.eacape.speccodingplugin.core.ExternalProcessLauncher
+import com.eacape.speccodingplugin.core.ExternalProcessStartupFailureClassifier
+import com.eacape.speccodingplugin.core.ExternalProcessStartupFailureKind
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -70,14 +74,13 @@ internal data class McpServerProcessLaunchRequest(
 
 internal class McpServerProcessRuntime(
     private val processStarter: (McpServerProcessLaunchRequest) -> Process = { request ->
-        ProcessBuilder(request.launchCommand)
-            .apply {
-                if (request.config.env.isNotEmpty()) {
-                    environment().putAll(request.config.env)
-                }
-                redirectErrorStream(false)
-            }
-            .start()
+        ExternalProcessLauncher.start(
+            ExternalProcessLaunchSpec(
+                command = request.launchCommand,
+                environmentOverrides = request.config.env,
+                redirectErrorStream = false,
+            ),
+        )
     },
     private val osNameProvider: () -> String = { System.getProperty("os.name").orEmpty() },
     private val envProvider: (String) -> String? = System::getenv,
@@ -209,23 +212,16 @@ internal object McpProcessLaunchFailureDiagnostics {
     }
 
     private fun classifyFailureKind(startupErrorMessage: String): McpProcessLaunchFailureKind {
-        val normalized = startupErrorMessage.lowercase()
-        return when {
-            normalized.contains("createprocess error=5") ||
-                normalized.contains("access is denied") ||
-                normalized.contains("permission denied") ->
-                McpProcessLaunchFailureKind.ACCESS_DENIED
-
-            normalized.contains("createprocess error=2") ||
-                normalized.contains("no such file or directory") ||
-                normalized.contains("cannot find the file specified") ||
-                normalized.contains("error=2,") ||
-                normalized.contains("missing executable") ||
-                normalized.contains("executable not found") ||
-                normalized.contains("command not found") ->
+        return when (ExternalProcessStartupFailureClassifier.classify(startupErrorMessage = startupErrorMessage)) {
+            ExternalProcessStartupFailureKind.EXECUTABLE_NOT_FOUND ->
                 McpProcessLaunchFailureKind.EXECUTABLE_NOT_FOUND
 
-            else -> McpProcessLaunchFailureKind.STARTUP_FAILED
+            ExternalProcessStartupFailureKind.ACCESS_DENIED ->
+                McpProcessLaunchFailureKind.ACCESS_DENIED
+
+            ExternalProcessStartupFailureKind.WORKING_DIRECTORY_UNAVAILABLE,
+            ExternalProcessStartupFailureKind.STARTUP_FAILED ->
+                McpProcessLaunchFailureKind.STARTUP_FAILED
         }
     }
 }

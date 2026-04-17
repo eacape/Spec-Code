@@ -28,12 +28,17 @@ private enum class ExternalProcessMainThreadRisk(val label: String) {
 }
 
 private data class ExternalProcessInventoryRule(
-    val relativePath: String,
+    val ownerPath: String,
+    val launcherPath: String,
     val category: ExternalProcessCategory,
-    val occurrenceCount: Int,
     val threadExpectation: ExternalProcessThreadExpectation,
     val mainThreadRisk: ExternalProcessMainThreadRisk,
     val summary: String,
+)
+
+private data class ExternalProcessLauncherRule(
+    val relativePath: String,
+    val occurrenceCount: Int,
 )
 
 private data class DiscoveredProcessBuilderUsage(
@@ -50,54 +55,61 @@ private object ExternalProcessInventoryContract {
         ExternalProcessCategory.VERIFY,
     )
 
+    val launcherRules = listOf(
+        ExternalProcessLauncherRule(
+            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/core/ExternalProcessLauncher.kt",
+            occurrenceCount = 1,
+        ),
+    )
+
     val rules = listOf(
         ExternalProcessInventoryRule(
-            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/core/GitCliProcessRuntime.kt",
+            ownerPath = "src/main/kotlin/com/eacape/speccodingplugin/core/GitCliProcessRuntime.kt",
+            launcherPath = "src/main/kotlin/com/eacape/speccodingplugin/core/ExternalProcessLauncher.kt",
             category = ExternalProcessCategory.GIT,
-            occurrenceCount = 1,
             threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_ONLY,
             mainThreadRisk = ExternalProcessMainThreadRisk.MEDIUM,
-            summary = "Shared git runtime for hook polling, worktree operations, and team asset sync.",
+            summary = "Shared git runtime for hook polling, worktree operations, and team asset sync via the shared external launcher.",
         ),
         ExternalProcessInventoryRule(
-            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/engine/CliCommandRuntime.kt",
+            ownerPath = "src/main/kotlin/com/eacape/speccodingplugin/engine/CliCommandRuntime.kt",
+            launcherPath = "src/main/kotlin/com/eacape/speccodingplugin/core/ExternalProcessLauncher.kt",
             category = ExternalProcessCategory.CLI,
-            occurrenceCount = 1,
             threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_ONLY,
             mainThreadRisk = ExternalProcessMainThreadRisk.LOW,
-            summary = "Shared CLI runtime for engine execution, discovery probes, version checks, and Windows cmd fallback.",
+            summary = "Shared CLI runtime for engine execution, discovery probes, version checks, and Windows cmd fallback via the shared external launcher.",
         ),
         ExternalProcessInventoryRule(
-            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/hook/HookCommandRuntime.kt",
+            ownerPath = "src/main/kotlin/com/eacape/speccodingplugin/hook/HookCommandRuntime.kt",
+            launcherPath = "src/main/kotlin/com/eacape/speccodingplugin/core/ExternalProcessLauncher.kt",
             category = ExternalProcessCategory.HOOK,
-            occurrenceCount = 1,
             threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_ONLY,
             mainThreadRisk = ExternalProcessMainThreadRisk.LOW,
-            summary = "Shared hook RUN_COMMAND runtime with merged-output timeout handling and structured startup diagnostics.",
+            summary = "Shared hook RUN_COMMAND runtime with merged-output timeout handling and structured startup diagnostics via the shared external launcher.",
         ),
         ExternalProcessInventoryRule(
-            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/mcp/McpServerProcessRuntime.kt",
+            ownerPath = "src/main/kotlin/com/eacape/speccodingplugin/mcp/McpServerProcessRuntime.kt",
+            launcherPath = "src/main/kotlin/com/eacape/speccodingplugin/core/ExternalProcessLauncher.kt",
             category = ExternalProcessCategory.MCP,
-            occurrenceCount = 1,
             threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_ONLY,
             mainThreadRisk = ExternalProcessMainThreadRisk.LOW,
-            summary = "Shared MCP server launch runtime with Windows command resolution and structured startup diagnostics.",
+            summary = "Shared MCP server launch runtime with Windows command resolution and structured startup diagnostics via the shared external launcher.",
         ),
         ExternalProcessInventoryRule(
-            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/spec/VerifyCommandRuntime.kt",
+            ownerPath = "src/main/kotlin/com/eacape/speccodingplugin/spec/VerifyCommandRuntime.kt",
+            launcherPath = "src/main/kotlin/com/eacape/speccodingplugin/core/ExternalProcessLauncher.kt",
             category = ExternalProcessCategory.VERIFY,
-            occurrenceCount = 1,
             threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_PREFERRED,
             mainThreadRisk = ExternalProcessMainThreadRisk.MEDIUM,
-            summary = "VERIFY command runtime with timeout and split stdout/stderr truncation handling.",
+            summary = "VERIFY command runtime with timeout and split stdout/stderr truncation handling via the shared external launcher.",
         ),
         ExternalProcessInventoryRule(
-            relativePath = "src/main/kotlin/com/eacape/speccodingplugin/core/WorkflowCommandProcessRuntime.kt",
+            ownerPath = "src/main/kotlin/com/eacape/speccodingplugin/core/WorkflowCommandProcessRuntime.kt",
+            launcherPath = "src/main/kotlin/com/eacape/speccodingplugin/core/ExternalProcessLauncher.kt",
             category = ExternalProcessCategory.WORKFLOW,
-            occurrenceCount = 1,
             threadExpectation = ExternalProcessThreadExpectation.BACKGROUND_ONLY,
             mainThreadRisk = ExternalProcessMainThreadRisk.MEDIUM,
-            summary = "Shared workflow shell command runtime with stop/dispose semantics and structured startup diagnostics extracted out of the UI runner.",
+            summary = "Shared workflow shell command runtime with stop/dispose semantics and structured startup diagnostics extracted out of the UI runner and routed through the shared external launcher.",
         ),
     )
 
@@ -133,12 +145,12 @@ private object ExternalProcessInventoryContract {
         return rules
             .sortedWith(
                 compareBy<ExternalProcessInventoryRule> { it.category.label }
-                    .thenBy { it.relativePath },
+                    .thenBy { it.ownerPath },
             )
             .joinToString("\n") { rule ->
-                val actualCount = discoveredByPath[rule.relativePath]?.occurrenceCount ?: 0
+                val actualCount = discoveredByPath[rule.launcherPath]?.occurrenceCount ?: 0
                 "- ${rule.category.label} | ${rule.threadExpectation.label} | risk=${rule.mainThreadRisk.label} | " +
-                    "ProcessBuilder x$actualCount | ${rule.relativePath} | ${rule.summary}"
+                    "ProcessBuilder x$actualCount | launcher=${rule.launcherPath} | owner=${rule.ownerPath} | ${rule.summary}"
             }
     }
 
@@ -152,27 +164,38 @@ class ExternalProcessInventoryContractTest {
     @Test
     fun `every ProcessBuilder source should be cataloged with risk metadata`() {
         val discovered = ExternalProcessInventoryContract.discoverProcessBuilderUsages()
-        val configuredByPath = ExternalProcessInventoryContract.rules.associateBy { it.relativePath }
+        val configuredLaunchersByPath = ExternalProcessInventoryContract.launcherRules.associateBy { it.relativePath }
         val discoveredByPath = discovered.associateBy { it.relativePath }
+        val ownerRules = ExternalProcessInventoryContract.rules
 
-        val missing = discoveredByPath.keys - configuredByPath.keys
-        val stale = configuredByPath.keys - discoveredByPath.keys
-        val countMismatches = (discoveredByPath.keys intersect configuredByPath.keys)
+        val missing = discoveredByPath.keys - configuredLaunchersByPath.keys
+        val stale = configuredLaunchersByPath.keys - discoveredByPath.keys
+        val countMismatches = (discoveredByPath.keys intersect configuredLaunchersByPath.keys)
             .mapNotNull { relativePath ->
                 val actual = discoveredByPath.getValue(relativePath).occurrenceCount
-                val expected = configuredByPath.getValue(relativePath).occurrenceCount
+                val expected = configuredLaunchersByPath.getValue(relativePath).occurrenceCount
                 if (actual == expected) {
                     null
                 } else {
                     "$relativePath expected $expected ProcessBuilder callsites but found $actual"
                 }
             }
+        val unknownLaunchers = ownerRules
+            .map(ExternalProcessInventoryRule::launcherPath)
+            .toSet() - configuredLaunchersByPath.keys
+        val unusedLaunchers = configuredLaunchersByPath.keys - ownerRules
+            .map(ExternalProcessInventoryRule::launcherPath)
+            .toSet()
 
         assertTrue(
-            missing.isEmpty() && stale.isEmpty() && countMismatches.isEmpty(),
+            missing.isEmpty() &&
+                stale.isEmpty() &&
+                countMismatches.isEmpty() &&
+                unknownLaunchers.isEmpty() &&
+                unusedLaunchers.isEmpty(),
             buildString {
                 appendLine("External process inventory drift detected.")
-                appendLine("Every Kotlin source that constructs ProcessBuilder must be classified with category, thread expectation, and main-thread risk.")
+                appendLine("Every Kotlin source that constructs ProcessBuilder must be cataloged as an approved launcher, and every external process owner must point at one of those launchers with category, thread expectation, and main-thread risk.")
                 if (missing.isNotEmpty()) {
                     appendLine("Missing inventory rules: ${missing.joinToString(", ")}")
                 }
@@ -182,6 +205,12 @@ class ExternalProcessInventoryContractTest {
                 if (countMismatches.isNotEmpty()) {
                     appendLine("Count mismatches:")
                     countMismatches.forEach(::appendLine)
+                }
+                if (unknownLaunchers.isNotEmpty()) {
+                    appendLine("Owner rules reference unknown launcher sources: ${unknownLaunchers.joinToString(", ")}")
+                }
+                if (unusedLaunchers.isNotEmpty()) {
+                    appendLine("Configured launcher sources are not referenced by any owner rule: ${unusedLaunchers.joinToString(", ")}")
                 }
                 appendLine("Current configured inventory:")
                 appendLine(ExternalProcessInventoryContract.renderInventorySnapshot(discovered))
@@ -204,11 +233,12 @@ class ExternalProcessInventoryContractTest {
 
     @Test
     fun `ui package should not own raw ProcessBuilder launches`() {
-        val uiOwnedRules = ExternalProcessInventoryContract.rules.filter { "/ui/" in it.relativePath }
+        val uiOwnedRules = ExternalProcessInventoryContract.rules.filter { "/ui/" in it.ownerPath }
+        val uiOwnedLaunchers = ExternalProcessInventoryContract.launcherRules.filter { "/ui/" in it.relativePath }
 
         assertTrue(
-            uiOwnedRules.isEmpty(),
-            "Raw ProcessBuilder launches should no longer live under src/main/kotlin/.../ui. Remaining UI-owned rules: ${uiOwnedRules.joinToString { it.relativePath }}",
+            uiOwnedRules.isEmpty() && uiOwnedLaunchers.isEmpty(),
+            "Raw ProcessBuilder launches should no longer live under src/main/kotlin/.../ui. Remaining UI-owned owners: ${uiOwnedRules.joinToString { it.ownerPath }}; launchers: ${uiOwnedLaunchers.joinToString { it.relativePath }}",
         )
     }
 }

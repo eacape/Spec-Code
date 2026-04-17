@@ -146,29 +146,23 @@ internal object GitCliFailureDiagnostics {
         workingDirectory: File?,
         startupErrorMessage: String,
     ): GitCliFailureKind {
-        if (workingDirectory != null && (!workingDirectory.exists() || !workingDirectory.isDirectory)) {
-            return GitCliFailureKind.WORKING_DIRECTORY_UNAVAILABLE
-        }
-
-        val normalized = startupErrorMessage.lowercase()
-        return when {
-            normalized.contains("createprocess error=5") ||
-                normalized.contains("access is denied") ||
-                normalized.contains("permission denied") ->
-                GitCliFailureKind.ACCESS_DENIED
-
-            normalized.contains("createprocess error=2") ||
-                normalized.contains("no such file or directory") ||
-                normalized.contains("cannot find the file specified") ||
-                normalized.contains("error=2,") ->
+        return when (
+            ExternalProcessStartupFailureClassifier.classify(
+                startupErrorMessage = startupErrorMessage,
+                workingDirectory = workingDirectory,
+            )
+        ) {
+            ExternalProcessStartupFailureKind.EXECUTABLE_NOT_FOUND ->
                 GitCliFailureKind.EXECUTABLE_NOT_FOUND
 
-            normalized.contains("createprocess error=267") ||
-                normalized.contains("the directory name is invalid") ||
-                normalized.contains("not a directory") ->
+            ExternalProcessStartupFailureKind.WORKING_DIRECTORY_UNAVAILABLE ->
                 GitCliFailureKind.WORKING_DIRECTORY_UNAVAILABLE
 
-            else -> GitCliFailureKind.STARTUP_FAILED
+            ExternalProcessStartupFailureKind.ACCESS_DENIED ->
+                GitCliFailureKind.ACCESS_DENIED
+
+            ExternalProcessStartupFailureKind.STARTUP_FAILED ->
+                GitCliFailureKind.STARTUP_FAILED
         }
     }
 }
