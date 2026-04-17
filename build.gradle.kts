@@ -462,6 +462,7 @@ tasks {
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelDocumentSavePlatformTest",
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelDocumentWorkspaceViewPlatformTest",
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowGateDetailsPanelTest",
+            "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelClarificationRetryRestorePlatformTest",
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelLifecyclePlatformTest",
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelListActionsPlatformTest",
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelStageTransitionPlatformTest",

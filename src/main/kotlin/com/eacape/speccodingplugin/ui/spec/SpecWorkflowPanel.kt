@@ -63,13 +63,11 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Locale
-import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.BorderFactory
 import javax.swing.JButton
 import javax.swing.Icon
 import javax.swing.JPanel
 import javax.swing.JSplitPane
-import javax.swing.Timer
 
 class SpecWorkflowPanel(
     private val project: Project,
@@ -613,7 +611,7 @@ class SpecWorkflowPanel(
                 }
 
                 override fun stopLiveProgressRefresh() {
-                    liveProgressRefreshTimer.stop()
+                    liveProgressRefreshCoordinator.stopRefresh()
                 }
 
                 override fun clearFocusedStage() {
@@ -678,6 +676,48 @@ class SpecWorkflowPanel(
     private val workflowSwitcherUiHost by lazy(LazyThreadSafetyMode.NONE) {
         SpecWorkflowSwitcherUiHost(switchWorkflowButton)
     }
+    private val clarificationRetryRestoreUiHost by lazy(LazyThreadSafetyMode.NONE) {
+        SpecWorkflowClarificationRetryRestoreUiHost(
+            retryStore = clarificationRetryStore,
+            appendTimelineEntriesUi = processTimelineUiHost::appendEntries,
+        )
+    }
+    private val liveProgressPresentationUiHost by lazy(LazyThreadSafetyMode.NONE) {
+        SpecWorkflowLiveProgressPresentationUiHost(
+            resolveStructuredTasks = { currentStructuredTasks },
+            updateTasksUi = { tasks, liveProgressByTaskId ->
+                tasksPanel.updateLiveProgress(
+                    tasks = tasks,
+                    liveProgressByTaskId = liveProgressByTaskId,
+                )
+            },
+            updateDetailTasksUi = { tasks, liveProgressByTaskId ->
+                detailTasksPanel.updateLiveProgress(
+                    tasks = tasks,
+                    liveProgressByTaskId = liveProgressByTaskId,
+                )
+            },
+            refreshWorkspacePresentationUi = ::refreshWorkspacePresentation,
+        )
+    }
+    private val liveProgressRefreshCoordinator by lazy(LazyThreadSafetyMode.NONE) {
+        SpecWorkflowLiveProgressRefreshCoordinator(
+            invokeLaterOnUi = ::invokeLaterSafe,
+            launchLoad = { action ->
+                taskCoordinator.launchIo {
+                    action()
+                }
+            },
+            isDisposed = { project.isDisposed || _isDisposed },
+            resolveSelectedWorkflowId = { selectedWorkflowId },
+            resolveCurrentWorkflowId = { currentWorkflow?.id },
+            isWorkflowCurrentAndSelected = { workflowId ->
+                selectedWorkflowId == workflowId && currentWorkflow?.id == workflowId
+            },
+            loadLiveProgressByTaskId = ::buildTaskLiveProgressByTaskId,
+            applyLiveProgressPresentation = liveProgressPresentationUiHost::apply,
+        )
+    }
     private val workflowStateApplicationUi by lazy(LazyThreadSafetyMode.NONE) {
         SpecWorkflowPanelStateApplicationUiFacade(
             workflowPanelState = workflowPanelState,
@@ -709,10 +749,9 @@ class SpecWorkflowPanel(
             setCurrentWorkflow = { workflow ->
                 currentWorkflow = workflow
             },
-            syncClarificationRetryFromWorkflow = ::syncClarificationRetryFromWorkflow,
+            clarificationRetryUiHost = clarificationRetryRestoreUiHost,
             detailStateHost = workflowDetailStateHost,
             updateWorkspacePresentation = ::updateWorkspacePresentation,
-            onRestorePendingClarificationState = ::restorePendingClarificationState,
             onApplyPendingOpenWorkflowRequest = { workflowId ->
                 workflowLoadEntryCoordinator.applyPendingOpenWorkflowRequestIfNeeded(workflowId)
             },
@@ -1118,6 +1157,81 @@ class SpecWorkflowPanel(
             compactErrorMessage(error, fallback)
         },
     )
+    private val generationRequestResolver = SpecWorkflowGenerationRequestResolver(
+        generationCoordinator = generationCoordinator,
+        selectedWorkflowId = { selectedWorkflowId },
+        currentWorkflow = { currentWorkflow },
+        resolveProviderId = { providerComboBox.selectedItem as? String },
+        resolveModelId = { (modelComboBox.selectedItem as? ModelInfo)?.id },
+        resolveWorkflowSourceUsage = ::resolveComposerSourceUsage,
+        setStatusText = { text ->
+            setStatusText(text)
+        },
+        setRuntimeTroubleshootingStatus = ::setRuntimeTroubleshootingStatus,
+    )
+    private val processTimelineUiHost = SpecWorkflowProcessTimelineUiHost(
+        appendTimelineEntryUi = { text, state ->
+            detailPanel.appendProcessTimelineEntry(
+                text = text,
+                state = state,
+            )
+        },
+        clearTimelineUi = {
+            detailPanel.clearProcessTimeline()
+        },
+    )
+    private val generationExecutionUiHost = SpecWorkflowGenerationExecutionUiHost(
+        invokeLaterOnUi = ::invokeLaterSafe,
+        isWorkflowSelectedNow = { workflowId ->
+            selectedWorkflowId == workflowId
+        },
+        showClarificationGeneratingUi = { phase, input, suggestedDetails ->
+            detailPanel.showClarificationGenerating(
+                phase = phase,
+                input = input,
+                suggestedDetails = suggestedDetails,
+            )
+        },
+        showClarificationDraftUi = { phase, input, questionsMarkdown, suggestedDetails, structuredQuestions ->
+            detailPanel.showClarificationDraft(
+                phase = phase,
+                input = input,
+                questionsMarkdown = questionsMarkdown,
+                suggestedDetails = suggestedDetails,
+                structuredQuestions = structuredQuestions,
+            )
+        },
+        appendTimelineEntriesUi = processTimelineUiHost::appendEntries,
+        showGeneratingUi = { fraction ->
+            detailPanel.showGenerating(fraction)
+        },
+        showValidationFailureUi = { phase, validation ->
+            detailPanel.showValidationFailureInteractive(
+                phase = phase,
+                validation = validation,
+            )
+        },
+        showGenerationFailedUi = {
+            detailPanel.showGenerationFailed()
+        },
+        exitClarificationModeUi = { clearInput ->
+            detailPanel.exitClarificationMode(clearInput = clearInput)
+        },
+        rememberClarificationRetry = { request ->
+            clarificationRetryStore.remember(request)
+        },
+        clearClarificationRetry = { workflowId ->
+            clarificationRetryStore.clear(workflowId)
+        },
+        resolveClarificationRound = { workflowId ->
+            clarificationRetryStore.current(workflowId)?.clarificationRound
+        },
+        setStatusText = ::setStatusText,
+        setRuntimeTroubleshootingStatus = ::setRuntimeTroubleshootingStatus,
+        reloadCurrentWorkflow = { onUpdated ->
+            reloadCurrentWorkflow(onUpdated = onUpdated)
+        },
+    )
     private val generationExecutionCoordinator = SpecWorkflowGenerationExecutionCoordinator(
         backgroundRunner = object : SpecWorkflowGenerationExecutionBackgroundRunner {
             override fun launch(task: suspend () -> Unit): SpecWorkflowGenerationExecutionHandle {
@@ -1129,93 +1243,7 @@ class SpecWorkflowPanel(
                 }
             }
         },
-        ui = object : SpecWorkflowGenerationExecutionUi {
-            override fun invokeLater(action: () -> Unit) {
-                invokeLaterSafe(action)
-            }
-
-            override fun isWorkflowSelected(workflowId: String): Boolean {
-                return selectedWorkflowId == workflowId
-            }
-
-            override fun showClarificationGenerating(prepared: SpecWorkflowPreparedClarificationDraftRequest) {
-                detailPanel.showClarificationGenerating(
-                    phase = prepared.context.phase,
-                    input = prepared.input,
-                    suggestedDetails = prepared.safeSuggestedDetails,
-                )
-                appendProcessTimelineEntries(prepared.initialTimelineEntries)
-                setStatusText(prepared.loadingStatusText)
-            }
-
-            override fun applyClarificationDraftResult(
-                prepared: SpecWorkflowPreparedClarificationDraftRequest,
-                result: SpecWorkflowClarificationDraftResult,
-            ) {
-                detailPanel.showClarificationDraft(
-                    phase = result.phase,
-                    input = prepared.input,
-                    questionsMarkdown = result.questionsMarkdown,
-                    suggestedDetails = prepared.safeSuggestedDetails,
-                    structuredQuestions = result.structuredQuestions,
-                )
-                rememberClarificationRetry(
-                    workflowId = prepared.context.workflowId,
-                    input = prepared.input,
-                    confirmedContext = prepared.safeSuggestedDetails,
-                    questionsMarkdown = result.questionsMarkdown,
-                    structuredQuestions = result.structuredQuestions,
-                    clarificationRound = prepared.clarificationRound,
-                    lastError = result.errorText,
-                )
-                appendProcessTimelineEntries(listOf(result.timelineEntry))
-                if (result.troubleshootingTrigger != null) {
-                    setRuntimeTroubleshootingStatus(
-                        prepared.context.workflowId,
-                        result.statusText,
-                        result.troubleshootingTrigger,
-                    )
-                } else {
-                    setStatusText(result.statusText)
-                }
-            }
-
-            override fun applyGenerationProgress(
-                workflowId: String,
-                input: String,
-                update: SpecWorkflowGenerationProgressUpdate,
-            ) {
-                applyGenerationProgressUpdate(
-                    workflowId = workflowId,
-                    input = input,
-                    update = update,
-                )
-            }
-
-            override fun handleClarificationInterrupted(
-                workflowId: String,
-                input: String,
-                options: GenerationOptions,
-            ) {
-                val interruptedMessage = SpecCodingBundle.message("spec.workflow.generation.interrupted")
-                if (selectedWorkflowId != workflowId) {
-                    return
-                }
-                detailPanel.appendProcessTimelineEntry(
-                    text = SpecCodingBundle.message("spec.workflow.process.clarify.failed", interruptedMessage),
-                    state = SpecDetailPanel.ProcessTimelineState.FAILED,
-                )
-                rememberClarificationRetry(
-                    workflowId = workflowId,
-                    input = input,
-                    confirmedContext = options.confirmedContext,
-                    clarificationRound = clarificationRetryStore.current(workflowId)?.clarificationRound,
-                    lastError = interruptedMessage,
-                )
-                detailPanel.showGenerationFailed()
-                setStatusText(SpecCodingBundle.message("spec.workflow.error", interruptedMessage))
-            }
-        },
+        ui = generationExecutionUiHost,
         generationCoordinator = generationCoordinator,
         draftClarification = { workflowId, input, options ->
             specEngine.draftCurrentPhaseClarification(
@@ -1283,9 +1311,7 @@ class SpecWorkflowPanel(
                 onFailure = request.onFailure,
             )
         },
-        appendTimelineEntry = { entry ->
-            appendProcessTimelineEntries(listOf(entry))
-        },
+        appendTimelineEntry = processTimelineUiHost::appendEntry,
         showClarificationManualFallback = { fallback ->
             detailPanel.showClarificationDraft(
                 phase = fallback.phase,
@@ -1335,23 +1361,17 @@ class SpecWorkflowPanel(
             workspaceChromeUiHost.showWorkspaceContent()
         },
         focusStage = ::focusStage,
-        clearProcessTimeline = {
-            detailPanel.clearProcessTimeline()
-        },
-        appendTimelineEntry = { entry ->
-            appendProcessTimelineEntries(listOf(entry))
-        },
+        clearProcessTimeline = processTimelineUiHost::clear,
+        appendTimelineEntry = processTimelineUiHost::appendEntry,
         launchClarification = requirementsRepairClarificationCoordinator::launchClarification,
     )
     private val clarificationActionCoordinator = SpecWorkflowClarificationActionCoordinator(
         retryStore = clarificationRetryStore,
-        resolveSelectedWorkflow = ::resolveSelectedWorkflowForClarification,
-        resolveGenerationContext = ::resolveGenerationContext,
+        resolveSelectedWorkflow = generationRequestResolver::resolveSelectedWorkflow,
+        resolveGenerationContext = generationRequestResolver::resolveGenerationContext,
         selectedWorkflowId = { selectedWorkflowId },
         currentWorkflow = { currentWorkflow },
-        appendTimelineEntry = { entry ->
-            appendProcessTimelineEntries(listOf(entry))
-        },
+        appendTimelineEntry = processTimelineUiHost::appendEntry,
         setStatusText = ::setStatusText,
         unlockClarificationChecklistInteractions = {
             detailPanel.unlockClarificationChecklistInteractions()
@@ -1373,14 +1393,10 @@ class SpecWorkflowPanel(
     )
     private val generationLaunchCoordinator = SpecWorkflowGenerationLaunchCoordinator(
         retryStore = clarificationRetryStore,
-        resolveSelectedWorkflow = ::resolveSelectedWorkflowForClarification,
-        resolveGenerationContext = ::resolveGenerationContext,
-        clearProcessTimeline = {
-            detailPanel.clearProcessTimeline()
-        },
-        appendTimelineEntry = { entry ->
-            appendProcessTimelineEntries(listOf(entry))
-        },
+        resolveSelectedWorkflow = generationRequestResolver::resolveSelectedWorkflow,
+        resolveGenerationContext = generationRequestResolver::resolveGenerationContext,
+        clearProcessTimeline = processTimelineUiHost::clear,
+        appendTimelineEntry = processTimelineUiHost::appendEntry,
         generationCoordinator = generationCoordinator,
         gateRequirementsRepairCoordinator = gateRequirementsRepairCoordinator,
         runGeneration = generationExecutionCoordinator::runGeneration,
@@ -1783,25 +1799,6 @@ class SpecWorkflowPanel(
         get() = currentWorkspaceState?.workbenchState
     private val currentStructuredTasks: List<StructuredTask>
         get() = currentWorkspaceState?.tasks.orEmpty()
-    private val liveProgressRefreshDispatchQueued = AtomicBoolean(false)
-    private val liveProgressRefreshLoadInFlight = AtomicBoolean(false)
-    @Volatile
-    private var liveProgressRefreshPending = false
-    private val liveProgressListener = TaskExecutionLiveProgressListener { progress ->
-        if (progress.workflowId == selectedWorkflowId) {
-            requestLiveProgressPresentationRefresh()
-        }
-    }
-    private val liveProgressEventCoalesceTimer = Timer(LIVE_PROGRESS_EVENT_COALESCE_MILLIS) {
-        flushPendingLiveProgressPresentationRefresh()
-    }.apply {
-        isRepeats = false
-    }
-    private val liveProgressRefreshTimer = Timer(1_000) {
-        flushPendingLiveProgressPresentationRefresh(force = true)
-    }.apply {
-        isRepeats = true
-    }
 
     private var currentWorkflow: SpecWorkflow? = null
     private var isSynchronizingStructuredTaskSelection: Boolean = false
@@ -1898,7 +1895,7 @@ class SpecWorkflowPanel(
         subscribeToLocaleEvents()
         subscribeToGlobalConfigEvents()
         workflowExternalEventSubscriptionAdapter.register()
-        specTaskExecutionService.addLiveProgressListener(liveProgressListener)
+        specTaskExecutionService.addLiveProgressListener(liveProgressRefreshCoordinator.listener)
         if (deferInitialWorkflowRefresh) {
             initialWorkflowRefreshTriggered = false
         } else {
@@ -2509,73 +2506,6 @@ class SpecWorkflowPanel(
         applyWorkspacePresentationRequest(request)
     }
 
-    private fun applyCurrentLiveProgressPresentation(updatedLiveProgress: Map<String, TaskExecutionLiveProgress>) {
-        val workflow = currentWorkflow ?: return
-        val workflowId = selectedWorkflowId ?: return
-        if (workflow.id != workflowId) {
-            return
-        }
-        tasksPanel.updateLiveProgress(
-            tasks = currentStructuredTasks,
-            liveProgressByTaskId = updatedLiveProgress,
-        )
-        detailTasksPanel.updateLiveProgress(
-            tasks = currentStructuredTasks,
-            liveProgressByTaskId = updatedLiveProgress,
-        )
-        refreshWorkspacePresentation()
-    }
-
-    private fun requestLiveProgressPresentationRefresh() {
-        liveProgressRefreshPending = true
-        if (!liveProgressRefreshDispatchQueued.compareAndSet(false, true)) {
-            return
-        }
-        invokeLaterSafe {
-            liveProgressRefreshDispatchQueued.set(false)
-            if (project.isDisposed || _isDisposed || !liveProgressRefreshPending) {
-                return@invokeLaterSafe
-            }
-            if (liveProgressEventCoalesceTimer.isRunning) {
-                liveProgressEventCoalesceTimer.restart()
-            } else {
-                liveProgressEventCoalesceTimer.start()
-            }
-        }
-    }
-
-    private fun flushPendingLiveProgressPresentationRefresh(force: Boolean = false) {
-        if (!force && !liveProgressRefreshPending) {
-            return
-        }
-        liveProgressRefreshPending = false
-        refreshCurrentLiveProgressPresentationAsync()
-    }
-
-    private fun refreshCurrentLiveProgressPresentationAsync() {
-        val workflow = currentWorkflow ?: return
-        val workflowId = selectedWorkflowId ?: return
-        if (workflow.id != workflowId) {
-            return
-        }
-        if (!liveProgressRefreshLoadInFlight.compareAndSet(false, true)) {
-            liveProgressRefreshPending = true
-            return
-        }
-        taskCoordinator.launchIo {
-            val updatedLiveProgress = buildTaskLiveProgressByTaskId(workflowId)
-            invokeLaterSafe {
-                liveProgressRefreshLoadInFlight.set(false)
-                if (selectedWorkflowId == workflowId && currentWorkflow?.id == workflowId) {
-                    applyCurrentLiveProgressPresentation(updatedLiveProgress)
-                }
-                if (liveProgressRefreshPending) {
-                    refreshCurrentLiveProgressPresentationAsync()
-                }
-            }
-        }
-    }
-
     private fun decorateTasksWithExecutionState(
         workflow: SpecWorkflow,
         tasks: List<StructuredTask>,
@@ -2603,23 +2533,6 @@ class SpecWorkflowPanel(
         }.associateBy(TaskExecutionLiveProgress::taskId)
     }
 
-    private fun updateLiveProgressRefreshTimer(
-        tasks: List<StructuredTask>,
-        liveProgressByTaskId: Map<String, TaskExecutionLiveProgress>,
-    ) {
-        val hasLiveProgress = liveProgressByTaskId.isNotEmpty() || tasks.any(StructuredTask::hasExecutionInFlight)
-        if (hasLiveProgress) {
-            if (!liveProgressRefreshTimer.isRunning) {
-                liveProgressRefreshTimer.start()
-            }
-        } else {
-            liveProgressRefreshPending = false
-            liveProgressRefreshDispatchQueued.set(false)
-            liveProgressEventCoalesceTimer.stop()
-            liveProgressRefreshTimer.stop()
-        }
-    }
-
     private fun updateWorkspacePresentation(
         workflow: SpecWorkflow,
         overviewState: SpecWorkflowOverviewState,
@@ -2628,7 +2541,7 @@ class SpecWorkflowPanel(
         verifyDeltaState: SpecWorkflowVerifyDeltaState,
         gateResult: GateResult?,
     ) {
-        updateLiveProgressRefreshTimer(tasks, liveProgressByTaskId)
+        liveProgressRefreshCoordinator.updateRefreshTracking(tasks, liveProgressByTaskId)
         focusedStage = workflowWorkspaceStateHost.apply(
             workflow = workflow,
             overviewState = overviewState,
@@ -2733,15 +2646,6 @@ class SpecWorkflowPanel(
         generationLaunchCoordinator.generate(input)
     }
 
-    private fun resolveSelectedWorkflowForClarification(): SpecWorkflow? {
-        val workflowId = selectedWorkflowId ?: return null
-        val workflow = currentWorkflow?.takeIf { it.id == workflowId }
-        if (workflow == null) {
-            setStatusText(SpecCodingBundle.message("spec.workflow.error", SpecCodingBundle.message("common.unknown")))
-        }
-        return workflow
-    }
-
     private fun repairTasksArtifactFromGate(workflowId: String): Boolean {
         gateArtifactRepairCoordinator.repairTasksArtifact(workflowId)
         return true
@@ -2756,164 +2660,8 @@ class SpecWorkflowPanel(
         workflowListActionCoordinator.requestSwitch()
     }
 
-    private fun applyGenerationProgressUpdate(
-        workflowId: String,
-        input: String,
-        update: SpecWorkflowGenerationProgressUpdate,
-    ) {
-        if (selectedWorkflowId != workflowId) {
-            return
-        }
-        appendProcessTimelineEntries(update.timelineEntries)
-        update.progressFraction?.let(detailPanel::showGenerating)
-        if (update.shouldClearRetry) {
-            clearClarificationRetry(workflowId)
-        }
-        if (update.retryLastError != null) {
-            rememberClarificationRetry(
-                workflowId = workflowId,
-                input = input,
-                confirmedContext = update.retryConfirmedContext,
-                clarificationRound = clarificationRetryStore.current(workflowId)?.clarificationRound,
-                lastError = update.retryLastError,
-            )
-        }
-        if (update.validationFailure != null) {
-            setStatusText(update.statusText)
-            if (update.shouldReloadWorkflow) {
-                reloadCurrentWorkflow { updated ->
-                    detailPanel.showValidationFailureInteractive(
-                        phase = updated.currentPhase,
-                        validation = update.validationFailure,
-                    )
-                }
-            }
-            return
-        }
-        if (update.shouldShowGenerationFailed) {
-            detailPanel.showGenerationFailed()
-        }
-        if (update.shouldExitClarificationMode) {
-            detailPanel.exitClarificationMode(clearInput = update.clearInputOnExit)
-        }
-        if (update.statusText != null) {
-            if (update.troubleshootingTrigger != null) {
-                setRuntimeTroubleshootingStatus(
-                    workflowId,
-                    update.statusText,
-                    update.troubleshootingTrigger,
-                )
-            } else {
-                setStatusText(update.statusText)
-            }
-        }
-        if (update.shouldReloadWorkflow) {
-            reloadCurrentWorkflow()
-        }
-    }
-
-    private fun appendProcessTimelineEntries(entries: List<SpecWorkflowTimelineEntry>) {
-        entries.forEach { entry ->
-            detailPanel.appendProcessTimelineEntry(
-                text = entry.text,
-                state = entry.state.toProcessTimelineState(),
-            )
-        }
-    }
-
-    private fun SpecWorkflowTimelineEntryState.toProcessTimelineState(): SpecDetailPanel.ProcessTimelineState {
-        return when (this) {
-            SpecWorkflowTimelineEntryState.ACTIVE -> SpecDetailPanel.ProcessTimelineState.ACTIVE
-            SpecWorkflowTimelineEntryState.DONE -> SpecDetailPanel.ProcessTimelineState.DONE
-            SpecWorkflowTimelineEntryState.FAILED -> SpecDetailPanel.ProcessTimelineState.FAILED
-            SpecWorkflowTimelineEntryState.INFO -> SpecDetailPanel.ProcessTimelineState.INFO
-        }
-    }
-
-    private fun resolveGenerationContext(): SpecWorkflowGenerationContext? {
-        val selectedWorkflowId = selectedWorkflowId
-        return when (
-            val resolution = generationCoordinator.resolveGenerationContext(
-                selectedWorkflowId = selectedWorkflowId,
-                currentWorkflow = currentWorkflow,
-                providerId = providerComboBox.selectedItem as? String,
-                modelId = (modelComboBox.selectedItem as? ModelInfo)?.id,
-                workflowSourceUsage = selectedWorkflowId
-                    ?.let(::resolveComposerSourceUsage)
-                    ?: WorkflowSourceUsage(),
-            )
-        ) {
-            is SpecWorkflowGenerationContextResolution.Success -> resolution.context
-            is SpecWorkflowGenerationContextResolution.Failure -> {
-                setRuntimeTroubleshootingStatus(
-                    selectedWorkflowId,
-                    resolution.statusMessage,
-                    SpecWorkflowRuntimeTroubleshootingTrigger.GENERATION_PRECHECK,
-                )
-                null
-            }
-        }
-    }
-
     private fun resolveComposerSourceUsage(workflowId: String): WorkflowSourceUsage {
         return workflowDetailStateHost.resolveSourceUsage(workflowId)
-    }
-
-    private fun rememberClarificationRetry(
-        workflowId: String,
-        input: String,
-        confirmedContext: String?,
-        questionsMarkdown: String? = null,
-        structuredQuestions: List<String>? = null,
-        clarificationRound: Int? = null,
-        lastError: String? = null,
-        confirmed: Boolean? = null,
-        followUp: ClarificationFollowUp? = null,
-        requirementsRepairSections: List<RequirementsSectionId>? = null,
-        persist: Boolean = true,
-    ) {
-        clarificationRetryStore.remember(
-            SpecWorkflowClarificationRetryRememberRequest(
-                workflowId = workflowId,
-                input = input,
-                confirmedContext = confirmedContext,
-                questionsMarkdown = questionsMarkdown,
-                structuredQuestions = structuredQuestions,
-                clarificationRound = clarificationRound,
-                lastError = lastError,
-                confirmed = confirmed,
-                followUp = followUp,
-                requirementsRepairSections = requirementsRepairSections,
-                persist = persist,
-            ),
-        )
-    }
-
-    private fun clearClarificationRetry(workflowId: String, persist: Boolean = true) {
-        clarificationRetryStore.clear(workflowId, persist)
-    }
-
-    private fun syncClarificationRetryFromWorkflow(workflow: SpecWorkflow) {
-        clarificationRetryStore.syncFromWorkflow(workflow)
-    }
-
-    private fun restorePendingClarificationState(workflowId: String) {
-        val payload = clarificationRetryStore.current(workflowId) ?: return
-        detailPanel.appendProcessTimelineEntry(
-            text = SpecCodingBundle.message(
-                "spec.workflow.process.retryRestored",
-                payload.clarificationRound,
-            ),
-            state = SpecDetailPanel.ProcessTimelineState.INFO,
-        )
-        payload.lastError
-            ?.takeIf { it.isNotBlank() }
-            ?.let { error ->
-                detailPanel.appendProcessTimelineEntry(
-                    text = SpecCodingBundle.message("spec.workflow.process.retryLastError", error),
-                    state = SpecDetailPanel.ProcessTimelineState.FAILED,
-                )
-            }
     }
 
     private fun onTaskStatusTransitionRequested(taskId: String, to: TaskStatus) {
@@ -3539,6 +3287,10 @@ class SpecWorkflowPanel(
 
     internal fun currentClarificationQuestionsTextForTest(): String = detailPanel.clarificationQuestionsTextForTest()
 
+    internal fun currentProcessTimelineTextForTest(): String = detailPanel.currentProcessTimelineTextForTest()
+
+    internal fun isProcessTimelineVisibleForTest(): Boolean = detailPanel.isProcessTimelineVisibleForTest()
+
     internal fun setComposerInputTextForTest(text: String) {
         detailPanel.setInputTextForTest(text)
     }
@@ -3594,9 +3346,8 @@ class SpecWorkflowPanel(
         _isDisposed = true
         workflowExternalEventActionCoordinator.cancelPendingDocumentReload()
         CliDiscoveryService.getInstance().removeDiscoveryListener(discoveryListener)
-        liveProgressEventCoalesceTimer.stop()
-        liveProgressRefreshTimer.stop()
-        specTaskExecutionService.removeLiveProgressListener(liveProgressListener)
+        liveProgressRefreshCoordinator.stopRefresh()
+        specTaskExecutionService.removeLiveProgressListener(liveProgressRefreshCoordinator.listener)
         workflowSwitcherUiHost.cancel()
         generationExecutionCoordinator.cancelActiveRequest("Spec workflow panel disposed")
         taskCoordinator.dispose()
@@ -3620,7 +3371,6 @@ class SpecWorkflowPanel(
         private val PHASE_SECTION_BG = JBColor(Color(240, 246, 255), Color(62, 69, 80))
         private val DETAIL_SECTION_BG = JBColor(Color(249, 252, 255), Color(50, 56, 65))
         private val DETAIL_SECTION_BORDER = JBColor(Color(204, 217, 236), Color(84, 94, 109))
-        private const val LIVE_PROGRESS_EVENT_COALESCE_MILLIS = 180
         private const val DOCUMENT_WORKSPACE_VIEWPORT_HEIGHT = 360
         private val PLACEHOLDER_ERROR_MESSAGES = setOf("-", "--", "...", "null", "none", "unknown")
         private val PLACEHOLDER_SYMBOLS_REGEX = Regex("""^[\p{Punct}\s]+$""")

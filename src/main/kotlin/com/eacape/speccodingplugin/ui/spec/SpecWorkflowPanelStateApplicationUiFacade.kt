@@ -35,7 +35,7 @@ internal class SpecWorkflowPanelStateApplicationUiFacade(
     private val onLoadWorkflow: (String) -> Unit,
     private val onClearOpenedWorkflowUi: (Boolean) -> Unit,
     private val setCurrentWorkflow: (SpecWorkflow?) -> Unit,
-    private val syncClarificationRetryFromWorkflow: (SpecWorkflow) -> Unit,
+    private val clarificationRetryUiHost: SpecWorkflowClarificationRetryRestoreUiHost,
     private val detailStateHost: SpecWorkflowDetailStateApplicationHost,
     private val updateWorkspacePresentation: (
         workflow: SpecWorkflow,
@@ -45,7 +45,6 @@ internal class SpecWorkflowPanelStateApplicationUiFacade(
         verifyDeltaState: SpecWorkflowVerifyDeltaState,
         gateResult: GateResult?,
     ) -> Unit,
-    private val onRestorePendingClarificationState: (String) -> Unit,
     private val onApplyPendingOpenWorkflowRequest: (String) -> Unit,
     private val showWorkspaceContent: () -> Unit,
 ) : SpecWorkflowStateApplicationUi {
@@ -85,7 +84,7 @@ internal class SpecWorkflowPanelStateApplicationUiFacade(
 
     override fun applyWorkflowCore(state: SpecWorkflowLoadedCoreUiState) {
         setCurrentWorkflow(state.workflow)
-        syncClarificationRetryFromWorkflow(state.workflow)
+        clarificationRetryUiHost.syncFromWorkflow(state.workflow)
         panels.phaseIndicator.updatePhase(state.workflow)
         panels.overviewPanel.updateOverview(state.snapshot.overviewState)
         panels.verifyDeltaPanel.updateState(state.snapshot.verifyDeltaState)
@@ -133,7 +132,7 @@ internal class SpecWorkflowPanelStateApplicationUiFacade(
     }
 
     override fun restorePendingClarificationState(workflowId: String) {
-        onRestorePendingClarificationState(workflowId)
+        clarificationRetryUiHost.restorePendingState(workflowId)
     }
 
     override fun applyPendingOpenWorkflowRequest(workflowId: String) {
