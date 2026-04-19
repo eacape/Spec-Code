@@ -71,6 +71,7 @@ internal class VerifyCommandRuntime(
             ),
         )
     },
+    private val splitOutputRuntime: VerifyCommandSplitOutputRuntime = VerifyCommandSplitOutputRuntime(),
     private val outputJoinTimeoutMillis: Long = DEFAULT_OUTPUT_JOIN_TIMEOUT_MILLIS,
     private val timeoutDestroyGraceWaitMillis: Long = DEFAULT_TIMEOUT_DESTROY_GRACE_WAIT_MILLIS,
     private val timeoutDestroyForceWaitMillis: Long = DEFAULT_TIMEOUT_DESTROY_FORCE_WAIT_MILLIS,
@@ -78,23 +79,21 @@ internal class VerifyCommandRuntime(
 
     fun execute(request: VerifyCommandExecutionRequest): VerifyCommandRuntimeResult {
         val normalizedTimeoutMs = request.timeoutMs.toLong().coerceAtLeast(1L)
-        return runCatching {
-            val process = processStarter(request)
-            val runtime = ManagedSplitOutputProcess.start(
-                process = process,
+        return splitOutputRuntime.execute(
+            processStarter = { processStarter(request) },
+            spec = VerifyCommandSplitOutputSpec(
                 outputLimitChars = request.outputLimitChars,
                 stdoutThreadName = "${request.commandId}-stdout",
                 stderrThreadName = "${request.commandId}-stderr",
-            )
-            val completion = runtime.awaitCompletion(
                 timeout = normalizedTimeoutMs,
                 timeoutUnit = TimeUnit.MILLISECONDS,
-                joinTimeoutMillis = outputJoinTimeoutMillis,
+                outputJoinTimeoutMillis = outputJoinTimeoutMillis,
                 timeoutDestroyGraceWait = timeoutDestroyGraceWaitMillis,
                 timeoutDestroyGraceWaitUnit = TimeUnit.MILLISECONDS,
                 timeoutDestroyForceWait = timeoutDestroyForceWaitMillis,
                 timeoutDestroyForceWaitUnit = TimeUnit.MILLISECONDS,
             )
+        ).map { completion ->
             VerifyCommandRuntimeResult(
                 stdout = completion.stdout,
                 stderr = completion.stderr,

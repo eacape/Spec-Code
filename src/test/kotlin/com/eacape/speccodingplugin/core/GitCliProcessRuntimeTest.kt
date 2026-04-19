@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertInstanceOf
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.io.ByteArrayInputStream
@@ -21,6 +22,72 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class GitCliProcessRuntimeTest {
+
+    @Test
+    fun `execute should delegate merged output lifecycle to shared runtime`() {
+        val startedWorkingDir = AtomicReference<File?>()
+        val startedArgs = AtomicReference<List<String>>()
+        val process = CompletedProcess(stdout = "abc123\n")
+        var capturedProcess: Process? = null
+        var capturedStartSpec: ExternalMergedOutputCommandSpec? = null
+        var capturedAwaitSpec: ExternalMergedOutputCommandSpec? = null
+        val runtime = GitCliProcessRuntime(
+            processStarter = { workingDir, args ->
+                startedWorkingDir.set(workingDir)
+                startedArgs.set(args)
+                process
+            },
+            mergedOutputRuntime = ExternalMergedOutputCommandRuntime(
+                handleStarter = { startedProcess, spec, stopRequested ->
+                    capturedProcess = startedProcess
+                    capturedStartSpec = spec
+                    ManagedMergedOutputProcess.start(
+                        process = startedProcess,
+                        outputLimitChars = spec.outputLimitChars,
+                        threadName = spec.threadName,
+                        stopRequested = stopRequested,
+                    )
+                },
+                completionAwaiter = { _, spec ->
+                    capturedAwaitSpec = spec
+                    ManagedMergedOutputProcessCompletion(
+                        exitCode = 7,
+                        output = "git ok",
+                        timedOut = false,
+                        stoppedByUser = false,
+                        outputTruncated = true,
+                    )
+                },
+            ),
+        )
+
+        val result = runtime.execute(
+            workingDir = File("D:/repo"),
+            timeoutMs = 250,
+            args = listOf("rev-parse", "HEAD"),
+        )
+
+        assertEquals(File("D:/repo"), startedWorkingDir.get())
+        assertEquals(listOf("rev-parse", "HEAD"), startedArgs.get())
+        assertSame(process, capturedProcess)
+        assertEquals(
+            ExternalMergedOutputCommandSpec(
+                outputLimitChars = 16_384,
+                threadName = "git-cli-output-${GitCliProcessRuntime.buildCommand(listOf("rev-parse", "HEAD")).joinToString(" ").hashCode()}",
+                timeout = 250,
+                timeoutUnit = TimeUnit.MILLISECONDS,
+                outputJoinTimeoutMillis = 2_000L,
+                timeoutDestroyWait = 1_000L,
+                timeoutDestroyWaitUnit = TimeUnit.MILLISECONDS,
+            ),
+            capturedStartSpec,
+        )
+        assertEquals(capturedStartSpec, capturedAwaitSpec)
+        assertEquals("git ok", result.output)
+        assertEquals(7, result.exitCode)
+        assertFalse(result.timedOut)
+        assertTrue(result.outputTruncated)
+    }
 
     @Test
     fun `execute should start git command in provided working directory and trim output`() {

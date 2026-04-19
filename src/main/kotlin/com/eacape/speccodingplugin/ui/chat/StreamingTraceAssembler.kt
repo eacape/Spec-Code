@@ -1,8 +1,7 @@
 ﻿package com.eacape.speccodingplugin.ui.chat
 
 import com.eacape.speccodingplugin.stream.ChatStreamEvent
-import java.nio.charset.Charset
-import java.nio.charset.StandardCharsets
+import com.eacape.speccodingplugin.ui.MojibakeTextSupport
 
 internal class StreamingTraceAssembler {
 
@@ -156,9 +155,10 @@ internal class StreamingTraceAssembler {
 
     private fun sanitizeDetail(value: String): String? {
         val normalized = normalizeDetail(value) ?: return null
-        if (looksLikePlaceholderDetail(normalized)) return null
-        if (!looksLikeGarbledLine(normalized)) return normalized
-        return tryRepairMojibake(normalized)
+        val repaired = MojibakeTextSupport.repairLineIfNeeded(normalized) ?: normalized
+        if (looksLikePlaceholderDetail(repaired)) return null
+        if (MojibakeTextSupport.looksLikeGarbledLine(repaired)) return null
+        return repaired
     }
 
     private fun finalizeIfRunning(
@@ -181,31 +181,6 @@ internal class StreamingTraceAssembler {
         return normalized
     }
 
-    private fun tryRepairMojibake(line: String): String? {
-        return RECOVERY_SOURCE_CHARSETS.asSequence()
-            .mapNotNull { sourceCharset ->
-                runCatching {
-                    String(line.toByteArray(sourceCharset), StandardCharsets.UTF_8)
-                }.getOrNull()
-            }
-            .mapNotNull { normalizeDetail(it) }
-            .filterNot { looksLikePlaceholderDetail(it) }
-            .filter { CJK_REGEX.findAll(it).count() >= RECOVERY_MIN_CJK_COUNT }
-            .filterNot { looksLikeGarbledLine(it) }
-            .firstOrNull()
-    }
-
-    private fun looksLikeGarbledLine(line: String): Boolean {
-        if (line.isBlank()) return false
-        if (PRIVATE_USE_REGEX.containsMatchIn(line)) return true
-        if (CJK_REGEX.containsMatchIn(line)) return false
-        if (BOX_DRAWING_REGEX.containsMatchIn(line)) return true
-        val suspiciousCount = SUSPICIOUS_CHAR_REGEX.findAll(line).count()
-        if (suspiciousCount < GARBLED_MIN_COUNT) return false
-        val ratio = suspiciousCount.toDouble() / line.length.toDouble().coerceAtLeast(1.0)
-        return ratio >= GARBLED_MIN_RATIO
-    }
-
     private fun looksLikePlaceholderDetail(line: String): Boolean {
         if (line.isBlank()) return true
         if (line.length > PLACEHOLDER_MAX_LENGTH) return false
@@ -217,20 +192,8 @@ internal class StreamingTraceAssembler {
         private val MERGE_NOISE_REGEX =
             Regex("""\b(running|done|completed|finished|success|failed|error|进行中|已完成|完成|失败|错误)\b""")
         private val CONTROL_CHAR_REGEX = Regex("""[\u0000-\u0008\u000B\u000C\u000E-\u001F]""")
-        private val BOX_DRAWING_REGEX = Regex("""[\u2500-\u259F]""")
-        private val CJK_REGEX = Regex("""\p{IsHan}""")
-        private val PRIVATE_USE_REGEX = Regex("""[\uE000-\uF8FF]""")
-        private val SUSPICIOUS_CHAR_REGEX = Regex("""[\u00C0-\u024F\u2500-\u259F]""")
-        private const val GARBLED_MIN_COUNT = 4
-        private const val GARBLED_MIN_RATIO = 0.15
         private const val PLACEHOLDER_MAX_LENGTH = 4
-        private const val RECOVERY_MIN_CJK_COUNT = 2
         private val PLACEHOLDER_REGEX = Regex("""^[\p{P}\p{S}]+$""")
-        private val RECOVERY_SOURCE_CHARSETS = listOf(
-            Charset.forName("GB18030"),
-            Charset.forName("GBK"),
-            Charset.forName("Big5"),
-        )
     }
 
     private data class ContentFingerprint(

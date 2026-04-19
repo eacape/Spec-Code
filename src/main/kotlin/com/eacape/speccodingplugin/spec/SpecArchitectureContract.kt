@@ -51,6 +51,8 @@ object SpecArchitectureContract {
         "com.eacape.speccodingplugin.hook.",
         "com.eacape.speccodingplugin.llm.",
     )
+    private val infrastructureCoreInteropBlockedImportPrefixes = infrastructureBlockedImportPrefixes -
+        "com.eacape.speccodingplugin.core."
 
     val dependencyDecisions: List<DependencyDecision> = listOf(
         DependencyDecision(
@@ -447,6 +449,11 @@ object SpecArchitectureContract {
         ),
         SourceRule(
             fileName = "VerifyCommandRuntime.kt",
+            layer = Layer.INFRASTRUCTURE,
+            blockedImportPrefixes = infrastructureCoreInteropBlockedImportPrefixes,
+        ),
+        SourceRule(
+            fileName = "VerifyCommandSplitOutputRuntime.kt",
             layer = Layer.INFRASTRUCTURE,
             blockedImportPrefixes = infrastructureBlockedImportPrefixes,
         ),

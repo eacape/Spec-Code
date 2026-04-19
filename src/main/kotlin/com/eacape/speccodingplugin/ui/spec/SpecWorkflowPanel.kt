@@ -10,7 +10,6 @@ import com.eacape.speccodingplugin.i18n.LocaleChangedListener
 import com.eacape.speccodingplugin.llm.ClaudeCliLlmProvider
 import com.eacape.speccodingplugin.llm.CodexCliLlmProvider
 import com.eacape.speccodingplugin.llm.LlmRouter
-import com.eacape.speccodingplugin.llm.MockLlmProvider
 import com.eacape.speccodingplugin.llm.ModelInfo
 import com.eacape.speccodingplugin.llm.ModelRegistry
 import com.eacape.speccodingplugin.session.SessionManager
@@ -2274,66 +2273,35 @@ class SpecWorkflowPanel(
 
     private fun refreshProviderCombo(preserveSelection: Boolean) {
         val settings = SpecCodingSettingsState.getInstance()
-        val previousSelection = if (preserveSelection) providerComboBox.selectedItem as? String else null
-        val providers = llmRouter.availableUiProviders()
-            .ifEmpty { llmRouter.availableProviders() }
-            .ifEmpty { listOf(MockLlmProvider.ID) }
-
-        providerComboBox.removeAllItems()
-        providers.forEach { providerComboBox.addItem(it) }
-
-        val preferred = when {
-            !previousSelection.isNullOrBlank() -> previousSelection
-            settings.defaultProvider.isNotBlank() -> settings.defaultProvider
-            else -> llmRouter.defaultProviderId()
-        }
-        val selectedProvider = providers.firstOrNull { it == preferred } ?: providers.firstOrNull()
-        providerComboBox.selectedItem = selectedProvider
+        applyProviderSelectionPlan(
+            SpecWorkflowToolbarModelSelectionCoordinator.providerPlan(
+                availableUiProviders = llmRouter.availableUiProviders(),
+                availableProviders = llmRouter.availableProviders(),
+                previousSelection = if (preserveSelection) providerComboBox.selectedItem as? String else null,
+                settingsDefaultProvider = settings.defaultProvider,
+                routerDefaultProvider = llmRouter.defaultProviderId(),
+                mockLabel = mockProviderLabel(),
+            ),
+        )
         refreshModelCombo(preserveSelection = preserveSelection)
     }
 
     private fun refreshModelCombo(preserveSelection: Boolean) {
-        val selectedProvider = providerComboBox.selectedItem as? String
-        val previousModelId = if (preserveSelection) {
-            (modelComboBox.selectedItem as? ModelInfo)?.id?.trim().orEmpty()
-        } else {
-            ""
-        }
-        modelComboBox.removeAllItems()
-
-        if (selectedProvider.isNullOrBlank()) {
-            modelComboBox.isEnabled = false
-            updateSelectorTooltips()
-            return
-        }
-
         val settings = SpecCodingSettingsState.getInstance()
-        val savedModelId = settings.selectedCliModel.trim()
-        val models = modelRegistry.getModelsForProvider(selectedProvider)
-            .sortedBy { it.name.lowercase(Locale.ROOT) }
-            .toMutableList()
-
-        if (models.isEmpty() && savedModelId.isNotBlank() && selectedProvider == settings.defaultProvider) {
-            models += ModelInfo(
-                id = savedModelId,
-                name = savedModelId,
-                provider = selectedProvider,
-                contextWindow = 0,
-                capabilities = emptySet(),
-            )
-        }
-
-        models.forEach { modelComboBox.addItem(it) }
-        val preferredModelId = when {
-            previousModelId.isNotBlank() -> previousModelId
-            savedModelId.isNotBlank() -> savedModelId
-            else -> ""
-        }
-        val selectedModel = models.firstOrNull { it.id == preferredModelId } ?: models.firstOrNull()
-        if (selectedModel != null) {
-            modelComboBox.selectedItem = selectedModel
-        }
-        modelComboBox.isEnabled = models.isNotEmpty()
+        val selectedProvider = providerComboBox.selectedItem as? String
+        applyModelSelectionPlan(
+            SpecWorkflowToolbarModelSelectionCoordinator.modelPlan(
+                selectedProviderId = selectedProvider,
+                modelsForProvider = selectedProvider?.let(modelRegistry::getModelsForProvider).orEmpty(),
+                previousModelId = if (preserveSelection) {
+                    (modelComboBox.selectedItem as? ModelInfo)?.id
+                } else {
+                    null
+                },
+                settingsDefaultProvider = settings.defaultProvider,
+                settingsSelectedModelId = settings.selectedCliModel,
+            ),
+        )
         updateSelectorTooltips()
     }
 
@@ -2342,21 +2310,37 @@ class SpecWorkflowPanel(
         modelComboBox.toolTipText = (modelComboBox.selectedItem as? ModelInfo)?.name
     }
 
+    private fun applyProviderSelectionPlan(plan: SpecWorkflowToolbarProviderSelectionPlan) {
+        providerComboBox.removeAllItems()
+        plan.providerIds.forEach { providerComboBox.addItem(it) }
+        providerComboBox.selectedItem = plan.selectedProviderId
+        providerComboBox.toolTipText = plan.selectedProviderTooltip
+    }
+
+    private fun applyModelSelectionPlan(plan: SpecWorkflowToolbarModelSelectionPlan) {
+        modelComboBox.removeAllItems()
+        plan.models.forEach { modelComboBox.addItem(it) }
+        if (plan.selectedModelId != null) {
+            modelComboBox.selectedItem = plan.models.firstOrNull { it.id == plan.selectedModelId }
+        }
+        modelComboBox.isEnabled = plan.enabled
+        modelComboBox.toolTipText = plan.selectedModelTooltip
+    }
+
     internal fun syncToolbarSelectionFromSettings() {
         refreshProviderCombo(preserveSelection = false)
     }
 
     private fun providerDisplayName(providerId: String?): String {
-        return when (providerId) {
-            ClaudeCliLlmProvider.ID -> "claude"
-            CodexCliLlmProvider.ID -> "codex"
-            MockLlmProvider.ID -> toUiLowercase(SpecCodingBundle.message("toolwindow.model.mock"))
-            null -> ""
-            else -> toUiLowercase(providerId)
-        }
+        return SpecWorkflowToolbarModelSelectionCoordinator.providerDisplayName(
+            providerId = providerId,
+            mockLabel = mockProviderLabel(),
+        )
     }
 
     private fun toUiLowercase(value: String): String = value.lowercase(Locale.ROOT)
+
+    private fun mockProviderLabel(): String = toUiLowercase(SpecCodingBundle.message("toolwindow.model.mock"))
 
     private fun setStatusText(text: String?) {
         statusStripUiHost.apply(runtimeTroubleshootingStatusCoordinator.plain(text))

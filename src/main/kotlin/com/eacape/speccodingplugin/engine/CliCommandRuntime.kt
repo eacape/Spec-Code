@@ -2,13 +2,15 @@ package com.eacape.speccodingplugin.engine
 
 import com.eacape.speccodingplugin.core.ExternalProcessLaunchSpec
 import com.eacape.speccodingplugin.core.ExternalProcessLauncher
+import com.eacape.speccodingplugin.core.ExternalMergedOutputCommandRuntime
+import com.eacape.speccodingplugin.core.ExternalMergedOutputCommandSpec
 import com.eacape.speccodingplugin.core.ExternalProcessStartupFailureClassifier
 import com.eacape.speccodingplugin.core.ExternalProcessStartupFailureKind
-import com.eacape.speccodingplugin.core.ManagedMergedOutputProcess
 import java.io.File
 import java.util.concurrent.TimeUnit
 
 internal enum class CliCommandFailureKind(val label: String) {
+    EXECUTABLE_PATH_INVALID("executable-path-invalid"),
     EXECUTABLE_NOT_FOUND("executable-not-found"),
     WORKING_DIRECTORY_UNAVAILABLE("working-directory-unavailable"),
     ACCESS_DENIED("access-denied"),
@@ -28,6 +30,9 @@ internal data class CliCommandStartupDiagnostic(
 
     fun renderDetail(): String {
         return when (kind) {
+            CliCommandFailureKind.EXECUTABLE_PATH_INVALID ->
+                "configured cli path was not found: ${renderExecutablePath()}"
+
             CliCommandFailureKind.EXECUTABLE_NOT_FOUND ->
                 "cli executable was not found: ${renderExecutable()}"
 
@@ -45,6 +50,10 @@ internal data class CliCommandStartupDiagnostic(
 
     private fun renderExecutable(): String {
         return executable.substringAfterLast('/').substringAfterLast('\\').ifBlank { executable }
+    }
+
+    private fun renderExecutablePath(): String {
+        return executable.trim().trim('"', '\'').ifBlank { executable }
     }
 }
 
@@ -100,6 +109,7 @@ internal class CliCommandRuntime(
     private val osNameProvider: () -> String = { System.getProperty("os.name").orEmpty() },
     private val environmentProvider: () -> Map<String, String> = System::getenv,
     private val gitBashPathProvider: () -> String? = ::findGitBashPath,
+    private val mergedOutputRuntime: ExternalMergedOutputCommandRuntime = ExternalMergedOutputCommandRuntime(),
     private val outputJoinTimeoutMillis: Long = DEFAULT_OUTPUT_JOIN_TIMEOUT_MILLIS,
     private val timeoutDestroyWaitMillis: Long = DEFAULT_TIMEOUT_DESTROY_WAIT_MILLIS,
 ) {
@@ -134,20 +144,18 @@ internal class CliCommandRuntime(
         timeoutMs: Long,
     ): CliCommandExecutionResult {
         val normalizedTimeoutMs = timeoutMs.coerceAtLeast(1L)
-        return runCatching {
-            val process = start(request)
-            val runtime = ManagedMergedOutputProcess.start(
-                process = process,
+        return mergedOutputRuntime.execute(
+            processStarter = { start(request) },
+            spec = ExternalMergedOutputCommandSpec(
                 outputLimitChars = request.outputLimitChars,
                 threadName = "cli-command-${request.renderCommand().hashCode()}",
-            )
-            val completion = runtime.awaitCompletion(
                 timeout = normalizedTimeoutMs,
                 timeoutUnit = TimeUnit.MILLISECONDS,
-                joinTimeoutMillis = outputJoinTimeoutMillis,
+                outputJoinTimeoutMillis = outputJoinTimeoutMillis,
                 timeoutDestroyWait = timeoutDestroyWaitMillis,
                 timeoutDestroyWaitUnit = TimeUnit.MILLISECONDS,
-            )
+            ),
+        ).map { completion ->
             CliCommandExecutionResult(
                 output = completion.output,
                 exitCode = completion.exitCode,
@@ -294,6 +302,7 @@ internal object CliCommandFailureDiagnostics {
     ): CliCommandStartupDiagnostic {
         return CliCommandStartupDiagnostic(
             kind = classifyStartupFailureKind(
+                executable = request.executable,
                 workingDirectory = request.workingDirectory,
                 startupErrorMessage = startupErrorMessage,
             ),
@@ -305,6 +314,7 @@ internal object CliCommandFailureDiagnostics {
     }
 
     private fun classifyStartupFailureKind(
+        executable: String,
         workingDirectory: File?,
         startupErrorMessage: String,
     ): CliCommandFailureKind {
@@ -315,7 +325,11 @@ internal object CliCommandFailureDiagnostics {
             )
         ) {
             ExternalProcessStartupFailureKind.EXECUTABLE_NOT_FOUND ->
-                CliCommandFailureKind.EXECUTABLE_NOT_FOUND
+                if (looksLikeExplicitPath(executable)) {
+                    CliCommandFailureKind.EXECUTABLE_PATH_INVALID
+                } else {
+                    CliCommandFailureKind.EXECUTABLE_NOT_FOUND
+                }
 
             ExternalProcessStartupFailureKind.WORKING_DIRECTORY_UNAVAILABLE ->
                 CliCommandFailureKind.WORKING_DIRECTORY_UNAVAILABLE
@@ -326,5 +340,13 @@ internal object CliCommandFailureDiagnostics {
             ExternalProcessStartupFailureKind.STARTUP_FAILED ->
                 CliCommandFailureKind.STARTUP_FAILED
         }
+    }
+
+    private fun looksLikeExplicitPath(executable: String): Boolean {
+        val normalized = executable.trim().trim('"', '\'')
+        if (normalized.isBlank()) return false
+        return File(normalized).isAbsolute ||
+            normalized.contains('/') ||
+            normalized.contains('\\')
     }
 }

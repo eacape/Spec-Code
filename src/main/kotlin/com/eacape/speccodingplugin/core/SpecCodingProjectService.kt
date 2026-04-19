@@ -36,6 +36,7 @@ class SpecCodingProjectService(private val project: Project) {
         modelId: String? = null,
         contextSnapshot: ContextSnapshot? = null,
         conversationHistory: List<LlmMessage> = emptyList(),
+        additionalSystemMessages: List<String> = emptyList(),
         operationMode: OperationMode? = null,
         planExecuteVerifySections: Boolean = true,
         imagePaths: List<String> = emptyList(),
@@ -57,6 +58,13 @@ class SpecCodingProjectService(private val project: Project) {
                 content = buildOperationModeInstruction(operationMode),
             ),
         )
+        additionalSystemMessages
+            .asSequence()
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .forEach { systemMessage ->
+                messages.add(LlmMessage(role = LlmRole.SYSTEM, content = systemMessage))
+            }
 
         // 2. Context as second system message (if present)
         if (contextSnapshot != null && contextSnapshot.items.isNotEmpty()) {

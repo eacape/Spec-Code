@@ -308,6 +308,28 @@ tasks {
     }
 
     val inheritedPlatformTestSystemProperties = named<Test>("test").get().systemProperties.toMap()
+
+    fun Test.configureIntelliJTestSandbox() {
+        val sandboxRoot = layout.buildDirectory.dir("platform-test-sandbox/$name")
+
+        jvmArgs(*platformTestJvmArgs.toTypedArray())
+        systemProperty("idea.system.path", sandboxRoot.get().dir("system").asFile.absolutePath)
+        systemProperty("idea.config.path", sandboxRoot.get().dir("config").asFile.absolutePath)
+        systemProperty("idea.plugins.path", sandboxRoot.get().dir("plugins").asFile.absolutePath)
+        systemProperty("idea.log.path", sandboxRoot.get().dir("log").asFile.absolutePath)
+        systemProperty("java.io.tmpdir", sandboxRoot.get().dir("tmp").asFile.absolutePath)
+
+        doFirst {
+            listOf("system", "config", "plugins", "log", "tmp").forEach { relativeDir ->
+                sandboxRoot.get().dir(relativeDir).asFile.mkdirs()
+            }
+        }
+    }
+
+    withType<Test>().configureEach {
+        configureIntelliJTestSandbox()
+    }
+
     val platformSettingsLocalModuleJar = provider {
         val appClientJar = sourceSets["test"].runtimeClasspath.files.firstOrNull { it.name == "app-client.jar" }
             ?: throw GradleException("Unable to locate app-client.jar on the test runtime classpath")
@@ -364,7 +386,6 @@ tasks {
         taskDescription: String,
         classNames: List<String>,
     ) = register<Test>(taskName) {
-        val sandboxRoot = layout.buildDirectory.dir("platform-test-sandbox/$taskName")
         group = "verification"
         description = taskDescription
 
@@ -374,19 +395,7 @@ tasks {
         classpath += files(platformSettingsLocalModuleJar)
         maxParallelForks = 1
         isScanForTestClasses = false
-        jvmArgs(*platformTestJvmArgs.toTypedArray())
         inheritedPlatformTestSystemProperties.forEach(::systemProperty)
-        systemProperty("idea.system.path", sandboxRoot.get().dir("system").asFile.absolutePath)
-        systemProperty("idea.config.path", sandboxRoot.get().dir("config").asFile.absolutePath)
-        systemProperty("idea.plugins.path", sandboxRoot.get().dir("plugins").asFile.absolutePath)
-        systemProperty("idea.log.path", sandboxRoot.get().dir("log").asFile.absolutePath)
-        systemProperty("java.io.tmpdir", sandboxRoot.get().dir("tmp").asFile.absolutePath)
-
-        doFirst {
-            listOf("system", "config", "plugins", "log", "tmp").forEach { relativeDir ->
-                sandboxRoot.get().dir(relativeDir).asFile.mkdirs()
-            }
-        }
 
         include(classNames.map(::classNameToClassFilePattern))
     }
@@ -456,6 +465,7 @@ tasks {
         taskName = "platformSmokeTest",
         taskDescription = "Run targeted BasePlatformTestCase smoke tests outside the default CI fast path",
         classNames = listOf(
+            "com.eacape.speccodingplugin.context.CodeGraphServicePlatformTest",
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowSelectionServiceTest",
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelCodeGraphPlatformTest",
             "com.eacape.speccodingplugin.ui.spec.SpecWorkflowPanelComposerSourcePlatformTest",

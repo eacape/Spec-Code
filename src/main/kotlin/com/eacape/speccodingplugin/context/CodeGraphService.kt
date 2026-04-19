@@ -9,6 +9,7 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.guessProjectDir
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
 import com.intellij.openapi.vfs.newvfs.events.VFileCopyEvent
@@ -20,7 +21,6 @@ import com.intellij.openapi.vfs.newvfs.events.VFilePropertyChangeEvent
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiNamedElement
-import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.psi.util.PsiTreeUtil
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
@@ -30,11 +30,20 @@ import java.util.concurrent.atomic.AtomicLong
 @Service(Service.Level.PROJECT)
 class CodeGraphService(private val project: Project) : Disposable {
     private val logger = thisLogger()
-    private val projectRootPath: Path? = runCatching {
-        project.basePath
+    private val projectRootLocator: ProjectRootLocator? = runCatching {
+        val rootPath = project.guessProjectDir()?.path
             ?.trim()
             ?.takeIf(String::isNotBlank)
-            ?.let { Path.of(it).toAbsolutePath().normalize() }
+            ?: project.basePath
+                ?.trim()
+                ?.takeIf(String::isNotBlank)
+        rootPath?.let { rawPath ->
+            val normalizedPath = normalizePathString(rawPath)
+            ProjectRootLocator(
+                normalizedPath = normalizedPath,
+                localPath = toLocalPathOrNull(normalizedPath),
+            )
+        }
     }.getOrNull()
     private val cachedSnapshots = ConcurrentHashMap<CodeGraphCacheKey, CachedCodeGraphSnapshot>()
 
@@ -52,7 +61,7 @@ class CodeGraphService(private val project: Project) : Disposable {
     private data class ActiveEditorGraphRequest(
         val rootFilePath: String,
         val rootFileName: String,
-        val psiModificationCount: Long,
+        val rootContentModificationStamp: Long,
     )
 
     private data class CodeGraphCacheKey(
@@ -62,12 +71,14 @@ class CodeGraphService(private val project: Project) : Disposable {
 
     private data class CachedCodeGraphSnapshot(
         val snapshot: CodeGraphSnapshot,
-        val psiModificationCount: Long,
+        val rootContentModificationStamp: Long,
+        val trackedFilePaths: Set<String>,
     )
 
     private data class BuiltCodeGraphSnapshot(
         val snapshot: CodeGraphSnapshot,
-        val psiModificationCount: Long,
+        val rootContentModificationStamp: Long,
+        val trackedFilePaths: Set<String>,
     )
 
     private data class DependencyCollectionStats(
@@ -150,7 +161,7 @@ class CodeGraphService(private val project: Project) : Disposable {
 
         var cacheStatus = "miss"
         cachedSnapshots[cacheKey]?.let { cached ->
-            if (cached.psiModificationCount == request.psiModificationCount) {
+            if (cached.rootContentModificationStamp == request.rootContentModificationStamp) {
                 val hitCount = cacheHitCount.incrementAndGet()
                 logCacheHit(
                     request = request,
@@ -159,23 +170,25 @@ class CodeGraphService(private val project: Project) : Disposable {
                 )
                 return Result.success(cached.snapshot)
             }
-            cacheStatus = "stale-psi"
+            cacheStatus = "stale-root-content"
             invalidateCacheEntry(
                 cacheKey = cacheKey,
-                reason = "psi-change:${request.rootFileName}",
+                reason = "root-content-change:${request.rootFileName}",
             )
         }
 
         val missCount = cacheMissCount.incrementAndGet()
         val buildResult = buildSnapshotForActiveEditor(
             expectedRootFilePath = request.rootFilePath,
+            expectedRootContentModificationStamp = request.rootContentModificationStamp,
             options = options,
             buildState = buildState,
         )
         buildResult.onSuccess { built ->
             cachedSnapshots[cacheKey] = CachedCodeGraphSnapshot(
                 snapshot = built.snapshot,
-                psiModificationCount = built.psiModificationCount,
+                rootContentModificationStamp = built.rootContentModificationStamp,
+                trackedFilePaths = built.trackedFilePaths,
             )
         }
 
@@ -202,13 +215,14 @@ class CodeGraphService(private val project: Project) : Disposable {
             ActiveEditorGraphRequest(
                 rootFilePath = virtualFile.path,
                 rootFileName = virtualFile.name,
-                psiModificationCount = PsiModificationTracker.getInstance(project).modificationCount,
+                rootContentModificationStamp = editor.document.modificationStamp,
             )
         }
     }
 
     private fun buildSnapshotForActiveEditor(
         expectedRootFilePath: String,
+        expectedRootContentModificationStamp: Long,
         options: GraphBuildOptions,
         buildState: CodeGraphBuildState,
     ): Result<BuiltCodeGraphSnapshot> {
@@ -221,13 +235,18 @@ class CodeGraphService(private val project: Project) : Disposable {
                 if (virtualFile.path != expectedRootFilePath) {
                     throw IllegalStateException("Active file changed during graph build")
                 }
+                if (editor.document.modificationStamp != expectedRootContentModificationStamp) {
+                    throw IllegalStateException("Active file changed during graph build")
+                }
                 val psiFile = PsiManager.getInstance(project).findFile(virtualFile)
                     ?: throw IllegalStateException("Cannot resolve PSI file")
 
                 val nodes = linkedMapOf<String, CodeGraphNode>()
                 val edges = linkedSetOf<CodeGraphEdge>()
+                val trackedFilePaths = linkedSetOf<String>()
 
                 val rootFilePath = virtualFile.path
+                trackedFilePaths += rootFilePath
                 val rootFileId = fileNodeId(rootFilePath)
                 buildState.rootFilePath = rootFilePath
                 buildState.rootFileName = virtualFile.name
@@ -244,6 +263,7 @@ class CodeGraphService(private val project: Project) : Disposable {
                     psiFile = psiFile,
                     nodes = nodes,
                     edges = edges,
+                    trackedFilePaths = trackedFilePaths,
                     maxDependencies = options.maxDependencies,
                 )
                 buildState.dependencyEdgeCount = dependencyStats.edgeCount
@@ -272,7 +292,8 @@ class CodeGraphService(private val project: Project) : Disposable {
                         nodes = nodes.values.toList(),
                         edges = edges.toList(),
                     ),
-                    psiModificationCount = PsiModificationTracker.getInstance(project).modificationCount,
+                    rootContentModificationStamp = editor.document.modificationStamp,
+                    trackedFilePaths = trackedFilePaths.toSet(),
                 )
             }
         }
@@ -285,6 +306,7 @@ class CodeGraphService(private val project: Project) : Disposable {
         psiFile: PsiElement,
         nodes: MutableMap<String, CodeGraphNode>,
         edges: MutableSet<CodeGraphEdge>,
+        trackedFilePaths: MutableSet<String>,
         maxDependencies: Int,
     ): DependencyCollectionStats {
         var dependencyCount = 0
@@ -299,6 +321,7 @@ class CodeGraphService(private val project: Project) : Disposable {
                 if (targetFile.path == rootFilePath) {
                     continue
                 }
+                trackedFilePaths += targetFile.path
 
                 val targetFileId = fileNodeId(targetFile.path)
                 nodes.putIfAbsent(
@@ -475,6 +498,34 @@ class CodeGraphService(private val project: Project) : Disposable {
         }
     }
 
+    private fun invalidateCacheEntries(
+        affectedPaths: Set<String>,
+        reason: String,
+    ) {
+        if (affectedPaths.isEmpty()) {
+            return
+        }
+        val normalizedPaths = affectedPaths.mapTo(linkedSetOf()) { it.trim() }
+        val keysToInvalidate = cachedSnapshots.entries
+            .mapNotNull { (key, cached) ->
+                if (cached.trackedFilePaths.any(normalizedPaths::contains)) {
+                    key
+                } else {
+                    null
+                }
+            }
+        if (keysToInvalidate.isEmpty()) {
+            return
+        }
+        keysToInvalidate.forEach(cachedSnapshots::remove)
+        lastInvalidationReason = reason
+        logger.info(
+            "CodeGraphService cache invalidated selectively: reason=$reason, " +
+                "affectedPaths=${normalizedPaths.joinToString(separator = "|")}, " +
+                "invalidatedEntries=${keysToInvalidate.size}, ${currentCacheStats().summary()}",
+        )
+    }
+
     private fun invalidateCacheEntry(
         cacheKey: CodeGraphCacheKey,
         reason: String,
@@ -485,76 +536,170 @@ class CodeGraphService(private val project: Project) : Disposable {
     }
 
     private fun subscribeToStructureChanges() {
-        if (projectRootPath == null) {
+        if (projectRootLocator == null) {
             return
         }
         project.messageBus.connect(this).subscribe(
             VirtualFileManager.VFS_CHANGES,
             object : BulkFileListener {
                 override fun after(events: List<VFileEvent>) {
-                    val reason = firstRelevantStructureChangeReason(events) ?: return
-                    invalidateCache(reason)
+                    applyStructureChangeInvalidation(events)
                 }
             },
         )
     }
 
-    private fun firstRelevantStructureChangeReason(events: List<VFileEvent>): String? {
-        val root = projectRootPath ?: return null
-        return events.asSequence()
-            .mapNotNull { event -> structureChangeReason(event, root) }
-            .firstOrNull()
+    private data class StructureChangeImpact(
+        val reason: String,
+        val requiresFullInvalidation: Boolean,
+        val affectedPaths: Set<String> = emptySet(),
+    )
+
+    private data class ProjectRootLocator(
+        val normalizedPath: String,
+        val localPath: Path?,
+    )
+
+    private fun applyStructureChangeInvalidation(events: List<VFileEvent>) {
+        val root = projectRootLocator ?: return
+        var fullInvalidationReason: String? = null
+        var selectiveInvalidationReason: String? = null
+        val selectiveAffectedPaths = linkedSetOf<String>()
+
+        events.asSequence()
+            .mapNotNull { event -> structureChangeImpact(event, root) }
+            .forEach { impact ->
+                if (impact.requiresFullInvalidation) {
+                    if (fullInvalidationReason == null) {
+                        fullInvalidationReason = impact.reason
+                    }
+                } else if (impact.affectedPaths.isNotEmpty()) {
+                    if (selectiveInvalidationReason == null) {
+                        selectiveInvalidationReason = impact.reason
+                    }
+                    selectiveAffectedPaths += impact.affectedPaths
+                }
+            }
+
+        when {
+            fullInvalidationReason != null -> invalidateCache(fullInvalidationReason!!)
+            selectiveInvalidationReason != null -> invalidateCacheEntries(
+                affectedPaths = selectiveAffectedPaths,
+                reason = selectiveInvalidationReason!!,
+            )
+        }
     }
 
-    private fun structureChangeReason(event: VFileEvent, root: Path): String? {
-        val reasonPrefix = when (event) {
-            is VFileCreateEvent -> "vfs-create"
-            is VFileDeleteEvent -> "vfs-delete"
-            is VFileMoveEvent -> "vfs-move"
-            is VFileCopyEvent -> "vfs-copy"
-            is VFilePropertyChangeEvent -> if (event.isRename) "vfs-rename" else null
+    private fun structureChangeImpact(event: VFileEvent, root: ProjectRootLocator): StructureChangeImpact? {
+        val classification = when (event) {
+            is VFileCreateEvent -> "vfs-create" to true
+            is VFileCopyEvent -> "vfs-copy" to true
+            is VFileDeleteEvent -> "vfs-delete" to false
+            is VFileMoveEvent -> "vfs-move" to false
+            is VFilePropertyChangeEvent -> if (event.isRename) {
+                "vfs-rename" to false
+            } else {
+                null
+            }
             else -> null
         } ?: return null
+        val (reasonPrefix, requiresFullInvalidation) = classification
 
-        val relativePath = affectedPathsForEvent(event)
+        val affectedPaths = affectedPathsForEvent(event)
             .asSequence()
-            .mapNotNull { rawPath -> relativePathWithinProject(rawPath, root) }
-            .firstOrNull()
+            .mapNotNull { rawPath -> normalizedPathWithinProject(rawPath, root) }
+            .toCollection(linkedSetOf())
+        val relativePath = affectedPaths.firstOrNull()
+            ?.let { normalizedPath -> relativePathWithinProject(normalizedPath, root) }
             ?: return null
 
-        return "$reasonPrefix:$relativePath"
+        return StructureChangeImpact(
+            reason = "$reasonPrefix:$relativePath",
+            requiresFullInvalidation = requiresFullInvalidation,
+            affectedPaths = affectedPaths,
+        )
     }
 
     private fun affectedPathsForEvent(event: VFileEvent): List<String> {
         return when (event) {
-            is VFileMoveEvent -> listOf(event.oldPath, event.newPath)
-            is VFilePropertyChangeEvent -> listOf(event.oldPath, event.newPath)
+            is VFileMoveEvent -> listOfNotNull(event.oldPath, event.newPath, event.file?.path)
+            is VFilePropertyChangeEvent -> {
+                if (event.isRename) {
+                    val parentPath = event.file?.parent?.path
+                    val oldName = event.oldValue as? String
+                    val newName = event.newValue as? String
+                    listOfNotNull(
+                        parentPath?.let { path -> oldName?.let { "$path/$it" } },
+                        parentPath?.let { path -> newName?.let { "$path/$it" } },
+                        event.oldPath,
+                        event.newPath,
+                        event.file?.path,
+                    )
+                } else {
+                    listOfNotNull(event.oldPath, event.newPath, event.file?.path)
+                }
+            }
             else -> listOf(event.path)
         }
     }
 
-    private fun relativePathWithinProject(rawPath: String, root: Path): String? {
-        val trimmed = rawPath.trim()
-        if (trimmed.isEmpty()) {
+    private fun normalizedPathWithinProject(rawPath: String, root: ProjectRootLocator): String? {
+        val normalizedRawPath = normalizePathString(rawPath)
+        if (normalizedRawPath.isEmpty()) {
             return null
         }
 
-        val resolved = try {
-            Path.of(trimmed).toAbsolutePath().normalize()
-        } catch (_: InvalidPathException) {
-            return null
-        }
-        if (!resolved.startsWith(root)) {
-            return null
+        val rootLocalPath = root.localPath
+        val candidateLocalPath = toLocalPathOrNull(normalizedRawPath)
+        if (rootLocalPath != null && candidateLocalPath != null) {
+            if (!candidateLocalPath.startsWith(rootLocalPath)) {
+                return null
+            }
+            return candidateLocalPath.toString()
         }
 
-        val relativePath = root.relativize(resolved)
-            .joinToString(separator = "/") { segment -> segment.toString() }
-            .trim()
+        return if (normalizedRawPath == root.normalizedPath || normalizedRawPath.startsWith("${root.normalizedPath}/")) {
+            normalizedRawPath
+        } else {
+            null
+        }
+    }
+
+    private fun relativePathWithinProject(rawPath: String, root: ProjectRootLocator): String? {
+        val normalizedPath = normalizedPathWithinProject(rawPath, root)
+            ?: return null
+        val rootLocalPath = root.localPath
+        val candidateLocalPath = toLocalPathOrNull(normalizedPath)
+        val relativePath = if (rootLocalPath != null && candidateLocalPath != null) {
+            rootLocalPath.relativize(candidateLocalPath)
+                .joinToString(separator = "/") { segment -> segment.toString() }
+                .trim()
+        } else {
+            normalizedPath.removePrefix(root.normalizedPath)
+                .trimStart('/')
+                .trim()
+        }
         if (relativePath.isEmpty() || relativePath == ".") {
             return null
         }
         return relativePath
+    }
+
+    private fun normalizePathString(rawPath: String): String {
+        return rawPath.trim()
+            .replace('\\', '/')
+            .trimEnd('/')
+    }
+
+    private fun toLocalPathOrNull(rawPath: String): Path? {
+        if (rawPath.contains("://")) {
+            return null
+        }
+        return try {
+            Path.of(rawPath).toAbsolutePath().normalize()
+        } catch (_: InvalidPathException) {
+            null
+        }
     }
 
     private fun elapsedMsSince(startedAt: Long): Long {

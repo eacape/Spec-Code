@@ -25,6 +25,7 @@ internal class GitCliProcessRuntime(
             ),
         )
     },
+    private val mergedOutputRuntime: ExternalMergedOutputCommandRuntime = ExternalMergedOutputCommandRuntime(),
     private val outputLimitChars: Int = DEFAULT_OUTPUT_LIMIT_CHARS,
     private val outputJoinTimeoutMillis: Long = DEFAULT_OUTPUT_JOIN_TIMEOUT_MILLIS,
     private val forceDestroyWaitMillis: Long = DEFAULT_FORCE_DESTROY_WAIT_MILLIS,
@@ -37,20 +38,18 @@ internal class GitCliProcessRuntime(
     ): GitCliProcessResult {
         val normalizedTimeoutMs = timeoutMs.coerceAtLeast(1L)
         val command = buildCommand(args)
-        return runCatching {
-            val process = processStarter(workingDir, args)
-            val runtime = ManagedMergedOutputProcess.start(
-                process = process,
+        return mergedOutputRuntime.execute(
+            processStarter = { processStarter(workingDir, args) },
+            spec = ExternalMergedOutputCommandSpec(
                 outputLimitChars = outputLimitChars,
                 threadName = "git-cli-output-${command.joinToString(" ").hashCode()}",
-            )
-            val completion = runtime.awaitCompletion(
                 timeout = normalizedTimeoutMs,
                 timeoutUnit = TimeUnit.MILLISECONDS,
-                joinTimeoutMillis = outputJoinTimeoutMillis,
+                outputJoinTimeoutMillis = outputJoinTimeoutMillis,
                 timeoutDestroyWait = forceDestroyWaitMillis,
                 timeoutDestroyWaitUnit = TimeUnit.MILLISECONDS,
-            )
+            ),
+        ).map { completion ->
             GitCliProcessResult(
                 output = completion.output.ifBlank { null },
                 exitCode = completion.exitCode,

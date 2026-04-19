@@ -95,6 +95,29 @@ class CliCommandRuntimeTest {
     }
 
     @Test
+    fun `execute should classify explicit missing executable path separately`() {
+        val runtime = CliCommandRuntime(
+            processStarter = {
+                error("CreateProcess error=2, The system cannot find the file specified")
+            },
+            osNameProvider = { "Windows 11" },
+        )
+
+        val result = runtime.execute(
+            request = CliCommandRequest(
+                executable = "C:/broken/claude.cmd",
+                args = listOf("--version"),
+            ),
+            timeoutMs = 100,
+        )
+
+        val diagnostic = requireNotNull(result.startupDiagnostic)
+        assertEquals(CliCommandFailureKind.EXECUTABLE_PATH_INVALID, diagnostic.kind)
+        assertTrue(diagnostic.renderMessage().contains("configured cli path was not found"))
+        assertTrue(diagnostic.renderDetail().contains("C:/broken/claude.cmd"))
+    }
+
+    @Test
     fun `execute should classify unavailable working directory separately`() {
         val missingDir = File("build/cli-missing-dir-${System.nanoTime()}").absoluteFile
         val runtime = CliCommandRuntime(

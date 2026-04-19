@@ -98,6 +98,7 @@ internal class WorkflowCommandProcessRuntime(
             ),
         )
     },
+    private val mergedOutputRuntime: ExternalMergedOutputCommandRuntime = ExternalMergedOutputCommandRuntime(),
     private val outputLimitChars: Int = DEFAULT_OUTPUT_LIMIT_CHARS,
     private val outputJoinTimeoutMillis: Long = DEFAULT_OUTPUT_JOIN_TIMEOUT_MILLIS,
     private val stopGraceSeconds: Long = DEFAULT_STOP_GRACE_SECONDS,
@@ -122,8 +123,17 @@ internal class WorkflowCommandProcessRuntime(
         timeoutSeconds: Long,
         onStarted: (() -> Unit)? = null,
     ): WorkflowCommandProcessRunResult {
+        val runtimeSpec = ExternalMergedOutputCommandSpec(
+            outputLimitChars = outputLimitChars,
+            threadName = "workflow-command-output-${commandKey.hashCode()}",
+            timeout = timeoutSeconds,
+            timeoutUnit = TimeUnit.SECONDS,
+            outputJoinTimeoutMillis = outputJoinTimeoutMillis,
+            timeoutDestroyWait = forceDestroyWaitSeconds,
+            timeoutDestroyWaitUnit = TimeUnit.SECONDS,
+        )
         val started = try {
-            start(commandKey, launchCommand, workingDirectory)
+            start(commandKey, launchCommand, workingDirectory, runtimeSpec)
         } catch (_: CommandAlreadyRunningException) {
             return WorkflowCommandProcessRunResult.AlreadyRunning
         } catch (error: Exception) {
@@ -137,23 +147,23 @@ internal class WorkflowCommandProcessRuntime(
             )
         }
         onStarted?.invoke()
-        val completion = started.handle.awaitCompletion(
-            timeout = timeoutSeconds,
-            timeoutUnit = TimeUnit.SECONDS,
-            joinTimeoutMillis = outputJoinTimeoutMillis,
-            timeoutDestroyWait = forceDestroyWaitSeconds,
-            timeoutDestroyWaitUnit = TimeUnit.SECONDS,
-        )
-        runningCommands.remove(commandKey, started)
-        return WorkflowCommandProcessRunResult.Completed(
-            WorkflowCommandProcessExecutionResult(
-                exitCode = completion.exitCode,
-                output = completion.output,
-                timedOut = completion.timedOut,
-                stoppedByUser = completion.stoppedByUser,
-                outputTruncated = completion.outputTruncated,
-            ),
-        )
+        try {
+            val completion = mergedOutputRuntime.await(
+                handle = started.handle,
+                spec = runtimeSpec,
+            )
+            return WorkflowCommandProcessRunResult.Completed(
+                WorkflowCommandProcessExecutionResult(
+                    exitCode = completion.exitCode,
+                    output = completion.output,
+                    timedOut = completion.timedOut,
+                    stoppedByUser = completion.stoppedByUser,
+                    outputTruncated = completion.outputTruncated,
+                ),
+            )
+        } finally {
+            runningCommands.remove(commandKey, started)
+        }
     }
 
     fun stop(commandKey: String): WorkflowCommandProcessStopResult {
@@ -186,21 +196,22 @@ internal class WorkflowCommandProcessRuntime(
         commandKey: String,
         launchCommand: List<String>,
         workingDirectory: File?,
+        runtimeSpec: ExternalMergedOutputCommandSpec,
     ): RunningWorkflowCommand {
-        val process = processStarter(workingDirectory, launchCommand)
-        val handle = ManagedMergedOutputProcess.start(
-            process = process,
-            outputLimitChars = outputLimitChars,
-            threadName = "workflow-command-output-${commandKey.hashCode()}",
+        val handle = mergedOutputRuntime.start(
+            processStarter = { processStarter(workingDirectory, launchCommand) },
+            spec = runtimeSpec,
             stopRequested = AtomicBoolean(false),
-        )
+        ).getOrElse { error ->
+            throw error
+        }
         val running = RunningWorkflowCommand(
             commandKey = commandKey,
             handle = handle,
         )
         val previous = runningCommands.putIfAbsent(commandKey, running)
         if (previous != null && previous.handle.process.isAlive) {
-            process.destroyForcibly()
+            handle.dispose()
             throw CommandAlreadyRunningException()
         }
         if (previous != null && !previous.handle.process.isAlive) {

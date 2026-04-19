@@ -16,9 +16,11 @@ class HookCommandRuntimeContractTest {
             StandardCharsets.UTF_8,
         )
 
-        assertTrue(source.contains("ManagedMergedOutputProcess.start("))
-        assertTrue(source.contains("runtime.awaitCompletion("))
+        assertTrue(source.contains("ExternalMergedOutputCommandRuntime()"))
+        assertTrue(source.contains("mergedOutputRuntime.execute("))
+        assertTrue(source.contains("ExternalMergedOutputCommandSpec("))
         assertTrue(source.contains("HookCommandFailureDiagnostics.diagnoseStartup("))
+        assertFalse(source.contains("ManagedMergedOutputProcess.start("))
         assertFalse(source.contains("process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)"))
         assertFalse(source.contains("process.inputStream.bufferedReader().use"))
         assertFalse(source.contains("process.destroyForcibly()"))

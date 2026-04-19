@@ -167,4 +167,38 @@ class LocalEnvironmentReadinessTest {
         assertTrue(cliPathCheck.detail.contains("claude: cli executable was not found"))
         assertTrue(cliPathCheck.detail.contains("codex: access denied"))
     }
+
+    @Test
+    fun `evaluate should surface configured path failures distinctly from generic missing cli issues`() {
+        val snapshot = LocalEnvironmentReadiness.evaluate(
+            LocalEnvironmentReadinessInput(
+                projectPath = Path.of("D:/workspace/spec-code"),
+                projectWritable = true,
+                gitRepositoryDetected = true,
+                configuredClaudePath = "C:/broken/claude.cmd",
+                configuredCodexPath = "",
+                claudeInfo = CliToolInfo(
+                    available = false,
+                    path = "C:/broken/claude.cmd",
+                    availabilityIssue = CliToolAvailabilityIssue(
+                        kind = CliToolAvailabilityIssueKind.EXECUTABLE_PATH_INVALID,
+                        detail = "configured cli path was not found: C:/broken/claude.cmd",
+                    ),
+                ),
+                codexInfo = CliToolInfo(
+                    available = true,
+                    path = "C:/tools/codex.cmd",
+                    version = "1.0.0",
+                ),
+            ),
+        )
+
+        val cliPathCheck = snapshot.detailChecks.first {
+            it.label == SpecCodingBundle.message("local.setup.check.cliPath")
+        }
+
+        assertEquals(LocalEnvironmentCheckSeverity.WARNING, cliPathCheck.severity)
+        assertTrue(cliPathCheck.detail.contains("configured cli path was not found"))
+        assertTrue(cliPathCheck.detail.contains("C:/broken/claude.cmd"))
+    }
 }

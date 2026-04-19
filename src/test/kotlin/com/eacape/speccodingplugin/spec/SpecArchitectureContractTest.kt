@@ -1,6 +1,7 @@
 package com.eacape.speccodingplugin.spec
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -220,6 +221,21 @@ class SpecArchitectureContractTest {
         assertTrue(blockedPrefixes.contains("com.eacape.speccodingplugin.hook."))
         assertTrue(blockedPrefixes.contains("com.eacape.speccodingplugin.llm."))
         assertTrue(blockedPrefixes.contains("kotlinx.coroutines."))
+    }
+
+    @Test
+    fun `VerifyCommandRuntime should remain registered as infrastructure with core launcher access`() {
+        val rule = SpecArchitectureContract.ruleFor("VerifyCommandRuntime.kt")
+
+        assertNotNull(rule)
+        assertEquals(SpecArchitectureContract.Layer.INFRASTRUCTURE, rule?.layer)
+
+        val blockedPrefixes = SpecArchitectureContract.blockedImportPrefixesFor("VerifyCommandRuntime.kt")
+        assertFalse(blockedPrefixes.contains("com.eacape.speccodingplugin.core."))
+        assertTrue(blockedPrefixes.contains("com.eacape.speccodingplugin.ui."))
+        assertTrue(blockedPrefixes.contains("com.eacape.speccodingplugin.window."))
+        assertTrue(blockedPrefixes.contains("com.eacape.speccodingplugin.hook."))
+        assertTrue(blockedPrefixes.contains("com.eacape.speccodingplugin.llm."))
     }
 
     @Test

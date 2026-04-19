@@ -1,5 +1,6 @@
 package com.eacape.speccodingplugin.core
 
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -72,7 +73,7 @@ internal class ManagedMergedOutputProcess private constructor(
             val outputBuffer = StringBuilder()
             val outputTruncated = AtomicBoolean(false)
             val outputReaderThread = Thread {
-                process.inputStream.bufferedReader().useLines { lines ->
+                process.inputStream.bufferedReader(StandardCharsets.UTF_8).useLines { lines ->
                     lines.forEach { line ->
                         synchronized(outputBuffer) {
                             if (outputBuffer.length < outputLimitChars) {

@@ -445,7 +445,7 @@ class ContextCollectorTest {
                 CodeGraphCacheStats(
                     hitCount = 2,
                     missCount = 1,
-                    lastInvalidationReason = "psi-change:Main.kt",
+                    lastInvalidationReason = "root-content-change:Main.kt",
                 )
             },
             relatedFileCacheStatsProvider = {

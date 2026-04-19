@@ -35,11 +35,11 @@ class ContextTelemetryTest {
         val stats = CodeGraphCacheStats(
             hitCount = 6,
             missCount = 2,
-            lastInvalidationReason = "psi-change:Main.kt",
+            lastInvalidationReason = "root-content-change:Main.kt",
         )
 
         assertEquals(75, stats.hitRatePercent())
-        assertTrue(stats.summary().contains("lastInvalidation=psi-change:Main.kt"))
+        assertTrue(stats.summary().contains("lastInvalidation=root-content-change:Main.kt"))
         assertFalse(stats.shouldEmitPeriodicHitLog())
         assertTrue(stats.copy(hitCount = 20).shouldEmitPeriodicHitLog())
     }
@@ -108,7 +108,7 @@ class ContextTelemetryTest {
                 codeGraph = CodeGraphCacheStats(
                     hitCount = 4,
                     missCount = 2,
-                    lastInvalidationReason = "psi-change:Main.kt",
+                    lastInvalidationReason = "root-content-change:Main.kt",
                 ),
                 relatedFiles = RelatedFileCacheStats(
                     hitCount = 3,

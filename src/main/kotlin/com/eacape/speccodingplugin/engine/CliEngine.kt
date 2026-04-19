@@ -32,6 +32,9 @@ abstract class CliEngine(
 
     private val logger = thisLogger()
     private val commandRuntime = CliCommandRuntime()
+    private val streamingProcessLifecycle = CliStreamingProcessLifecycle(
+        logInfo = { message -> logger.info(message) },
+    )
     private val activeProcesses = ConcurrentHashMap<String, Process>()
 
     @Volatile
@@ -92,7 +95,7 @@ abstract class CliEngine(
                 environmentOverrides = environmentOverrides(request),
             )
             activeProcesses[requestId] = process
-            val (timedOut, watchdogFuture) = startTimeoutWatchdog(process, timeoutSeconds)
+            val (timedOut, watchdogFuture) = streamingProcessLifecycle.startTimeoutWatchdog(process, timeoutSeconds)
             try {
                 writeRequestInput(process, request)
                 val stderrFuture = CompletableFuture.supplyAsync {
@@ -111,7 +114,7 @@ abstract class CliEngine(
                         error = resolveProcessFailureMessage(
                             stderr = stderr,
                             stdout = output,
-                            fallback = timeoutMessage(timeoutSeconds),
+                            fallback = streamingProcessLifecycle.timeoutMessage(timeoutSeconds),
                         ),
                     )
                 }
@@ -159,7 +162,7 @@ abstract class CliEngine(
             environmentOverrides = environmentOverrides(request),
         )
         activeProcesses[requestId] = process
-        val (timedOut, watchdogFuture) = startTimeoutWatchdog(process, timeoutSeconds)
+        val (timedOut, watchdogFuture) = streamingProcessLifecycle.startTimeoutWatchdog(process, timeoutSeconds)
         try {
             writeRequestInput(process, request)
             var emittedChunk = false
@@ -217,7 +220,7 @@ abstract class CliEngine(
                     (System.nanoTime() - lastFrameAtNanos) >= TimeUnit.MILLISECONDS.toNanos(inactivityTimeoutMillis)
                 ) {
                     inactivityTerminationAttempted = true
-                    terminatedAfterInactivity = terminateProcessAfterInactivity(
+                    terminatedAfterInactivity = streamingProcessLifecycle.terminateAfterInactivity(
                         process = process,
                         requestId = requestId,
                         inactivityTimeoutMillis = inactivityTimeoutMillis,
@@ -228,7 +231,8 @@ abstract class CliEngine(
                 val terminatedAfterIdleAndFlushed = terminatedAfterInactivity && !process.isAlive && frames.isEmpty()
                 if (streamDrained || terminatedAfterIdleAndFlushed) {
                     if (process.isAlive) {
-                        terminatedAfterStreamDrain = terminateProcessAfterStreamDrain(process, requestId)
+                        terminatedAfterStreamDrain =
+                            streamingProcessLifecycle.terminateAfterStreamDrain(process, requestId)
                     }
                     break
                 }
@@ -252,7 +256,7 @@ abstract class CliEngine(
                 val resolvedTimeoutMessage = resolveProcessFailureMessage(
                     stderr = stderr,
                     stdout = stdout,
-                    fallback = timeoutMessage(timeoutSeconds),
+                    fallback = streamingProcessLifecycle.timeoutMessage(timeoutSeconds),
                 )
                 throw RuntimeException(resolvedTimeoutMessage)
             }
@@ -427,36 +431,6 @@ abstract class CliEngine(
         return option?.takeIf { it > 0 }
     }
 
-    private fun timeoutMessage(timeoutSeconds: Long?): String {
-        return if (timeoutSeconds != null && timeoutSeconds > 0) {
-            "CLI request timed out after $timeoutSeconds seconds"
-        } else {
-            "CLI request timed out"
-        }
-    }
-
-    private fun startTimeoutWatchdog(
-        process: Process,
-        timeoutSeconds: Long?,
-    ): Pair<AtomicBoolean, CompletableFuture<Void>?> {
-        val timedOut = AtomicBoolean(false)
-        if (timeoutSeconds == null || timeoutSeconds <= 0) {
-            return timedOut to null
-        }
-        val future = CompletableFuture.runAsync {
-            try {
-                Thread.sleep(timeoutSeconds * 1000)
-                if (process.isAlive) {
-                    timedOut.set(true)
-                    process.destroyForcibly()
-                }
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-            }
-        }
-        return timedOut to future
-    }
-
     protected open fun startProcess(
         args: List<String>,
         workingDir: String?,
@@ -471,41 +445,6 @@ abstract class CliEngine(
                 redirectErrorStream = false,
             ),
         )
-    }
-
-    private fun terminateProcessAfterStreamDrain(process: Process, requestId: String): Boolean {
-        logger.info("CLI process for request=$requestId kept running after stdout/stderr drained; terminating it")
-        process.destroy()
-        if (waitForProcessExit(process, STREAM_PROCESS_EXIT_AFTER_DRAIN_MILLIS)) {
-            return true
-        }
-        process.destroyForcibly()
-        return waitForProcessExit(process, STREAM_PROCESS_FORCE_EXIT_AFTER_DRAIN_MILLIS)
-    }
-
-    private fun terminateProcessAfterInactivity(
-        process: Process,
-        requestId: String,
-        inactivityTimeoutMillis: Long,
-    ): Boolean {
-        logger.info(
-            "CLI process for request=$requestId became idle for ${inactivityTimeoutMillis}ms after stdout activity; terminating it",
-        )
-        process.destroy()
-        if (waitForProcessExit(process, STREAM_PROCESS_EXIT_AFTER_IDLE_MILLIS)) {
-            return true
-        }
-        process.destroyForcibly()
-        return waitForProcessExit(process, STREAM_PROCESS_FORCE_EXIT_AFTER_IDLE_MILLIS)
-    }
-
-    private fun waitForProcessExit(process: Process, timeoutMillis: Long): Boolean {
-        if (!process.isAlive) {
-            return true
-        }
-        return runCatching {
-            process.waitFor(timeoutMillis, TimeUnit.MILLISECONDS)
-        }.getOrDefault(!process.isAlive)
     }
 
     private fun startLinePump(
@@ -656,10 +595,6 @@ abstract class CliEngine(
         private const val STREAM_PUMP_JOIN_MILLIS = 500L
         private const val STREAM_PROGRESS_FLUSH_CHARS = 120
         private const val STREAM_STDOUT_FLUSH_CHARS = 64
-        private const val STREAM_PROCESS_EXIT_AFTER_DRAIN_MILLIS = 200L
-        private const val STREAM_PROCESS_FORCE_EXIT_AFTER_DRAIN_MILLIS = 400L
-        private const val STREAM_PROCESS_EXIT_AFTER_IDLE_MILLIS = 200L
-        private const val STREAM_PROCESS_FORCE_EXIT_AFTER_IDLE_MILLIS = 400L
         private const val MAX_DIAGNOSTIC_TEXT_LENGTH = 2000
         private val ERROR_ANSI_REGEX = Regex("""\u001B\[[;\d]*[ -/]*[@-~]""")
         private val ERROR_REPLACEMENT_CHAR_REGEX = Regex("""\uFFFD+""")

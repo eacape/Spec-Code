@@ -15,6 +15,8 @@ import java.awt.Color
 import java.awt.Component
 import java.awt.Container
 import java.awt.image.BufferedImage
+import java.nio.charset.Charset
+import java.nio.charset.StandardCharsets
 import java.nio.file.Path
 import javax.imageio.ImageIO
 import javax.swing.JButton
@@ -179,6 +181,78 @@ class ChatMessagePanelTraceStreamingTest {
     }
 
     @Test
+    fun `finished assistant message should render answer after trace panels`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent(
+                """
+                已把最终回复放回执行过程和输出面板下面。
+                [Task] weaken process chrome
+                [Output] model: gpt-5.4
+                """.trimIndent()
+            )
+            panel.finishMessage()
+        }
+
+        val renderedChildren = renderedContentChildren(panel)
+        assertTrue(renderedChildren.size >= 2, "Expected trace section plus answer content")
+
+        val leadingLabels = renderedChildren.dropLast(1)
+            .asSequence()
+            .flatMap(::collectDescendants)
+            .filterIsInstance<JLabel>()
+            .mapNotNull { it.text }
+            .toList()
+        assertTrue(leadingLabels.contains(SpecCodingBundle.message("chat.timeline.summary.label")))
+        assertTrue(leadingLabels.contains(SpecCodingBundle.message("chat.timeline.kind.output")))
+
+        val lastChildText = collectDescendants(renderedChildren.last())
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+        assertTrue(lastChildText.contains("已把最终回复放回执行过程和输出面板下面"), lastChildText)
+    }
+
+    @Test
+    fun `answer first layout should hide output filter button until expanded`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent(
+                """
+                已恢复正文优先布局。
+                [Output] model: gpt-5.4
+                [Output] workdir: D:/eacape/Spec Code
+                """.trimIndent()
+            )
+            panel.finishMessage()
+        }
+
+        val keyFilterText = SpecCodingBundle.message(
+            "chat.timeline.output.filter.toggle",
+            SpecCodingBundle.message("chat.timeline.output.filter.key"),
+        )
+        assertFalse(
+            collectDescendants(panel)
+                .filterIsInstance<JButton>()
+                .any { it.text == keyFilterText }
+        )
+
+        val expandText = SpecCodingBundle.message("chat.timeline.toggle.expand")
+        val expandButton = collectDescendants(panel)
+            .filterIsInstance<JButton>()
+            .firstOrNull { it.text == expandText }
+        assertNotNull(expandButton, "Expected output expand button")
+        runOnEdt { expandButton!!.doClick() }
+
+        assertTrue(
+            collectDescendants(panel)
+                .filterIsInstance<JButton>()
+                .any { it.text == keyFilterText }
+        )
+    }
+
+    @Test
     fun `edit trace row should expose open file action`() {
         var opened: WorkflowQuickActionParser.FileAction? = null
         val panel = ChatMessagePanel(
@@ -329,6 +403,239 @@ class ChatMessagePanelTraceStreamingTest {
     }
 
     @Test
+    fun `assistant answer should suppress leading codex prompt transcript before narrative summary`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent(
+                """
+                OpenAI Codex v0.121.0 (research preview)
+                session id: 019d996b-5e0b-7a73-892b-2f52a71f7a68
+                You are the in-IDE project development copilot.
+                1. clarify objective and constraints briefly,
+                2. propose a concrete implementation plan,
+                Keep responses practical, specific to this repository, and avoid generic filler.
+                Current operation mode: AUTO.
+                Prompt #prompt (repo-cleanup):
+                项目背景：
+                这是一个 JetBrains IDE 上的 spec-driven AI coding workflow 插件。
+                你必须遵守以下原则：
+                1. 先读代码和文档，再下结论，不要凭空假设。
+                默认优先问题池：
+                冻结并拆分 UI 热点，优先处理 ImprovedChatPanel、SpecWorkflowPanel、SpecDetailPanel。
+                本轮收敛的是 SpecWorkflowPanel 里最后一段还留在 panel 内的 live progress/background bridge。
+                - 拆出 listener / polling / coordinator。
+                结果：
+                - 单测 16/16 通过。
+                """.trimIndent()
+            )
+            panel.finishMessage()
+        }
+
+        val renderedText = collectDescendants(panel)
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertFalse(renderedText.contains("session id:"), renderedText)
+        assertFalse(renderedText.contains("Prompt #prompt"), renderedText)
+        assertFalse(renderedText.contains("项目背景"), renderedText)
+        assertTrue(renderedText.contains("本轮收敛的是 SpecWorkflowPanel"), renderedText)
+        assertTrue(renderedText.contains("单测 16/16 通过"), renderedText)
+    }
+
+    @Test
+    fun `assistant answer should suppress instruction first prompt transcript before summary`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent(
+                """
+                Do not stop at plan-only output when code changes are requested.
+                #仓库整改实施工程师 继续下一步
+                收敛 beta 入口，区分轻量入口和完整 workflow 入口。
+                1. 执行摘要
+                Spec Code 已经不是给 IDE 加一个 AI 聊天框的尝鲜原型，而是在尝试做 JetBrains IDE 上的 Spec-Driven Development 工作台。
+                2. 紧咬该整理后该治疗的病灶链？
+                测试中超 2400 行的文件 18 个。
+                本轮收敛的是 ImprovedChatPanel、SpecWorkflowPanel、SpecDetailPanel 的状态职责边界。
+                - 拆分 UI 热点，恢复以前那种结果正文优先的阅读感。
+                结果：
+                - 单测通过。
+                """.trimIndent()
+            )
+            panel.finishMessage()
+        }
+
+        val renderedText = collectDescendants(panel)
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertFalse(renderedText.contains("Do not stop at plan-only output"), renderedText)
+        assertFalse(renderedText.contains("#仓库整改实施工程师"), renderedText)
+        assertFalse(renderedText.contains("收敛 beta 入口"), renderedText)
+        assertTrue(renderedText.contains("本轮收敛的是 ImprovedChatPanel"), renderedText)
+        assertTrue(renderedText.contains("单测通过"), renderedText)
+    }
+
+    @Test
+    fun `assistant answer should suppress leading diagnostic question inventory before summary bullets`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent(
+                """
+                1. 解释 核心能力成熟和团队场景现状？
+                方向对，底子不差，工程意识强，但已经进入需要控制复杂度的阶段？
+                测试中超 2400 行的文件 18 个。
+                CI 工作流目前还是零散状态？
+                是否已经把 JetBrains IDE 内离线开发闭环拉起来？
+                为什么提示词是项目级的，却会漏到正文里？
+                - 新增 `SpecWorkflowClarificationRetryRestoreUiHost.kt`，统一 retry state 恢复入口。
+                - 更新 `SpecWorkflowPanelStateApplicationUiFacade.kt`，loaded-state facade 现在直接接续 host。
+                - 单测 11/11 通过。
+                """.trimIndent()
+            )
+            panel.finishMessage()
+        }
+
+        val renderedText = collectDescendants(panel)
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertFalse(renderedText.contains("核心能力成熟和团队场景现状"), renderedText)
+        assertFalse(renderedText.contains("方向对，底子不差"), renderedText)
+        assertFalse(renderedText.contains("测试中超 2400 行的文件 18 个"), renderedText)
+        assertFalse(renderedText.contains("CI 工作流目前还是零散状态"), renderedText)
+        assertFalse(renderedText.contains("JetBrains IDE 内离线开发闭环"), renderedText)
+        assertTrue(renderedText.contains("新增 SpecWorkflowClarificationRetryRestoreUiHost.kt"), renderedText)
+        assertTrue(renderedText.contains("单测 11/11 通过"), renderedText)
+    }
+
+    @Test
+    fun `contaminated explicit answer should fall back to output summary in final answer slot`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent(
+                """
+                你是什么模型
+                我是 Codex，基于 GPT-5 的编码代理模型。
+                1. 解释 核心能力成熟和团队场景现状？
+                测试中超 2400 行的文件 18 个。
+                CI 工作流目前还是零散状态？
+                是否已经把 JetBrains IDE 内离线开发闭环拉起来？
+                """.trimIndent()
+            )
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = """
+                        - 已把最终回复放到执行过程和输出面板下面。
+                        - 已屏蔽 context / 历史信息 这类提示词污染。
+                        - 定向测试通过。
+                    """.trimIndent(),
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.finishMessage()
+        }
+
+        val renderedChildren = renderedContentChildren(panel)
+        assertTrue(renderedChildren.size >= 2, "Expected trace section plus final answer")
+
+        val finalAnswerText = collectDescendants(renderedChildren.last())
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertFalse(finalAnswerText.contains("你是什么模型"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("我是 Codex"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("核心能力成熟和团队场景现状"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("测试中超 2400 行的文件 18 个"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("CI 工作流目前还是零散状态"), finalAnswerText)
+        assertTrue(finalAnswerText.contains("已把最终回复放到执行过程和输出面板下面"), finalAnswerText)
+        assertTrue(finalAnswerText.contains("已屏蔽 context / 历史信息 这类提示词污染"), finalAnswerText)
+        assertTrue(finalAnswerText.contains("定向测试通过"), finalAnswerText)
+    }
+
+    @Test
+    fun `trace assistant message should not let partial history inventory bypass answer cleanup`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent(
+                """
+                1解 核心能力收益和团队场景现状？
+                云  的判断：方向对，底子不差，工程意识强，但已经进入需要控制复杂度的阶段？
+                src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt#777 探?
+                src/main/kotlin/com/eacape/speccodingplugin/ui/spec/SpecWorkflowPanel.kt#264 探?
+                src/main/kotlin/com/eacape/speccodingplugin/ui/chat/ChatMessagePanel.kt#288 探?
+                是否 Jetbrains IDE 内高级 AI 辅助发发 的个人发发？
+                需要对 AI 变量组织上下文 阶段 历史和验证证据的拥？
+                """.trimIndent()
+            )
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = """
+                        - 最终正文已改为只显示本轮结果摘要。
+                        - 执行过程和输出面板仍保留在正文上方。
+                        - 不再把历史问题池、context 或源码定位清单当作答复。
+                    """.trimIndent(),
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.finishMessage()
+        }
+
+        val renderedChildren = renderedContentChildren(panel)
+        assertTrue(renderedChildren.size >= 2, "Expected trace section plus final answer")
+
+        val finalAnswerText = collectDescendants(renderedChildren.last())
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertFalse(finalAnswerText.contains("核心能力收益和团队场景现状"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("方向对，底子不差"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("ImprovedChatPanel.kt#777"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("历史和验证证据"), finalAnswerText)
+        assertTrue(finalAnswerText.contains("最终正文已改为只显示本轮结果摘要"), finalAnswerText)
+        assertTrue(finalAnswerText.contains("执行过程和输出面板仍保留在正文上方"), finalAnswerText)
+        assertTrue(finalAnswerText.contains("不再把历史问题池、context 或源码定位清单当作答复"), finalAnswerText)
+    }
+
+    @Test
+    fun `prompt inventory style output should not become displayed fallback answer`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = """
+                        1解 核心能力收益和团队场景现状？
+                        去句评判断：方向对，底子不差，工程意识强，但已经进入 需要控制复杂度的阶段？
+                        测试中超 2400 行的文件 18 个？
+                        CI 工作流目前还是零散状态？.github/workflows
+                        src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt#777 探?-
+                        src/main/kotlin/com/eacape/speccodingplugin/ui/spec/SpecWorkflowPanel.kt#649 探?-
+                        src/main/kotlin/com/eacape/speccodingplugin/ui/chat/ChatMessagePanel.kt#869 探?-
+                        需要对 AI 变量保留上下文 阶段 历史和验证证据的用？
+                    """.trimIndent(),
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.finishMessage()
+        }
+
+        val displayed = invokeAssistantDisplayedAnswerResolver(
+            panel = panel,
+            content = panel.getContent(),
+        )
+
+        assertEquals("", displayed)
+    }
+
+    @Test
     fun `finished trace-only assistant message should render fallback answer summary`() {
         val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
 
@@ -353,8 +660,8 @@ class ChatMessagePanelTraceStreamingTest {
             .filterIsInstance<JTextPane>()
             .toList()
         assertTrue(
-            renderedPanes.size >= 2,
-            "Expected output card plus fallback answer pane for finished trace-only message",
+            renderedPanes.isNotEmpty(),
+            "Expected rendered assistant text for finished trace-only message",
         )
 
         val renderedText = renderedPanes.joinToString("\n") { textOf(it) }
@@ -371,6 +678,89 @@ class ChatMessagePanelTraceStreamingTest {
         assertFalse(lightweightText.contains("src/main/kotlin/com/eacape/speccodingplugin/ui/chat/ChatMessagePanel.kt:299"))
         assertFalse(lightweightText.contains("At line:2 char:1"))
         assertFalse(lightweightText.contains("model: gpt-5.3-codex"))
+    }
+
+    @Test
+    fun `trace only fallback should suppress codex prompt transcript before rendered summary`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = """
+                        OpenAI Codex v0.121.0 (research preview)
+                        session id: 019d996b-5e0b-7a73-892b-2f52a71f7a68
+                        You are the in-IDE project development copilot.
+                        Current operation mode: AUTO.
+                        Prompt #prompt (repo-cleanup):
+                        项目背景：
+                        这是一个 JetBrains IDE 上的 spec-driven AI coding workflow 插件。
+                        你必须遵守以下原则：
+                        1. 先读代码和文档，再下结论，不要凭空假设。
+                        默认优先问题池：
+                        冻结并拆分 UI 热点，优先处理 ImprovedChatPanel、SpecWorkflowPanel、SpecDetailPanel。
+                        本轮收敛的是 live progress/background bridge 的最后一段 panel 内耦合。
+                        - listener / polling / coordinator 已拆出。
+                        结果：
+                        - 单测 16/16 通过。
+                    """.trimIndent(),
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.finishMessage()
+        }
+
+        val renderedText = collectDescendants(panel)
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertFalse(renderedText.contains("session id:"), renderedText)
+        assertFalse(renderedText.contains("Prompt #prompt"), renderedText)
+        assertFalse(renderedText.contains("项目背景"), renderedText)
+        assertTrue(renderedText.contains("本轮收敛的是 live progress/background bridge"), renderedText)
+        assertTrue(renderedText.contains("listener / polling / coordinator 已拆出"), renderedText)
+        assertTrue(renderedText.contains("单测 16/16 通过"), renderedText)
+    }
+
+    @Test
+    fun `trace fallback should ignore prompt style task inventory and prefer output summary`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.TASK,
+                    detail = """
+                        1. 解释 核心能力成熟和团队场景现状？
+                        测试中超 2400 行的文件 18 个。
+                        是否已经把 JetBrains IDE 内离线开发闭环拉起来？
+                    """.trimIndent(),
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = """
+                        - 新增 `SpecWorkflowClarificationRetryRestoreUiHost.kt`，统一 retry state 恢复入口。
+                        - 更新 `SpecWorkflowPanelStateApplicationUiFacade.kt`，loaded-state facade 现在直接接续 host。
+                        - 单测 11/11 通过。
+                    """.trimIndent(),
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.finishMessage()
+        }
+
+        val renderedText = collectDescendants(panel)
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertFalse(renderedText.contains("核心能力成熟和团队场景现状"), renderedText)
+        assertFalse(renderedText.contains("测试中超 2400 行的文件 18 个"), renderedText)
+        assertTrue(renderedText.contains("新增 SpecWorkflowClarificationRetryRestoreUiHost.kt"), renderedText)
+        assertTrue(renderedText.contains("单测 11/11 通过"), renderedText)
     }
 
     @Test
@@ -1041,6 +1431,72 @@ class ChatMessagePanelTraceStreamingTest {
     }
 
     @Test
+    fun `gbk mojibake output event should be repaired in timeline`() {
+        val expected = "\u547D\u4EE4\u8F93\u51FA"
+        val garbled = String(expected.toByteArray(StandardCharsets.UTF_8), Charset.forName("GBK"))
+        val panel = ChatMessagePanel(
+            role = ChatMessagePanel.MessageRole.ASSISTANT,
+            initialContent = "正常响应",
+        )
+
+        runOnEdt {
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = garbled,
+                    status = ChatTraceStatus.INFO,
+                )
+            )
+            panel.finishMessage()
+        }
+
+        val expandText = SpecCodingBundle.message("chat.timeline.toggle.expand")
+        val expandButton = collectDescendants(panel)
+            .filterIsInstance<JButton>()
+            .firstOrNull { it.text == expandText }
+        assertNotNull(expandButton, "Expected output expand button")
+        runOnEdt { expandButton!!.doClick() }
+
+        val keyFilterText = SpecCodingBundle.message(
+            "chat.timeline.output.filter.toggle",
+            SpecCodingBundle.message("chat.timeline.output.filter.key"),
+        )
+        val filterButton = collectDescendants(panel)
+            .filterIsInstance<JButton>()
+            .firstOrNull { it.text == keyFilterText }
+        assertNotNull(filterButton, "Expected output filter button in key mode")
+        runOnEdt { filterButton!!.doClick() }
+
+        val allText = collectDescendants(panel)
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertTrue(allText.contains(expected), allText)
+        assertFalse(allText.contains(garbled), allText)
+    }
+
+    @Test
+    fun `assistant answer should repair chinese gbk mojibake`() {
+        val expected = "\u4FEE\u590D\u5EFA\u8BAE"
+        val garbled = String(expected.toByteArray(StandardCharsets.UTF_8), Charset.forName("GBK"))
+        val panel = ChatMessagePanel(
+            role = ChatMessagePanel.MessageRole.ASSISTANT,
+            initialContent = garbled,
+        )
+
+        runOnEdt {
+            panel.finishMessage()
+        }
+
+        val allText = collectDescendants(panel)
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertTrue(allText.contains(expected), allText)
+        assertFalse(allText.contains(garbled), allText)
+    }
+
+    @Test
     fun `placeholder output event should not be rendered in timeline`() {
         val panel = ChatMessagePanel(
             role = ChatMessagePanel.MessageRole.ASSISTANT,
@@ -1064,6 +1520,62 @@ class ChatMessagePanelTraceStreamingTest {
 
         assertTrue(allText.contains("正常响应"))
         assertFalse(allText.lines().any { it.trim() == "-" })
+    }
+
+    @Test
+    fun `grep style source snippets should not be rendered as fallback assistant answer`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = """
+                        src/test/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanelMessageRenderCoordinatorTest.kt:130:        assertTrue(decision.plan is ImprovedChatPanelMessageRenderPlan.AssistantPanel)
+                        src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt:328:        resultFiles[0].path
+                        35:         storage: SpecStorage,
+                        requestManager? = null
+                    """.trimIndent(),
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.finishMessage()
+        }
+
+        val renderedText = collectDescendants(panel)
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertFalse(renderedText.contains("assertTrue(decision.plan is"), renderedText)
+        assertFalse(renderedText.contains("resultFiles[0].path"), renderedText)
+        assertFalse(renderedText.contains("storage: SpecStorage"), renderedText)
+        assertFalse(renderedText.contains("requestManager? = null"), renderedText)
+    }
+
+    @Test
+    fun `project prompt checklist excerpt should not be rendered as fallback assistant answer`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = """
+                        - [x] 修复已知架构纪律漂移，先把 `SpecArchitectureContractTest` 恢复为通过状态
+                        - [x] 冻结 UI 巨型类继续膨胀，禁止再往 `ImprovedChatPanel.kt`、`SpecWorkflowPanel.kt`、`SpecDetailPanel.kt` 直接堆新编排逻辑
+                    """.trimIndent(),
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.finishMessage()
+        }
+
+        val renderedText = collectDescendants(panel)
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertFalse(renderedText.contains("修复已知架构纪律漂移"), renderedText)
+        assertFalse(renderedText.contains("冻结 UI 巨型类继续膨胀"), renderedText)
     }
 
     @Test
@@ -1370,6 +1882,14 @@ class ChatMessagePanelTraceStreamingTest {
         return method.invoke(panel, content) as String
     }
 
+    private fun renderedContentChildren(panel: ChatMessagePanel): List<Component> {
+        val field = ChatMessagePanel::class.java.getDeclaredField("contentHost")
+        field.isAccessible = true
+        val contentHost = field.get(panel) as Container
+        val renderedRoot = contentHost.components.singleOrNull() as? Container ?: return emptyList()
+        return renderedRoot.components.toList()
+    }
+
     private fun invokeAssistantAnswerExtractor(panel: ChatMessagePanel, content: String): String {
         val method = ChatMessagePanel::class.java.getDeclaredMethod(
             "extractAssistantAnswerContent",
@@ -1377,6 +1897,23 @@ class ChatMessagePanelTraceStreamingTest {
         )
         method.isAccessible = true
         return method.invoke(panel, content) as String
+    }
+
+    private fun invokeAssistantDisplayedAnswerResolver(panel: ChatMessagePanel, content: String): String {
+        val snapshotMethod = ChatMessagePanel::class.java.getDeclaredMethod(
+            "resolveTraceSnapshot",
+            String::class.java,
+        )
+        snapshotMethod.isAccessible = true
+        val snapshot = snapshotMethod.invoke(panel, content)
+
+        val method = ChatMessagePanel::class.java.getDeclaredMethod(
+            "resolveAssistantDisplayedAnswerContent",
+            String::class.java,
+            snapshot.javaClass,
+        )
+        method.isAccessible = true
+        return method.invoke(panel, content, snapshot) as String
     }
 
     private fun textOf(pane: JTextPane): String {

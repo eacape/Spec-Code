@@ -2,6 +2,7 @@ package com.eacape.speccodingplugin.ui.chat
 
 import com.eacape.speccodingplugin.SpecCodingBundle
 import com.eacape.speccodingplugin.stream.ChatStreamEvent
+import com.eacape.speccodingplugin.ui.MojibakeTextSupport
 import com.eacape.speccodingplugin.ui.settings.SpecCodingSettingsState
 import com.intellij.icons.AllIcons
 import com.intellij.ide.BrowserUtil
@@ -296,10 +297,7 @@ open class ChatMessagePanel(
 
             val resolvedTraceSnapshot = resolveAssistantTraceSnapshot()
             if (resolvedTraceSnapshot.hasTrace) {
-                val explicitAnswerContent = resolveAssistantAnswerContent(content)
-                val answerContent = explicitAnswerContent.ifBlank {
-                    resolveAssistantDisplayedAnswerContent(content, resolvedTraceSnapshot)
-                }
+                val answerContent = resolveAssistantDisplayedAnswerContent(content, resolvedTraceSnapshot)
                 renderAssistantTraceContent(
                     answerContent = answerContent,
                     traceSnapshot = resolvedTraceSnapshot,
@@ -373,10 +371,12 @@ open class ChatMessagePanel(
         content: String,
         traceSnapshot: StreamingTraceAssembler.TraceSnapshot,
     ): String {
-        val answerContent = resolveAssistantAnswerContent(content)
-        if (answerContent.isNotBlank()) return answerContent
-        if (!messageFinished || !traceSnapshot.hasTrace) return answerContent
-        return resolveAssistantTraceFallbackContent(traceSnapshot)
+        val explicitAnswer = cleanupExplicitAssistantAnswerContent(resolveAssistantAnswerContent(content))
+        if (explicitAnswer.isNotBlank() && shouldPreferExplicitAssistantAnswer(explicitAnswer)) {
+            return explicitAnswer
+        }
+        if (!messageFinished || !traceSnapshot.hasTrace) return explicitAnswer
+        return resolveAssistantTraceFallbackContent(traceSnapshot).ifBlank { explicitAnswer }
     }
 
     private fun resolveTraceSnapshot(content: String): StreamingTraceAssembler.TraceSnapshot {
@@ -668,19 +668,308 @@ open class ChatMessagePanel(
             .replace("\r\n", "\n")
             .replace('\r', '\n')
             .trim()
-        if (mergedOutput.isBlank()) return ""
+        val sanitizedOutput = stripLeadingPromptQuestionnaireNoise(
+            stripLeadingCliTranscriptNoise(mergedOutput)
+        )
+        if (sanitizedOutput.isBlank()) return ""
+        val nonBlankOutputLines = sanitizedOutput
+            .lines()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+        if (looksLikeChecklistOnlyPromptExcerpt(nonBlankOutputLines)) return ""
+        if (looksLikePromptInventoryOnlyOutput(nonBlankOutputLines)) return ""
 
-        if (shouldUseRawOutputAsFallbackAnswer(mergedOutput)) {
-            return mergedOutput
+        if (shouldUseRawOutputAsFallbackAnswer(sanitizedOutput)) {
+            return sanitizedOutput
         }
 
         val keyLines = selectKeyOutputLines(
-            mergedOutput
-                .lines()
-                .map { it.trim() }
-                .filter { it.isNotBlank() },
+            nonBlankOutputLines,
         )
+        if (looksLikePromptInventoryOnlyOutput(keyLines)) return ""
         return keyLines.joinToString("\n").trim()
+    }
+
+    private fun stripLeadingCliTranscriptNoise(content: String): String {
+        if (content.isBlank()) return content.trim()
+
+        val normalized = content
+            .replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .trim()
+        if (normalized.isBlank()) return normalized
+
+        val lines = normalized.lines()
+        val firstNonBlankIndex = lines.indexOfFirst { it.trim().isNotBlank() }
+        if (firstNonBlankIndex < 0) return normalized
+
+        if (!looksLikeCliTranscriptLeadLine(lines[firstNonBlankIndex].trim())) {
+            return normalized
+        }
+
+        val kept = mutableListOf<String>()
+        var insidePromptBlock = false
+
+        for (index in firstNonBlankIndex until lines.size) {
+            val rawLine = lines[index]
+            val trimmed = rawLine.trim()
+            if (trimmed.isBlank()) {
+                if (kept.isNotEmpty() && kept.last().isNotBlank()) {
+                    kept += ""
+                }
+                continue
+            }
+
+            if (looksLikeStrongAssistantResponseStart(trimmed)) {
+                insidePromptBlock = false
+                kept += rawLine
+                continue
+            }
+
+            if (looksLikeCliPromptBlockStartLine(trimmed)) {
+                insidePromptBlock = true
+                continue
+            }
+
+            if (insidePromptBlock) {
+                continue
+            }
+
+            if (looksLikeCliTranscriptSeedLine(trimmed) || looksLikeCliTranscriptInstructionLine(trimmed)) {
+                continue
+            }
+
+            kept += rawLine
+        }
+
+        while (kept.lastOrNull().isNullOrBlank()) {
+            kept.removeAt(kept.lastIndex)
+        }
+        return kept.joinToString("\n").trim()
+    }
+
+    private fun stripLeadingPromptQuestionnaireNoise(content: String): String {
+        if (content.isBlank()) return content.trim()
+
+        val normalized = content
+            .replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .trim()
+        if (normalized.isBlank()) return normalized
+
+        val lines = normalized.lines()
+        val nonBlankIndices = lines.indices.filter { lines[it].trim().isNotBlank() }
+        if (nonBlankIndices.isEmpty()) return normalized
+
+        val leadIndices = nonBlankIndices.take(PROMPT_SCAFFOLDING_LEAD_SCAN_LINES)
+        val promptLeadCount = leadIndices.count { index ->
+            looksLikePromptScaffoldingLeadLine(lines[index].trim())
+        }
+        if (promptLeadCount < PROMPT_SCAFFOLDING_LEAD_MIN_MATCHES) {
+            return normalized
+        }
+
+        val answerStartIndex = nonBlankIndices.firstOrNull { index ->
+            index > leadIndices.first() && looksLikePromptScaffoldingExitLine(lines[index].trim())
+        } ?: return ""
+
+        return lines
+            .drop(answerStartIndex)
+            .joinToString("\n")
+            .trim()
+    }
+
+    private fun cleanupExplicitAssistantAnswerContent(content: String): String {
+        if (content.isBlank()) return ""
+        val normalized = stripLeadingPromptQuestionnaireNoise(
+            stripLeadingCliTranscriptNoise(content)
+        ).trim()
+        if (normalized.isBlank()) return ""
+
+        val lines = normalized.lines()
+        val withoutEcho = stripLeadingEchoedUserPromptLines(lines)
+        val withoutTrailingNoise = stripTrailingPromptQuestionnaireNoise(withoutEcho)
+        return withoutTrailingNoise.joinToString("\n").trim()
+    }
+
+    private fun stripLeadingEchoedUserPromptLines(lines: List<String>): List<String> {
+        if (lines.isEmpty()) return lines
+        val nonBlankIndices = lines.indices.filter { lines[it].trim().isNotBlank() }
+        if (nonBlankIndices.size < 2) return lines
+
+        val firstIndex = nonBlankIndices[0]
+        val secondIndex = nonBlankIndices[1]
+        val first = lines[firstIndex].trim()
+        val second = lines[secondIndex].trim()
+        if (!looksLikeEchoedUserPromptLine(first, second)) return lines
+
+        return lines.filterIndexed { index, _ -> index != firstIndex }
+    }
+
+    private fun looksLikeEchoedUserPromptLine(line: String, nextLine: String): Boolean {
+        val trimmed = line.trim()
+        val nextTrimmed = nextLine.trim()
+        if (trimmed.isBlank() || nextTrimmed.isBlank()) return false
+        if (trimmed.length > EXPLICIT_ANSWER_ECHO_MAX_CHARS) return false
+        if (looksLikeStrongAssistantResponseStart(trimmed) || containsSuccessfulOutcomeSignal(trimmed)) return false
+        if (
+            !PROMPT_ECHO_LINE_REGEX.matches(trimmed) &&
+            !trimmed.endsWith("?") &&
+            !trimmed.endsWith("？")
+        ) {
+            return false
+        }
+        val normalizedNext = nextTrimmed.lowercase(Locale.ROOT)
+        return nextTrimmed.startsWith("我是") ||
+            normalizedNext.startsWith("i am") ||
+            normalizedNext.startsWith("i'm") ||
+            normalizedNext.startsWith("this is")
+    }
+
+    private fun stripTrailingPromptQuestionnaireNoise(lines: List<String>): List<String> {
+        if (lines.isEmpty()) return lines
+        val nonBlankIndices = lines.indices.filter { lines[it].trim().isNotBlank() }
+        if (nonBlankIndices.isEmpty()) return lines
+
+        for (offset in nonBlankIndices.indices) {
+            val index = nonBlankIndices[offset]
+            val line = normalizeOutputClassifierLine(lines[index])
+            if (!matchesPromptScaffoldingSignal(line)) continue
+
+            val nearbyMatches = nonBlankIndices
+                .drop(offset)
+                .take(PROMPT_SCAFFOLDING_TRAIL_SCAN_LINES)
+                .count { candidateIndex ->
+                    matchesPromptScaffoldingSignal(
+                        normalizeOutputClassifierLine(lines[candidateIndex])
+                    )
+                }
+            if (nearbyMatches < PROMPT_SCAFFOLDING_TRAIL_MIN_MATCHES) continue
+
+            val prefixLines = lines.take(index)
+            return if (shouldKeepAnswerPrefix(prefixLines)) {
+                prefixLines
+            } else {
+                emptyList()
+            }
+        }
+        return lines
+    }
+
+    private fun shouldKeepAnswerPrefix(prefixLines: List<String>): Boolean {
+        val nonBlankLines = prefixLines
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+        if (nonBlankLines.isEmpty()) return false
+        if (nonBlankLines.size == 1 && !looksLikeLikelyAnswerSummaryLine(nonBlankLines.first())) {
+            return false
+        }
+        return nonBlankLines.any(::looksLikeLikelyAnswerSummaryLine)
+    }
+
+    private fun shouldPreferExplicitAssistantAnswer(content: String): Boolean {
+        val nonBlankLines = content
+            .lines()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+        if (nonBlankLines.isEmpty()) return false
+        if (nonBlankLines.any { matchesPromptScaffoldingSignal(normalizeOutputClassifierLine(it)) }) {
+            return false
+        }
+        return nonBlankLines.any(::looksLikeLikelyAnswerSummaryLine)
+    }
+
+    private fun looksLikeLikelyAnswerSummaryLine(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.isBlank()) return false
+        if (looksLikeLikelyAnswerBulletLine(trimmed)) return true
+        if (looksLikeStrongAssistantResponseStart(trimmed)) return true
+        if (OUTPUT_ALLOWED_HEADING_REGEX.matches(trimmed)) return true
+        return containsSuccessfulOutcomeSignal(trimmed)
+    }
+
+    private fun looksLikeCliTranscriptSeedLine(line: String): Boolean {
+        return OUTPUT_CLI_BANNER_REGEX.matches(line) ||
+            OUTPUT_SESSION_ID_LINE_REGEX.matches(line) ||
+            OUTPUT_OPERATION_MODE_LINE_REGEX.matches(line) ||
+            OUTPUT_IDE_COPILOT_LINE_REGEX.matches(line) ||
+            OUTPUT_PROMPT_REFERENCE_LINE_REGEX.matches(line) ||
+            OUTPUT_PROMPT_TITLE_LINE_REGEX.matches(line)
+    }
+
+    private fun looksLikeCliTranscriptLeadLine(line: String): Boolean {
+        return looksLikeCliTranscriptSeedLine(line) || looksLikeCliTranscriptInstructionLine(line)
+    }
+
+    private fun looksLikeCliPromptBlockStartLine(line: String): Boolean {
+        return OUTPUT_PROMPT_REFERENCE_LINE_REGEX.matches(line) ||
+            OUTPUT_PROMPT_TITLE_LINE_REGEX.matches(line) ||
+            OUTPUT_PROMPT_MARKDOWN_TITLE_LINE_REGEX.matches(line) ||
+            OUTPUT_PROMPT_SECTION_HEADING_REGEX.matches(line)
+    }
+
+    private fun looksLikeCliTranscriptInstructionLine(line: String): Boolean {
+        return OUTPUT_PROMPT_INSTRUCTION_LINE_REGEX.matches(line)
+    }
+
+    private fun looksLikeStrongAssistantResponseStart(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.isBlank()) return false
+        if (looksLikeRawCodeOrPatchLine(trimmed) || looksLikeToolDiagnosticLine(trimmed)) return false
+        if (looksLikeCliTranscriptSeedLine(trimmed)) return false
+        if (looksLikeCliPromptBlockStartLine(trimmed) || looksLikeCliTranscriptInstructionLine(trimmed)) return false
+        if (isLikelyWorkflowHeading(trimmed)) return true
+        if (OUTPUT_RESULT_SUMMARY_PREFIX_REGEX.matches(trimmed)) return true
+        return containsSuccessfulOutcomeSignal(trimmed)
+    }
+
+    private fun looksLikePromptScaffoldingLeadLine(line: String): Boolean {
+        val trimmed = normalizeOutputClassifierLine(line)
+        if (trimmed.isBlank()) return false
+        if (looksLikeStrongAssistantResponseStart(trimmed)) return false
+        if (looksLikeLikelyAnswerBulletLine(trimmed)) return false
+        if (OUTPUT_ALLOWED_HEADING_REGEX.matches(trimmed)) return false
+
+        return matchesPromptScaffoldingSignal(trimmed)
+    }
+
+    private fun looksLikePromptScaffoldingExitLine(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.isBlank()) return false
+        val normalized = normalizeOutputClassifierLine(trimmed)
+        if (
+            matchesPromptScaffoldingSignal(normalized) &&
+            !looksLikeLikelyAnswerBulletLine(trimmed) &&
+            !OUTPUT_ALLOWED_HEADING_REGEX.matches(trimmed)
+        ) {
+            return false
+        }
+        return looksLikeStrongAssistantResponseStart(trimmed) ||
+            OUTPUT_ALLOWED_HEADING_REGEX.matches(trimmed) ||
+            looksLikeLikelyAnswerBulletLine(trimmed)
+    }
+
+    private fun matchesPromptScaffoldingSignal(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.isBlank()) return false
+        return PROMPT_SCAFFOLDING_ROLE_LINE_REGEX.matches(trimmed) ||
+            PROMPT_SCAFFOLDING_HEADING_REGEX.matches(trimmed) ||
+            PROMPT_SCAFFOLDING_INVENTORY_LINE_REGEX.matches(trimmed) ||
+            trimmed.contains('?') ||
+            trimmed.contains('？') ||
+            PROMPT_SCAFFOLDING_NUMBERED_LINE_REGEX.matches(trimmed)
+    }
+
+    private fun looksLikeLikelyAnswerBulletLine(line: String): Boolean {
+        val trimmed = line.trim()
+        if (!UNORDERED_LIST_ITEM_REGEX.matches(trimmed) && !ORDERED_LIST_ITEM_REGEX.matches(trimmed)) {
+            return false
+        }
+        val normalized = BULLET_PREFIX_REGEX.replaceFirst(trimmed, "").trim()
+        if (normalized.isBlank()) return false
+        return containsSuccessfulOutcomeSignal(normalized) ||
+            ANSWER_SUMMARY_BULLET_REGEX.containsMatchIn(normalized) ||
+            OUTPUT_ALLOWED_HEADING_REGEX.matches(normalized)
     }
 
     private fun shouldUseRawOutputAsFallbackAnswer(detail: String): Boolean {
@@ -694,8 +983,67 @@ open class ChatMessagePanel(
             .map { it.trim() }
             .filter { it.isNotBlank() }
         if (nonBlankLines.isEmpty()) return false
+        if (looksLikeChecklistOnlyPromptExcerpt(nonBlankLines)) return false
 
         return nonBlankLines.all(::looksLikeAnswerFallbackMarkdownLine)
+    }
+
+    private fun looksLikeChecklistOnlyPromptExcerpt(lines: List<String>): Boolean {
+        if (lines.isEmpty()) return false
+        val checklistCount = lines.count { CHECKBOX_LIST_ITEM_REGEX.matches(it) }
+        if (checklistCount < 2) return false
+
+        val hasAnswerNarrative = lines.any { line ->
+            (
+                !CHECKBOX_LIST_ITEM_REGEX.matches(line) &&
+                    looksLikeStrongAssistantResponseStart(line)
+            ) ||
+                (
+                    looksLikeNarrativeOutputLine(line) &&
+                        !CHECKBOX_LIST_ITEM_REGEX.matches(line) &&
+                        !MARKDOWN_HEADING_REGEX.matches(line) &&
+                        !BLOCKQUOTE_LINE_REGEX.matches(line)
+                )
+        }
+        if (hasAnswerNarrative) return false
+
+        val allLinesAreStructural = lines.all { line ->
+            CHECKBOX_LIST_ITEM_REGEX.matches(line) ||
+                MARKDOWN_HEADING_REGEX.matches(line) ||
+                BLOCKQUOTE_LINE_REGEX.matches(line) ||
+                MARKDOWN_HORIZONTAL_RULE_REGEX.matches(line) ||
+                ORDERED_LIST_ITEM_REGEX.matches(line) ||
+                UNORDERED_LIST_ITEM_REGEX.matches(line)
+        }
+        return allLinesAreStructural
+    }
+
+    private fun looksLikePromptInventoryOnlyOutput(lines: List<String>): Boolean {
+        if (lines.isEmpty()) return false
+        val nonBlankLines = lines.map { it.trim() }.filter { it.isNotBlank() }
+        if (nonBlankLines.size < 2) return false
+
+        val suspiciousCount = nonBlankLines.count(::looksLikePromptInventorySignalLine)
+        if (suspiciousCount < 2) return false
+
+        val hasConcreteOutcome = nonBlankLines.any { line ->
+            looksLikeLikelyAnswerSummaryLine(line) ||
+                containsSuccessfulOutcomeSignal(line)
+        }
+        if (hasConcreteOutcome) return false
+
+        return suspiciousCount * 2 >= nonBlankLines.size
+    }
+
+    private fun looksLikePromptInventorySignalLine(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.isBlank()) return false
+        val normalized = normalizeOutputClassifierLine(trimmed)
+        return matchesPromptScaffoldingSignal(normalized) ||
+            OUTPUT_SOURCE_SNIPPET_PREFIX_REGEX.containsMatchIn(trimmed) ||
+            OUTPUT_FILE_PATH_LINE_REGEX.matches(trimmed) ||
+            OUTPUT_SOURCE_REFERENCE_WITH_VALUE_REGEX.matches(trimmed) ||
+            trimmed.contains(".github/workflows", ignoreCase = true)
     }
 
     private fun looksLikeAnswerFallbackMarkdownLine(line: String): Boolean {
@@ -703,6 +1051,7 @@ open class ChatMessagePanel(
         if (trimmed.isBlank()) return false
         if (looksLikeRawCodeOrPatchLine(trimmed) || looksLikeToolDiagnosticLine(trimmed)) return false
         if (OUTPUT_METADATA_KEY_VALUE_REGEX.matches(trimmed)) return false
+        if (looksLikePromptInventorySignalLine(trimmed)) return false
         if (trimmed.startsWith("|")) return true
 
         return MARKDOWN_HEADING_REGEX.matches(trimmed) ||
@@ -739,7 +1088,7 @@ open class ChatMessagePanel(
             .distinct()
             .take(OUTPUT_FILTER_MAX_LINES)
             .toList()
-        return lines.joinToString("\n").trim()
+        return stripLeadingPromptQuestionnaireNoise(lines.joinToString("\n").trim())
     }
 
     private fun renderAssistantTraceContent(
@@ -756,21 +1105,39 @@ open class ChatMessagePanel(
         val processItems = traceSnapshot.items.filter { item ->
             item.kind != ExecutionTimelineParser.Kind.OUTPUT && shouldRenderProcessItem(item)
         }
-        if (processItems.isNotEmpty()) {
-            container.add(createTracePanel(processItems, showFailedState))
-        }
-
         val outputItems = traceSnapshot.items.filter { it.kind == ExecutionTimelineParser.Kind.OUTPUT }
-        if (outputItems.isNotEmpty()) {
-            container.add(createOutputPanel(outputItems, showFailedState))
-        }
+        val hasPrimaryAnswer = answerContent.isNotBlank()
 
-        if (answerContent.isNotBlank()) {
+        val secondaryPanels = buildList<JComponent> {
+            if (processItems.isNotEmpty()) {
+                add(createTracePanel(processItems, showFailedState, subdued = hasPrimaryAnswer))
+            }
+            if (outputItems.isNotEmpty()) {
+                add(createOutputPanel(outputItems, showFailedState, subdued = hasPrimaryAnswer))
+            }
+        }
+        if (secondaryPanels.isNotEmpty()) {
+            if (hasPrimaryAnswer) {
+                container.add(createSecondaryTraceSection(secondaryPanels))
+            } else {
+                secondaryPanels.forEach(container::add)
+            }
+        }
+        if (hasPrimaryAnswer) {
             container.add(createAssistantAnswerComponent(answerContent, structured))
         }
 
         contentHost.removeAll()
         contentHost.add(container, BorderLayout.CENTER)
+    }
+
+    private fun createSecondaryTraceSection(sections: List<JComponent>): JPanel {
+        val section = JPanel()
+        section.layout = BoxLayout(section, BoxLayout.Y_AXIS)
+        section.isOpaque = false
+        section.border = JBUI.Borders.emptyBottom(8)
+        sections.forEach { item -> section.add(item) }
+        return section
     }
 
     private fun shouldRenderProcessItem(item: StreamingTraceAssembler.TraceItem): Boolean {
@@ -932,15 +1299,19 @@ open class ChatMessagePanel(
         val normalized = content
             .replace("\r\n", "\n")
             .replace('\r', '\n')
-        val repairedMarkdown = repairMalformedMarkdownLayout(normalized)
+        val repairedContent = MojibakeTextSupport.repairTextLines(normalized)
+        val repairedMarkdown = repairMalformedMarkdownLayout(repairedContent)
         val withoutThinkingTags = THINKING_TAG_REGEX.replace(repairedMarkdown, "")
             .replace(EXCESSIVE_EMPTY_LINES_REGEX, "\n\n")
             .trim()
-        return if (withoutThinkingTags.isBlank()) {
+        val cleaned = if (withoutThinkingTags.isBlank()) {
             repairedMarkdown.trim()
         } else {
             withoutThinkingTags
         }
+        return stripLeadingPromptQuestionnaireNoise(
+            stripLeadingCliTranscriptNoise(cleaned)
+        )
     }
 
     private fun repairMalformedMarkdownLayout(content: String): String {
@@ -1096,6 +1467,7 @@ open class ChatMessagePanel(
     private fun createTracePanel(
         items: List<StreamingTraceAssembler.TraceItem>,
         hasFailedTrace: Boolean,
+        subdued: Boolean = false,
     ): JPanel {
         val displayItems = mergeTraceItemsForDisplay(items)
             .takeLast(MAX_TIMELINE_VISIBLE_ITEMS)
@@ -1104,11 +1476,11 @@ open class ChatMessagePanel(
 
         val wrapper = JPanel(BorderLayout())
         wrapper.isOpaque = true
-        wrapper.background = traceCardBackgroundColor(failed)
+        wrapper.background = traceCardBackgroundColor(failed, subdued)
         wrapper.border = buildRoundedContainerBorder(
-            lineColor = traceCardBorderColor(failed),
+            lineColor = traceCardBorderColor(failed, subdued),
             arc = 12,
-            padding = JBUI.insets(7, 9, 6, 9),
+            padding = if (subdued) JBUI.insets(5, 8, 4, 8) else JBUI.insets(7, 9, 6, 9),
         )
 
         val summaryBar = JPanel(BorderLayout())
@@ -1137,7 +1509,13 @@ open class ChatMessagePanel(
         }
 
         val summaryLabel = JBLabel(SpecCodingBundle.message("chat.timeline.summary.label"))
-        summaryLabel.font = summaryLabel.font.deriveFont(java.awt.Font.BOLD, 12f)
+        summaryLabel.font = summaryLabel.font.deriveFont(
+            if (subdued) java.awt.Font.PLAIN else java.awt.Font.BOLD,
+            if (subdued) 11f else 12f,
+        )
+        if (subdued) {
+            summaryLabel.foreground = secondaryTraceLabelColor()
+        }
         summaryLeft.add(summaryLabel)
         if (failed) {
             summaryLeft.add(
@@ -1152,12 +1530,26 @@ open class ChatMessagePanel(
         val editCount = items.count { it.kind == ExecutionTimelineParser.Kind.EDIT }
         val verifyCount = items.count { it.kind == ExecutionTimelineParser.Kind.VERIFY }
         val stepCount = items.size
-        summaryLeft.add(createSummaryBadge("${kindLabel(ExecutionTimelineParser.Kind.READ)} $readCount"))
-        summaryLeft.add(createSummaryBadge("${kindLabel(ExecutionTimelineParser.Kind.EDIT)} $editCount"))
-        summaryLeft.add(createSummaryBadge("${kindLabel(ExecutionTimelineParser.Kind.VERIFY)} $verifyCount"))
-        summaryLeft.add(createSummaryBadge(SpecCodingBundle.message("chat.timeline.summary.steps", stepCount)))
+        if (subdued) {
+            summaryLeft.add(
+                createSummaryBadge(
+                    SpecCodingBundle.message("chat.timeline.summary.steps", stepCount),
+                    tone = SummaryBadgeTone.SUBTLE,
+                )
+            )
+        } else {
+            summaryLeft.add(createSummaryBadge("${kindLabel(ExecutionTimelineParser.Kind.READ)} $readCount"))
+            summaryLeft.add(createSummaryBadge("${kindLabel(ExecutionTimelineParser.Kind.EDIT)} $editCount"))
+            summaryLeft.add(createSummaryBadge("${kindLabel(ExecutionTimelineParser.Kind.VERIFY)} $verifyCount"))
+            summaryLeft.add(createSummaryBadge(SpecCodingBundle.message("chat.timeline.summary.steps", stepCount)))
+        }
         elapsedSummaryText()?.let { elapsed ->
-            summaryLeft.add(createSummaryBadge(SpecCodingBundle.message("chat.timeline.summary.elapsed", elapsed)))
+            summaryLeft.add(
+                createSummaryBadge(
+                    SpecCodingBundle.message("chat.timeline.summary.elapsed", elapsed),
+                    tone = if (subdued) SummaryBadgeTone.SUBTLE else SummaryBadgeTone.NEUTRAL,
+                )
+            )
         }
         summaryBar.add(summaryLeft, BorderLayout.CENTER)
 
@@ -1167,7 +1559,11 @@ open class ChatMessagePanel(
                     if (traceExpanded) "chat.timeline.toggle.collapse" else "chat.timeline.toggle.expand"
                 )
             )
-            styleInlineActionButton(toggleButton)
+            if (subdued) {
+                styleSecondaryInlineActionButton(toggleButton)
+            } else {
+                styleInlineActionButton(toggleButton)
+            }
             toggleButton.addActionListener {
                 traceExpanded = !traceExpanded
                 renderContent()
@@ -1194,7 +1590,7 @@ open class ChatMessagePanel(
 
         val container = JPanel(BorderLayout())
         container.isOpaque = false
-        container.border = JBUI.Borders.emptyBottom(4)
+        container.border = JBUI.Borders.emptyBottom(if (subdued) 2 else 4)
         container.add(wrapper, BorderLayout.CENTER)
         return container
     }
@@ -1202,6 +1598,7 @@ open class ChatMessagePanel(
     private fun createOutputPanel(
         items: List<StreamingTraceAssembler.TraceItem>,
         showFailedState: Boolean,
+        subdued: Boolean = false,
     ): JPanel {
         val mergedOutput = mergeOutputItemsForDisplay(
             items = items.takeLast(MAX_TIMELINE_VISIBLE_ITEMS),
@@ -1211,11 +1608,11 @@ open class ChatMessagePanel(
         val failed = showFailedState && mergedOutput.status == ExecutionTimelineParser.Status.ERROR
         val wrapper = JPanel(BorderLayout())
         wrapper.isOpaque = true
-        wrapper.background = outputCardBackgroundColor(failed)
+        wrapper.background = outputCardBackgroundColor(failed, subdued)
         wrapper.border = buildRoundedContainerBorder(
-            lineColor = outputCardBorderColor(failed),
+            lineColor = outputCardBorderColor(failed, subdued),
             arc = 12,
-            padding = JBUI.insets(7, 9, 6, 9),
+            padding = if (subdued) JBUI.insets(5, 8, 4, 8) else JBUI.insets(7, 9, 6, 9),
         )
 
         val header = JPanel(BorderLayout())
@@ -1245,7 +1642,13 @@ open class ChatMessagePanel(
         }
 
         val title = JBLabel(SpecCodingBundle.message("chat.timeline.kind.output"))
-        title.font = title.font.deriveFont(java.awt.Font.BOLD, 12f)
+        title.font = title.font.deriveFont(
+            if (subdued) java.awt.Font.PLAIN else java.awt.Font.BOLD,
+            if (subdued) 11f else 12f,
+        )
+        if (subdued) {
+            title.foreground = secondaryTraceLabelColor()
+        }
         left.add(title)
         if (failed) {
             left.add(
@@ -1256,24 +1659,35 @@ open class ChatMessagePanel(
             )
         }
 
-        left.add(createSummaryBadge(items.size.toString()))
+        left.add(
+            createSummaryBadge(
+                items.size.toString(),
+                tone = if (subdued) SummaryBadgeTone.SUBTLE else SummaryBadgeTone.NEUTRAL,
+            )
+        )
         header.add(left, BorderLayout.CENTER)
 
         val right = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
         right.isOpaque = false
 
-        val filterButton = JButton(
-            SpecCodingBundle.message(
-                "chat.timeline.output.filter.toggle",
-                outputFilterLabel(outputFilterLevel),
+        if (!subdued || outputExpanded) {
+            val filterButton = JButton(
+                SpecCodingBundle.message(
+                    "chat.timeline.output.filter.toggle",
+                    outputFilterLabel(outputFilterLevel),
+                )
             )
-        )
-        styleInlineActionButton(filterButton)
-        filterButton.addActionListener {
-            outputFilterLevel = outputFilterLevel.next()
-            renderContent()
+            if (subdued) {
+                styleSecondaryInlineActionButton(filterButton)
+            } else {
+                styleInlineActionButton(filterButton)
+            }
+            filterButton.addActionListener {
+                outputFilterLevel = outputFilterLevel.next()
+                renderContent()
+            }
+            right.add(filterButton)
         }
-        right.add(filterButton)
 
         if (timelineExpandButtonsVisible) {
             val toggleButton = JButton(
@@ -1281,7 +1695,11 @@ open class ChatMessagePanel(
                     if (outputExpanded) "chat.timeline.toggle.collapse" else "chat.timeline.toggle.expand"
                 )
             )
-            styleInlineActionButton(toggleButton)
+            if (subdued) {
+                styleSecondaryInlineActionButton(toggleButton)
+            } else {
+                styleInlineActionButton(toggleButton)
+            }
             toggleButton.addActionListener {
                 outputExpanded = !outputExpanded
                 renderContent()
@@ -1319,7 +1737,7 @@ open class ChatMessagePanel(
 
         val container = JPanel(BorderLayout())
         container.isOpaque = false
-        container.border = JBUI.Borders.emptyBottom(4)
+        container.border = JBUI.Borders.emptyBottom(if (subdued) 2 else 4)
         container.add(wrapper, BorderLayout.CENTER)
         return container
     }
@@ -2437,12 +2855,14 @@ open class ChatMessagePanel(
         if (trimmed.isBlank()) return false
         if (looksLikeRawCodeOrPatchLine(trimmed)) return false
         if (looksLikeToolDiagnosticLine(trimmed)) return false
+        if (looksLikePromptInventorySignalLine(trimmed)) return false
         return looksLikeNarrativeOutputLine(trimmed)
     }
 
     private fun looksLikeNarrativeOutputLine(line: String): Boolean {
         val trimmed = line.trim()
         if (trimmed.isBlank() || trimmed.startsWith("|")) return false
+        if (looksLikePromptInventorySignalLine(trimmed)) return false
         if (OUTPUT_ALLOWED_HEADING_REGEX.matches(trimmed)) return true
         if (OUTPUT_METADATA_KEY_VALUE_REGEX.matches(trimmed)) return false
         if (OUTPUT_SHORT_STATUS_REGEX.matches(trimmed)) return true
@@ -2484,9 +2904,14 @@ open class ChatMessagePanel(
         if (trimmed.isBlank()) return false
         val normalized = normalizeOutputClassifierLine(trimmed)
         if (trimmed.startsWith("```")) return true
+        if (OUTPUT_SOURCE_SNIPPET_PREFIX_REGEX.containsMatchIn(trimmed)) return true
         if (OUTPUT_DIFF_CONTROL_PREFIXES.any { trimmed.startsWith(it) }) return true
         if (OUTPUT_COMMAND_LINE_REGEX.matches(trimmed)) return true
         if (OUTPUT_FILE_PATH_LINE_REGEX.matches(trimmed)) return true
+        if (OUTPUT_ASSERTION_STATEMENT_REGEX.matches(normalized)) return true
+        if (OUTPUT_TYPED_PROPERTY_LINE_REGEX.matches(normalized)) return true
+        if (OUTPUT_SYMBOLIC_REFERENCE_LINE_REGEX.matches(normalized)) return true
+        if (OUTPUT_KOTLIN_TYPE_CHECK_LINE_REGEX.matches(normalized)) return true
         if (OUTPUT_CODE_DECLARATION_REGEX.matches(normalized)) return true
         if (OUTPUT_CODE_BLOCK_ONLY_LINE_REGEX.matches(normalized)) return true
         if (OUTPUT_OPEN_CALL_REGEX.matches(normalized)) return true
@@ -2506,8 +2931,17 @@ open class ChatMessagePanel(
 
     private fun looksLikeToolDiagnosticLine(line: String): Boolean {
         val normalized = normalizeOutputClassifierLine(line)
-        return OUTPUT_STACKTRACE_LOCATION_REGEX.matches(line) ||
+        return OUTPUT_CLI_BANNER_REGEX.matches(line) ||
+            OUTPUT_SESSION_ID_LINE_REGEX.matches(line) ||
+            OUTPUT_OPERATION_MODE_LINE_REGEX.matches(line) ||
+            OUTPUT_IDE_COPILOT_LINE_REGEX.matches(line) ||
+            OUTPUT_PROMPT_REFERENCE_LINE_REGEX.matches(line) ||
+            OUTPUT_PROMPT_TITLE_LINE_REGEX.matches(line) ||
+            OUTPUT_PROMPT_MARKDOWN_TITLE_LINE_REGEX.matches(line) ||
+            looksLikeCliTranscriptInstructionLine(line) ||
+            OUTPUT_STACKTRACE_LOCATION_REGEX.matches(line) ||
             OUTPUT_TIMING_STATUS_REGEX.matches(line) ||
+            OUTPUT_SOURCE_SNIPPET_PREFIX_REGEX.containsMatchIn(line) ||
             OUTPUT_SOURCE_REFERENCE_WITH_VALUE_REGEX.matches(line) ||
             OUTPUT_IDENTIFIER_ASSIGNMENT_REGEX.matches(normalized) ||
             OUTPUT_METHOD_CALL_REGEX.matches(normalized) ||
@@ -2779,6 +3213,13 @@ open class ChatMessagePanel(
         button.putClientProperty("JButton.buttonType", "borderless")
     }
 
+    private fun styleSecondaryInlineActionButton(button: JButton) {
+        styleInlineActionButton(button)
+        button.font = button.font.deriveFont(10f)
+        button.foreground = secondaryTraceLabelColor()
+        button.border = JBUI.Borders.empty(1, 2, 1, 2)
+    }
+
     private fun styleIconActionButton(button: JButton, icon: Icon, tooltip: String) {
         styleActionButton(button)
         button.icon = icon
@@ -2957,52 +3398,80 @@ open class ChatMessagePanel(
         )
     }
 
-    private fun traceCardBackgroundColor(failed: Boolean): java.awt.Color = if (failed) {
+    private fun traceCardBackgroundColor(failed: Boolean, subdued: Boolean = false): java.awt.Color = if (failed) {
         JBColor(
             java.awt.Color(255, 247, 247),
             java.awt.Color(62, 42, 44),
         )
     } else {
-        JBColor(
-            java.awt.Color(252, 253, 255),
-            java.awt.Color(42, 47, 55),
-        )
+        if (subdued) {
+            JBColor(
+                java.awt.Color(247, 249, 252),
+                java.awt.Color(40, 45, 52),
+            )
+        } else {
+            JBColor(
+                java.awt.Color(252, 253, 255),
+                java.awt.Color(42, 47, 55),
+            )
+        }
     }
 
-    private fun traceCardBorderColor(failed: Boolean): java.awt.Color = if (failed) {
+    private fun traceCardBorderColor(failed: Boolean, subdued: Boolean = false): java.awt.Color = if (failed) {
         JBColor(
             java.awt.Color(233, 179, 184),
             java.awt.Color(126, 77, 82),
         )
     } else {
-        JBColor(
-            java.awt.Color(214, 223, 234),
-            java.awt.Color(78, 88, 99),
-        )
+        if (subdued) {
+            JBColor(
+                java.awt.Color(226, 232, 240),
+                java.awt.Color(73, 82, 92),
+            )
+        } else {
+            JBColor(
+                java.awt.Color(214, 223, 234),
+                java.awt.Color(78, 88, 99),
+            )
+        }
     }
 
-    private fun outputCardBackgroundColor(failed: Boolean): java.awt.Color = if (failed) {
+    private fun outputCardBackgroundColor(failed: Boolean, subdued: Boolean = false): java.awt.Color = if (failed) {
         JBColor(
             java.awt.Color(255, 247, 247),
             java.awt.Color(60, 41, 44),
         )
     } else {
-        JBColor(
-            java.awt.Color(252, 253, 255),
-            java.awt.Color(41, 46, 53),
-        )
+        if (subdued) {
+            JBColor(
+                java.awt.Color(247, 249, 252),
+                java.awt.Color(39, 44, 51),
+            )
+        } else {
+            JBColor(
+                java.awt.Color(252, 253, 255),
+                java.awt.Color(41, 46, 53),
+            )
+        }
     }
 
-    private fun outputCardBorderColor(failed: Boolean): java.awt.Color = if (failed) {
+    private fun outputCardBorderColor(failed: Boolean, subdued: Boolean = false): java.awt.Color = if (failed) {
         JBColor(
             java.awt.Color(233, 179, 184),
             java.awt.Color(126, 77, 82),
         )
     } else {
-        JBColor(
-            java.awt.Color(214, 223, 234),
-            java.awt.Color(78, 88, 99),
-        )
+        if (subdued) {
+            JBColor(
+                java.awt.Color(226, 232, 240),
+                java.awt.Color(73, 82, 92),
+            )
+        } else {
+            JBColor(
+                java.awt.Color(214, 223, 234),
+                java.awt.Color(78, 88, 99),
+            )
+        }
     }
 
     private fun traceRowBackgroundColor(): java.awt.Color = JBColor(
@@ -3028,6 +3497,11 @@ open class ChatMessagePanel(
     private fun outputSectionDividerColor(): java.awt.Color = JBColor(
         java.awt.Color(222, 228, 236),
         java.awt.Color(86, 96, 108),
+    )
+
+    private fun secondaryTraceLabelColor(): java.awt.Color = JBColor(
+        java.awt.Color(109, 123, 141),
+        java.awt.Color(154, 168, 188),
     )
 
     private fun createSummaryBadge(
@@ -3056,6 +3530,17 @@ open class ChatMessagePanel(
                 JBColor(
                     java.awt.Color(160, 50, 58),
                     java.awt.Color(246, 193, 198),
+                ),
+            )
+
+            SummaryBadgeTone.SUBTLE -> Pair(
+                JBColor(
+                    java.awt.Color(248, 250, 252),
+                    java.awt.Color(56, 62, 72),
+                ),
+                JBColor(
+                    java.awt.Color(112, 124, 141),
+                    java.awt.Color(156, 170, 190),
                 ),
             )
         }
@@ -3255,6 +3740,11 @@ open class ChatMessagePanel(
         private const val SPINNER_STEP_DEGREES = 20
         private const val ASSISTANT_ACK_LEAD_MAX_LENGTH = 48
         private const val ASSISTANT_ACK_COMMA_MAX_INDEX = 18
+        private const val PROMPT_SCAFFOLDING_LEAD_SCAN_LINES = 6
+        private const val PROMPT_SCAFFOLDING_LEAD_MIN_MATCHES = 2
+        private const val PROMPT_SCAFFOLDING_TRAIL_SCAN_LINES = 6
+        private const val PROMPT_SCAFFOLDING_TRAIL_MIN_MATCHES = 2
+        private const val EXPLICIT_ANSWER_ECHO_MAX_CHARS = 80
         private const val USER_IMAGE_TEXT_GAP = 8
         private const val USER_IMAGE_CHIP_GAP = 6
         private const val USER_IMAGE_ROW_VGAP = 2
@@ -3284,6 +3774,8 @@ open class ChatMessagePanel(
         private val BLOCKQUOTE_LINE_REGEX = Regex("""^\s{0,3}>\s?.*$""")
         private val UNORDERED_LIST_ITEM_REGEX = Regex("""^(?:[-*]|[•●·・▪◦‣])\s*.+$""")
         private val ORDERED_LIST_ITEM_REGEX = Regex("""^\d+[.)、）．](?:\s+|(?=[^\s\d])).+$""")
+        private val CHECKBOX_LIST_ITEM_REGEX = Regex("""^(?:[-*]|\p{Pd})\s*\[[ xX]]\s+.+$""")
+        private val BULLET_PREFIX_REGEX = Regex("""^(?:[-*]|[•●·・▪◦‣]|\d+[.)、）．])\s+""")
         private val FAILURE_ONLY_FALLBACK_KEYWORDS = listOf(
             "error",
             "failed",
@@ -3326,6 +3818,10 @@ open class ChatMessagePanel(
         private val MARKDOWN_STAR_PAIR_WITH_SPACES_REGEX = Regex("""\*\s+\*""")
         private val USER_IMAGE_ATTACHMENT_LINE_REGEX = Regex("""^\[(?:图片|images?|image)\]\s+.+$""", RegexOption.IGNORE_CASE)
         private val PROMPT_REFERENCE_TOKEN_REGEX = Regex("""(?<!\S)#([\p{L}\p{N}_.-]+)""")
+        private val PROMPT_ECHO_LINE_REGEX = Regex(
+            """^(?:你|你们|您|请|能否|是否|为什么|怎么|怎样|啥|什么|who\b|what\b|why\b|how\b|can\b|could\b|please\b).+$""",
+            RegexOption.IGNORE_CASE,
+        )
         private val THINKING_TAG_REGEX = Regex("""</?thinking>""", RegexOption.IGNORE_CASE)
         private val EXCESSIVE_EMPTY_LINES_REGEX = Regex("""\n{3,}""")
         private val ASSISTANT_ACK_SENTENCE_END_REGEX = Regex("[。！？!?]")
@@ -3333,6 +3829,57 @@ open class ChatMessagePanel(
         private val OUTPUT_NARRATIVE_HINT_PUNCTUATION = setOf('。', '！', '？', '，', '.', '!', '?', ':', '：')
         private val OUTPUT_CJK_CHAR_REGEX = Regex("""\p{IsHan}""")
         private val OUTPUT_LATIN_WORD_REGEX = Regex("""[A-Za-z]+(?:['-][A-Za-z0-9]+)?""")
+        private val OUTPUT_CLI_BANNER_REGEX = Regex(
+            """^OpenAI\s+Codex\s+v[\w.-]+(?:\s+\(.+\))?$""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val OUTPUT_SESSION_ID_LINE_REGEX = Regex(
+            """^session\s+id\s*:\s*\S.+$""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val OUTPUT_OPERATION_MODE_LINE_REGEX = Regex(
+            """^Current\s+operation\s+mode\s*:\s*\S.+$""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val OUTPUT_IDE_COPILOT_LINE_REGEX = Regex(
+            """^You\s+are\s+the\s+in-IDE\s+project\s+development\s+copilot\.?$""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val OUTPUT_PROMPT_REFERENCE_LINE_REGEX = Regex(
+            """^Prompt\s+#\S.*:$""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val OUTPUT_PROMPT_TITLE_LINE_REGEX = Regex("""^#\S+\|\S+$""")
+        private val OUTPUT_PROMPT_MARKDOWN_TITLE_LINE_REGEX = Regex("""^#\s*\S.+$""")
+        private val OUTPUT_PROMPT_SECTION_HEADING_REGEX = Regex(
+            """^(?:[\p{IsHan}\p{L}\p{N} _./()\-]{1,18})[:\uFF1A]$""",
+        )
+        private val OUTPUT_PROMPT_INSTRUCTION_LINE_REGEX = Regex(
+            """^(?:\d+[.)]\s+.+|Prefer\b.+|Keep\b.+|During\b.+|Never\b.+|If no file edit\b.+|For non-trivial\b.+|When including code\b.+|Do not force\b.+|Do not stop at\b.+|In vibe-style\b.+|Read-only analysis mode\b.+|You may provide\b.+|Execute end-to-end\b.+|Apply real file edits\b.+|(?:\u4f60\u5fc5\u987b|\u8bf7|\u4f18\u5148|\u4e0d\u8981|\u4e25\u7981|\u9ed8\u8ba4|\u6bcf\u6b21|\u672c\u8f6e\u53ea).+)$""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val PROMPT_SCAFFOLDING_ROLE_LINE_REGEX = Regex(
+            """^#?\s*(?:仓库整改实施工程师|repo-cleanup|project development copilot).*$""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val PROMPT_SCAFFOLDING_HEADING_REGEX = Regex(
+            """^(?:项目背景|默认优先问题池|执行摘要|核心能力.*团队场景.*|紧咬.*病灶链|你必须遵守以下原则)\s*[:：]?$""",
+        )
+        private val PROMPT_SCAFFOLDING_INVENTORY_LINE_REGEX = Regex(
+            """^(?:方向对.*控制复杂度.*|测试中超\s*\d+\s*行.*文件.*|CI\s*工作流.*|遗漏清单.*|已经.*JetBrains\s+IDE.*|愿意接受.*|需要对.*|Prompt,\s*Skill,\s*Hook,\s*MCP.*|大量.*文件.*|全链路上升.*|热控制台.*Ktor.*|明明能跑.*).*${'$'}""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val PROMPT_SCAFFOLDING_NUMBERED_LINE_REGEX = Regex(
+            """^\d+[.)、）．]\s*(?:解释|说明|分析|梳理|盘点|核心|团队|场景|状态|风险|问题|分歧|边界|约束|为什么|如何|是否|是不是|要不要|还剩|能否|该).+$""",
+        )
+        private val OUTPUT_RESULT_SUMMARY_PREFIX_REGEX = Regex(
+            """^(?:(?:summary|result|results|update|updated|recommendation|analysis|answer|verify|verification|tests?|next step|next steps|implemented|fixed|added|changed|completed|this round|in this round|i\b|we\b)|(?:\u672c\u8f6e|\u8fd9\u6b21|\u8fd9\u8f6e|\u672c\u6b21|\u672c\u8f6e\u6536\u655b|\u8fd9\u8f6e\u6536\u655b|\u672c\u6b21\u6536\u655b|\u603b\u7ed3|\u7ed3\u679c|\u5efa\u8bae|\u4e0b\u4e00\u6b65|\u5df2|\u5b8c\u6210|\u66f4\u65b0|\u4fee\u590d|\u65b0\u589e|\u8c03\u6574|\u9a8c\u8bc1|\u6d4b\u8bd5|\u901a\u8fc7)).*$""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val ANSWER_SUMMARY_BULLET_REGEX = Regex(
+            """^(?:(?:新增|更新|修复|调整|补充|恢复|拆出|支持|改成|优化|完成|通过|单测|测试|结果|总结|说明|结论|下一步|验证)|(?:added|updated|fixed|changed|completed|passed|tests?|result|summary|next step)).*$""",
+            RegexOption.IGNORE_CASE,
+        )
         private val OUTPUT_ALLOWED_HEADING_REGEX = Regex(
             """^(?:(?:summary|result|results|next step|next steps|note|notes|update|updated|recommendation|recommendations|analysis|answer|explanation|plan)\s*[:：].+|(?:总结|结果|下一步|说明|建议|分析|结论|回答|计划)\s*[:：].+)$""",
             RegexOption.IGNORE_CASE,
@@ -3384,7 +3931,20 @@ open class ChatMessagePanel(
             """^(?!https?://)(?:(?:[A-Za-z]:)?[\\/])?(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9]+)?(?::\d+(?::\d+)?)?(?::[\p{L}\p{N}_.-]+)+(?:=.*)?$""",
         )
         private val OUTPUT_IDENTIFIER_ASSIGNMENT_REGEX = Regex(
-            """^(?:[A-Za-z_][\w.-]*|[\p{IsHan}]{2,16})\s*=\s*.+$""",
+            """^(?:[A-Za-z_][\w.?-]*|[\p{IsHan}]{2,16})\s*=\s*.+$""",
+        )
+        private val OUTPUT_ASSERTION_STATEMENT_REGEX = Regex(
+            """^assert(?:True|False|Equals|Null|NotNull|Same|NotSame)\b.*$""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val OUTPUT_TYPED_PROPERTY_LINE_REGEX = Regex(
+            """^(?:[A-Za-z_][\w.?-]*|[\p{IsHan}]{2,16})\s*:\s*(?:[A-Z][\w.<>?(),\[\]]*|[A-Za-z_][\w.<>?(),\[\]]*Service|[A-Za-z_][\w.<>?(),\[\]]*Manager|[A-Za-z_][\w.<>?(),\[\]]*Store)\s*,?$""",
+        )
+        private val OUTPUT_SYMBOLIC_REFERENCE_LINE_REGEX = Regex(
+            """^(?:=+\s*)?(?:[A-Za-z_][\w.\[\]?]*)(?:\([^)]*\))?(?:\.[A-Za-z_][\w\[\]?]*)*$""",
+        )
+        private val OUTPUT_KOTLIN_TYPE_CHECK_LINE_REGEX = Regex(
+            """^(?:[A-Za-z_][\w.]*|[\p{IsHan}]{2,16})\s+is\s+(?:[A-Za-z_][\w.<>?]*)[)]?$""",
         )
         private val OUTPUT_METHOD_CALL_REGEX = Regex(
             """^(?:[A-Za-z_][\w.]*|[\p{IsHan}]{2,16})\([^)]*\)\s*$""",
@@ -3516,6 +4076,7 @@ open class ChatMessagePanel(
     private enum class SummaryBadgeTone {
         NEUTRAL,
         ERROR,
+        SUBTLE,
     }
 
     private data class UserImageAttachment(

@@ -29,6 +29,7 @@ import com.eacape.speccodingplugin.llm.MockLlmProvider
 import com.eacape.speccodingplugin.llm.ModelInfo
 import com.eacape.speccodingplugin.llm.ModelRegistry
 import com.eacape.speccodingplugin.persistence.ChatPersistenceCoordinator
+import com.eacape.speccodingplugin.prompt.PromptInterpolator
 import com.eacape.speccodingplugin.prompt.PromptTemplate
 import com.eacape.speccodingplugin.rollback.WorkspaceChangesetCollector
 import com.eacape.speccodingplugin.session.ConversationMessage
@@ -2564,11 +2565,14 @@ class ImprovedChatPanel(
             userInput = promptReference.cleanedInput.ifBlank {
                 rawInput.ifBlank { SpecCodingBundle.message("toolwindow.image.default.prompt") }
             },
-            referencedPrompts = promptReference.templates,
         )
         val chatInput = ImprovedChatPanelComposerSubmissionCoordinator.appendImagePathsToPrompt(
             prompt = baseChatInput,
             imagePaths = selectedImagePaths,
+        )
+        val promptSystemMessages = buildPromptReferenceSystemMessages(
+            referencedPrompts = promptReference.templates,
+            userInput = promptReference.cleanedInput,
         )
         val visibleInput = ImprovedChatPanelComposerSubmissionCoordinator.buildVisibleInput(
             rawInput = visibleRawInput,
@@ -2598,12 +2602,12 @@ class ImprovedChatPanel(
         clearImageAttachments(purgeTransientFiles = false)
 
         // Add user message to history
-        val userMessage = LlmMessage(LlmRole.USER, chatInput)
+        val userMessage = LlmMessage(LlmRole.USER, visibleInput)
         appendToConversationHistory(userMessage)
 
         appendUserMessage(
             content = visibleInput,
-            rawContent = chatInput,
+            rawContent = visibleInput,
             imagePaths = selectedImagePaths,
         )
         clearComposerInput()
@@ -2618,6 +2622,7 @@ class ImprovedChatPanel(
         val assistantStartedAtMillis = System.currentTimeMillis()
         val assistantPanel = addAssistantMessage(startedAtMillis = assistantStartedAtMillis)
         currentAssistantPanel = assistantPanel
+        val promptEchoFilter = PromptReferenceEchoFilter.fromTextBlocks(promptSystemMessages)
 
         activeOperationJob = taskCoordinator.launchIo {
             val streamedTraceEvents = mutableListOf<ChatStreamEvent>()
@@ -2692,6 +2697,7 @@ class ImprovedChatPanel(
                     modelId = modelId,
                     contextSnapshot = contextSnapshot,
                     conversationHistory = buildConversationHistoryForRequest(),
+                    additionalSystemMessages = promptSystemMessages,
                     operationMode = operationMode,
                     planExecuteVerifySections = workflowSectionRenderingEnabledFor(interactionMode),
                     imagePaths = selectedImagePaths,
@@ -2700,12 +2706,14 @@ class ImprovedChatPanel(
                     if (stopRequested.get()) {
                         throw CancellationException("Stopped by user")
                     }
-                    if (chunk.delta.isNotEmpty()) {
-                        assistantContent.append(chunk.delta)
-                        pendingDelta.append(chunk.delta)
+                    val filteredDelta = promptEchoFilter.filter(chunk.delta, flush = chunk.isLast)
+                    if (filteredDelta.isNotEmpty()) {
+                        assistantContent.append(filteredDelta)
+                        pendingDelta.append(filteredDelta)
                     }
                     chunk.event
                         ?.let(::sanitizeStreamEvent)
+                        ?.let { event -> sanitizePromptEchoEvent(event, promptEchoFilter) }
                         ?.let { event ->
                             pendingEvents += event
                             streamedTraceEvents += event
@@ -3389,27 +3397,56 @@ class ImprovedChatPanel(
     private fun buildChatInput(
         mode: ChatInteractionMode,
         userInput: String,
-        referencedPrompts: List<PromptTemplate>,
     ): String {
         val modeAwareInput = when (mode) {
             ChatInteractionMode.VIBE -> userInput.trim()
             ChatInteractionMode.SPEC -> buildSpecModePrompt(userInput)
         }
-        if (referencedPrompts.isEmpty()) {
-            return modeAwareInput
-        }
+        return modeAwareInput
+    }
 
-        val promptBlocks = referencedPrompts.joinToString("\n\n") { template ->
-            buildString {
-                appendLine("Prompt #${template.id} (${template.name}):")
-                append(template.content.trim())
-            }
+    private fun buildPromptReferenceSystemMessages(
+        referencedPrompts: List<PromptTemplate>,
+        userInput: String,
+    ): List<String> {
+        if (referencedPrompts.isEmpty()) return emptyList()
+        val normalizedUserInput = userInput.trim()
+        val runtimeVariables = buildPromptReferenceRuntimeVariables(normalizedUserInput)
+
+        return buildList(referencedPrompts.size + 1) {
+            add(
+                """
+                The following referenced prompt templates are internal instructions from the project repository.
+                Do not quote, summarize, or restate their backlog/history/context text in the final answer.
+                Use them only as execution guidance.
+                Final answer must focus on concrete work or concrete next action for this turn.
+                If no concrete work was performed yet, ask one concise clarifying question instead of dumping context.
+                Treat the current user input as the concrete task theme for this turn.
+                """.trimIndent()
+            )
+            addAll(
+                referencedPrompts.map { template ->
+                    buildString {
+                        appendLine("Referenced prompt template #${template.id} (${template.name})")
+                        append(
+                            PromptInterpolator.render(
+                                template = template.content,
+                                variables = template.variables + runtimeVariables,
+                            ).trim()
+                        )
+                    }
+                }
+            )
         }
-        return buildString {
-            appendLine(promptBlocks)
-            appendLine()
-            append(modeAwareInput)
-        }
+    }
+
+    private fun buildPromptReferenceRuntimeVariables(userInput: String): Map<String, String> {
+        val theme = userInput.ifBlank { PROMPT_REFERENCE_DEFAULT_THEME }
+        return mapOf(
+            "THEME" to theme,
+            "EXTRA_CONSTRAINTS" to PROMPT_REFERENCE_DEFAULT_EXTRA_CONSTRAINTS,
+            "ACCEPTANCE" to PROMPT_REFERENCE_DEFAULT_ACCEPTANCE,
+        )
     }
 
     private fun buildSpecModePrompt(input: String): String {
@@ -3456,8 +3493,13 @@ class ImprovedChatPanel(
             .replace(PROMPT_REFERENCE_REGEX, " ")
             .replace(PROMPT_EXTRA_SPACES_REGEX, " ")
             .trim()
+        val cleanedInput = when {
+            cleaned.isNotBlank() -> cleaned
+            resolvedTemplates.isNotEmpty() -> PROMPT_REFERENCE_ONLY_USER_INPUT
+            else -> rawInput.trim()
+        }
         return PromptReferenceResolution(
-            cleanedInput = cleaned.ifBlank { rawInput.trim() },
+            cleanedInput = cleanedInput,
             templates = resolvedTemplates,
         )
     }
@@ -5607,6 +5649,21 @@ class ImprovedChatPanel(
         }
     }
 
+    private fun sanitizePromptEchoEvent(
+        event: ChatStreamEvent,
+        promptEchoFilter: PromptReferenceEchoFilter,
+    ): ChatStreamEvent? {
+        val filteredDetail = promptEchoFilter.filter(event.detail, flush = true)
+        if (filteredDetail.isBlank()) {
+            return null
+        }
+        return if (filteredDetail == event.detail) {
+            event
+        } else {
+            event.copy(detail = filteredDetail)
+        }
+    }
+
     private fun isNonInformativeTraceDetail(kind: ChatTraceKind, detail: String): Boolean {
         val normalized = detail.trim().lowercase(Locale.ROOT)
         return when (kind) {
@@ -5625,6 +5682,7 @@ class ImprovedChatPanel(
             .replace(UI_CONTROL_CHAR_REGEX, "")
         val lines = normalized.lineSequence()
             .map { it.trimEnd() }
+            .map { line -> MojibakeTextSupport.repairLineIfNeeded(line) ?: line }
             .filter { line -> line.isNotBlank() || !dropGarbledLines }
             .filter { line -> !dropGarbledLines || !looksLikeGarbledLine(line) }
             .filter { line -> !dropGarbledLines || !looksLikePlaceholderLine(line) }
@@ -5633,14 +5691,7 @@ class ImprovedChatPanel(
     }
 
     private fun looksLikeGarbledLine(line: String): Boolean {
-        val normalized = line.trim()
-        if (normalized.isBlank()) return false
-        if (UI_CJK_REGEX.containsMatchIn(normalized)) return false
-        if (UI_BOX_DRAWING_REGEX.containsMatchIn(normalized)) return true
-        val suspiciousCount = UI_SUSPICIOUS_CHAR_REGEX.findAll(normalized).count()
-        if (suspiciousCount < UI_GARBLED_MIN_COUNT) return false
-        val ratio = suspiciousCount.toDouble() / normalized.length.toDouble().coerceAtLeast(1.0)
-        return ratio >= UI_GARBLED_MIN_RATIO
+        return MojibakeTextSupport.looksLikeGarbledLine(line)
     }
 
     private fun looksLikePlaceholderLine(line: String): Boolean {
@@ -6673,7 +6724,17 @@ class ImprovedChatPanel(
         val userPanel = allMessages[index - 1]
         if (userPanel.role != ChatMessagePanel.MessageRole.USER) return
 
-        val userInput = userMessageRawContent[userPanel] ?: userPanel.getContent()
+        val rawUserInput = userMessageRawContent[userPanel] ?: userPanel.getContent()
+        val interactionMode = currentInteractionMode()
+        val promptReference = resolvePromptReferences(rawUserInput)
+        val userInput = buildChatInput(
+            mode = interactionMode,
+            userInput = promptReference.cleanedInput.ifBlank { rawUserInput },
+        )
+        val promptSystemMessages = buildPromptReferenceSystemMessages(
+            referencedPrompts = promptReference.templates,
+            userInput = promptReference.cleanedInput,
+        )
 
         // 删除当前 assistant 消息
         messagesPanel.removeMessage(panel)
@@ -6693,6 +6754,7 @@ class ImprovedChatPanel(
         val assistantStartedAtMillis = System.currentTimeMillis()
         val assistantPanel = addAssistantMessage(startedAtMillis = assistantStartedAtMillis)
         currentAssistantPanel = assistantPanel
+        val promptEchoFilter = PromptReferenceEchoFilter.fromTextBlocks(promptSystemMessages)
 
         activeOperationJob = taskCoordinator.launchIo {
             val streamedTraceEvents = mutableListOf<ChatStreamEvent>()
@@ -6751,19 +6813,22 @@ class ImprovedChatPanel(
                     userInput = userInput,
                     modelId = modelId,
                     conversationHistory = buildConversationHistoryForRequest(),
+                    additionalSystemMessages = promptSystemMessages,
                     operationMode = operationMode,
-                    planExecuteVerifySections = workflowSectionRenderingEnabledFor(currentInteractionMode()),
+                    planExecuteVerifySections = workflowSectionRenderingEnabledFor(interactionMode),
                     requestId = requestId,
                 ) { chunk ->
                     if (stopRequested.get()) {
                         throw CancellationException("Stopped by user")
                     }
-                    if (chunk.delta.isNotEmpty()) {
-                        assistantContent.append(chunk.delta)
-                        pendingDelta.append(chunk.delta)
+                    val filteredDelta = promptEchoFilter.filter(chunk.delta, flush = chunk.isLast)
+                    if (filteredDelta.isNotEmpty()) {
+                        assistantContent.append(filteredDelta)
+                        pendingDelta.append(filteredDelta)
                     }
                     chunk.event
                         ?.let(::sanitizeStreamEvent)
+                        ?.let { event -> sanitizePromptEchoEvent(event, promptEchoFilter) }
                         ?.let { event ->
                             pendingEvents += event
                             streamedTraceEvents += event
@@ -7535,6 +7600,14 @@ class ImprovedChatPanel(
             RegexOption.IGNORE_CASE,
         )
         private val PROMPT_REFERENCE_REGEX = Regex("""(?<!\S)#([\p{L}\p{N}_.-]+)""")
+        private const val PROMPT_REFERENCE_DEFAULT_THEME =
+            "继续当前最小闭环整改，并直接给出本轮实际改动与验证结果；如果主题仍不明确，先用一句话确认。"
+        private const val PROMPT_REFERENCE_DEFAULT_EXTRA_CONSTRAINTS =
+            "不要复述项目背景、历史问题池、报告摘要或源码清单。"
+        private const val PROMPT_REFERENCE_DEFAULT_ACCEPTANCE =
+            "最终正文只保留本轮实际修改、验证结果、剩余风险和下一步。"
+        private const val PROMPT_REFERENCE_ONLY_USER_INPUT =
+            "Follow the referenced prompt template and provide only the final answer. Do not repeat the template text."
         private val PROMPT_EXTRA_SPACES_REGEX = Regex("""\s{2,}""")
         private val PROMPT_ALIAS_SEPARATOR_REGEX = Regex("""[\s_-]+""")
         private val SUPPORTED_IMAGE_EXTENSIONS = setOf(

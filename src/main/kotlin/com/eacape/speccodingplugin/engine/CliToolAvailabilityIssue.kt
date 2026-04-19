@@ -1,6 +1,7 @@
 package com.eacape.speccodingplugin.engine
 
 enum class CliToolAvailabilityIssueKind {
+    EXECUTABLE_PATH_INVALID,
     EXECUTABLE_NOT_FOUND,
     ACCESS_DENIED,
     WORKING_DIRECTORY_UNAVAILABLE,
@@ -19,6 +20,7 @@ internal object CliToolAvailabilityIssues {
 
     fun fromStartupDiagnostic(diagnostic: CliCommandStartupDiagnostic): CliToolAvailabilityIssue {
         val kind = when (diagnostic.kind) {
+            CliCommandFailureKind.EXECUTABLE_PATH_INVALID -> CliToolAvailabilityIssueKind.EXECUTABLE_PATH_INVALID
             CliCommandFailureKind.EXECUTABLE_NOT_FOUND -> CliToolAvailabilityIssueKind.EXECUTABLE_NOT_FOUND
             CliCommandFailureKind.ACCESS_DENIED -> CliToolAvailabilityIssueKind.ACCESS_DENIED
             CliCommandFailureKind.WORKING_DIRECTORY_UNAVAILABLE ->

@@ -1,10 +1,11 @@
 package com.eacape.speccodingplugin.hook
 
+import com.eacape.speccodingplugin.core.ExternalMergedOutputCommandRuntime
+import com.eacape.speccodingplugin.core.ExternalMergedOutputCommandSpec
 import com.eacape.speccodingplugin.core.ExternalProcessLaunchSpec
 import com.eacape.speccodingplugin.core.ExternalProcessLauncher
 import com.eacape.speccodingplugin.core.ExternalProcessStartupFailureClassifier
 import com.eacape.speccodingplugin.core.ExternalProcessStartupFailureKind
-import com.eacape.speccodingplugin.core.ManagedMergedOutputProcess
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -61,6 +62,7 @@ internal class HookCommandRuntime(
             ),
         )
     },
+    private val mergedOutputRuntime: ExternalMergedOutputCommandRuntime = ExternalMergedOutputCommandRuntime(),
     private val outputLimitChars: Int = DEFAULT_OUTPUT_LIMIT_CHARS,
     private val outputJoinTimeoutMillis: Long = DEFAULT_OUTPUT_JOIN_TIMEOUT_MILLIS,
     private val forceDestroyWaitSeconds: Long = DEFAULT_FORCE_DESTROY_WAIT_SECONDS,
@@ -74,20 +76,18 @@ internal class HookCommandRuntime(
     ): HookCommandExecutionResult {
         val normalizedTimeoutMs = timeoutMs.coerceAtLeast(1L)
         val command = listOf(executable) + args
-        return runCatching {
-            val process = processStarter(basePath, command)
-            val runtime = ManagedMergedOutputProcess.start(
-                process = process,
+        return mergedOutputRuntime.execute(
+            processStarter = { processStarter(basePath, command) },
+            spec = ExternalMergedOutputCommandSpec(
                 outputLimitChars = outputLimitChars,
                 threadName = "hook-command-output-${command.joinToString(" ").hashCode()}",
-            )
-            val completion = runtime.awaitCompletion(
                 timeout = normalizedTimeoutMs,
                 timeoutUnit = TimeUnit.MILLISECONDS,
-                joinTimeoutMillis = outputJoinTimeoutMillis,
+                outputJoinTimeoutMillis = outputJoinTimeoutMillis,
                 timeoutDestroyWait = forceDestroyWaitSeconds,
                 timeoutDestroyWaitUnit = TimeUnit.SECONDS,
-            )
+            ),
+        ).map { completion ->
             HookCommandExecutionResult(
                 output = completion.output.ifBlank { null },
                 exitCode = completion.exitCode,

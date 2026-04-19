@@ -8,6 +8,22 @@ import java.io.File
 class CliToolAvailabilityIssueTest {
 
     @Test
+    fun `startup diagnostic should map explicit missing path to path-invalid issue`() {
+        val diagnostic = CliCommandStartupDiagnostic(
+            kind = CliCommandFailureKind.EXECUTABLE_PATH_INVALID,
+            executable = "C:/broken/claude.cmd",
+            workingDirectory = null,
+            launchCommand = listOf("C:/broken/claude.cmd", "--version"),
+        )
+
+        val issue = CliToolAvailabilityIssues.fromStartupDiagnostic(diagnostic)
+
+        assertEquals(CliToolAvailabilityIssueKind.EXECUTABLE_PATH_INVALID, issue.kind)
+        assertTrue(issue.renderSummary().contains("configured cli path was not found"))
+        assertTrue(issue.renderSummary().contains("C:/broken/claude.cmd"))
+    }
+
+    @Test
     fun `startup diagnostic should map to executable-not-found issue`() {
         val diagnostic = CliCommandStartupDiagnostic(
             kind = CliCommandFailureKind.EXECUTABLE_NOT_FOUND,

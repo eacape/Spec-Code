@@ -17,9 +17,15 @@ class CliProcessRuntimeContractTest {
         )
 
         assertTrue(source.contains("private val commandRuntime = CliCommandRuntime()"))
+        assertTrue(source.contains("private val streamingProcessLifecycle = CliStreamingProcessLifecycle("))
         assertTrue(source.contains("commandRuntime.execute("))
         assertTrue(source.contains("commandRuntime.start("))
+        assertTrue(source.contains("streamingProcessLifecycle.startTimeoutWatchdog("))
+        assertTrue(source.contains("streamingProcessLifecycle.terminateAfterStreamDrain("))
+        assertTrue(source.contains("streamingProcessLifecycle.terminateAfterInactivity("))
         assertFalse(source.contains("ProcessBuilder("))
+        assertFalse(source.contains("private fun startTimeoutWatchdog("))
+        assertFalse(source.contains("private fun terminateProcessAfterStreamDrain("))
     }
 
     @Test
