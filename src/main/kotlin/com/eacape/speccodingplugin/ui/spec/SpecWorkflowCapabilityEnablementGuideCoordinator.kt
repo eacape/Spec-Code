@@ -101,7 +101,7 @@ internal object SpecWorkflowCapabilityEnablementGuideCoordinator {
     }
 
     private fun hookItem(stage: GuideStage): SpecWorkflowCapabilityEnablementGuideItem {
-        return experimentalItem(
+        return laterItem(
             section = SettingsSidebarSection.HOOKS,
             stage = stage,
             blockedKey = "spec.dialog.capabilityGuide.hooks.blocked",
@@ -110,7 +110,7 @@ internal object SpecWorkflowCapabilityEnablementGuideCoordinator {
     }
 
     private fun mcpItem(stage: GuideStage): SpecWorkflowCapabilityEnablementGuideItem {
-        return experimentalItem(
+        return laterItem(
             section = SettingsSidebarSection.MCP,
             stage = stage,
             blockedKey = "spec.dialog.capabilityGuide.mcp.blocked",
@@ -118,13 +118,13 @@ internal object SpecWorkflowCapabilityEnablementGuideCoordinator {
         )
     }
 
-    private fun experimentalItem(
+    private fun laterItem(
         section: SettingsSidebarSection,
         stage: GuideStage,
         blockedKey: String,
         readyKey: String,
     ): SpecWorkflowCapabilityEnablementGuideItem {
-        val path = experimentalSettingsPath(section)
+        val path = settingsPath(section)
         return SpecWorkflowCapabilityEnablementGuideItem(
             section = section,
             timing = SpecWorkflowCapabilityEnablementTiming.LATER,
@@ -138,14 +138,6 @@ internal object SpecWorkflowCapabilityEnablementGuideCoordinator {
     private fun settingsPath(section: SettingsSidebarSection): String {
         return SpecCodingBundle.message(
             "spec.dialog.capabilityGuide.path.settings",
-            SpecCodingBundle.message(section.titleKey),
-        )
-    }
-
-    private fun experimentalSettingsPath(section: SettingsSidebarSection): String {
-        return SpecCodingBundle.message(
-            "spec.dialog.capabilityGuide.path.experimental",
-            SpecCodingBundle.message("settings.experimental.toggle.show"),
             SpecCodingBundle.message(section.titleKey),
         )
     }

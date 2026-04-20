@@ -214,6 +214,60 @@ class ChatMessagePanelTraceStreamingTest {
     }
 
     @Test
+    fun `stopped assistant message should keep only trace panels without fallback answer`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent("停止后不应再显示这段半截正文。")
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.TASK,
+                    detail = "收敛手动停止后的消息结构",
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = "只保留执行过程和输出面板",
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.finishMessage(stoppedByUser = true)
+            panel.finishMessage()
+        }
+
+        val displayed = invokeAssistantDisplayedAnswerResolver(
+            panel = panel,
+            content = panel.getContent(),
+        )
+        assertEquals("", displayed)
+
+        val renderedChildren = renderedContentChildren(panel)
+        assertEquals(2, renderedChildren.size, "Expected only process and output panels after user stop")
+
+        val labels = renderedChildren.asSequence()
+            .flatMap(::collectDescendants)
+            .filterIsInstance<JLabel>()
+            .mapNotNull { it.text }
+            .toList()
+        assertTrue(labels.contains(SpecCodingBundle.message("chat.timeline.summary.label")))
+        assertTrue(labels.contains(SpecCodingBundle.message("chat.timeline.kind.output")))
+
+        val renderedText = collectDescendants(panel)
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+        assertFalse(renderedText.contains("停止后不应再显示这段半截正文"), renderedText)
+
+        runOnEdt { panel.setLightweightMode(true) }
+
+        val lightweightText = collectDescendants(panel)
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+        assertFalse(lightweightText.contains("停止后不应再显示这段半截正文"), lightweightText)
+    }
+
+    @Test
     fun `answer first layout should hide output filter button until expanded`() {
         val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
 
@@ -1443,7 +1497,12 @@ class ChatMessagePanelTraceStreamingTest {
             panel.appendStreamEvent(
                 ChatStreamEvent(
                     kind = ChatTraceKind.OUTPUT,
-                    detail = garbled,
+                    detail = """
+                        fun completeWorkflow(workflowId: String): Result<SpecWorkflow> {
+                        return stageTransitionCoordinator.completeWorkflow(workflowId)
+                        $garbled
+                        fun pauseWorkflow(workflowId: String): Result<SpecWorkflow> {
+                    """.trimIndent(),
                     status = ChatTraceStatus.INFO,
                 )
             )

@@ -155,10 +155,18 @@ internal class StreamingTraceAssembler {
 
     private fun sanitizeDetail(value: String): String? {
         val normalized = normalizeDetail(value) ?: return null
-        val repaired = MojibakeTextSupport.repairLineIfNeeded(normalized) ?: normalized
+        val repaired = MojibakeTextSupport.repairTextLines(normalized)
         if (looksLikePlaceholderDetail(repaired)) return null
-        if (MojibakeTextSupport.looksLikeGarbledLine(repaired)) return null
-        return repaired
+
+        val filteredLines = trimBoundaryBlankLines(
+            repaired.lines().filterNot { line ->
+                val trimmed = line.trim()
+                trimmed.isNotBlank() && MojibakeTextSupport.looksLikeGarbledLine(trimmed)
+            }
+        )
+        val sanitized = filteredLines.joinToString("\n")
+        if (sanitized.isBlank()) return null
+        return sanitized
     }
 
     private fun finalizeIfRunning(
@@ -185,6 +193,20 @@ internal class StreamingTraceAssembler {
         if (line.isBlank()) return true
         if (line.length > PLACEHOLDER_MAX_LENGTH) return false
         return PLACEHOLDER_REGEX.matches(line)
+    }
+
+    private fun trimBoundaryBlankLines(lines: List<String>): List<String> {
+        if (lines.isEmpty()) return emptyList()
+        var start = 0
+        var end = lines.lastIndex
+        while (start <= end && lines[start].isBlank()) {
+            start += 1
+        }
+        while (end >= start && lines[end].isBlank()) {
+            end -= 1
+        }
+        if (start > end) return emptyList()
+        return lines.subList(start, end + 1)
     }
 
     companion object {

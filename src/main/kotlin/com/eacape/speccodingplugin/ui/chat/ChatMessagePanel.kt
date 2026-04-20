@@ -93,6 +93,7 @@ open class ChatMessagePanel(
     private var outputExpanded = false
     private var outputFilterLevel = OutputFilterLevel.KEY
     private var messageFinished = false
+    private var stoppedByUser = false
     private var messageStartedAtMillis: Long? = startedAtMillis?.takeIf { it >= 0L }
     private var messageFinishedAtMillis: Long? = finishedAtMillis?.takeIf { it >= 0L }
     private var lightweightMode = false
@@ -248,7 +249,10 @@ open class ChatMessagePanel(
     /**
      * 完成消息（流式结束后调用）
      */
-    fun finishMessage() {
+    fun finishMessage(stoppedByUser: Boolean = false) {
+        if (role == MessageRole.ASSISTANT) {
+            this.stoppedByUser = this.stoppedByUser || stoppedByUser
+        }
         if (captureElapsedAutomatically && role == MessageRole.ASSISTANT && messageFinishedAtMillis == null) {
             messageFinishedAtMillis = System.currentTimeMillis()
         }
@@ -371,12 +375,22 @@ open class ChatMessagePanel(
         content: String,
         traceSnapshot: StreamingTraceAssembler.TraceSnapshot,
     ): String {
+        if (shouldSuppressStoppedAssistantAnswer(traceSnapshot)) return ""
         val explicitAnswer = cleanupExplicitAssistantAnswerContent(resolveAssistantAnswerContent(content))
         if (explicitAnswer.isNotBlank() && shouldPreferExplicitAssistantAnswer(explicitAnswer)) {
             return explicitAnswer
         }
         if (!messageFinished || !traceSnapshot.hasTrace) return explicitAnswer
         return resolveAssistantTraceFallbackContent(traceSnapshot).ifBlank { explicitAnswer }
+    }
+
+    private fun shouldSuppressStoppedAssistantAnswer(
+        traceSnapshot: StreamingTraceAssembler.TraceSnapshot?,
+    ): Boolean {
+        return role == MessageRole.ASSISTANT &&
+            messageFinished &&
+            stoppedByUser &&
+            traceSnapshot?.hasTrace == true
     }
 
     private fun resolveTraceSnapshot(content: String): StreamingTraceAssembler.TraceSnapshot {
@@ -619,6 +633,7 @@ open class ChatMessagePanel(
         } else {
             null
         }
+        val suppressStoppedAnswer = shouldSuppressStoppedAssistantAnswer(assistantTraceSnapshot)
         val assistantBaseContent = when {
             role != MessageRole.ASSISTANT -> ""
             assistantTraceSnapshot != null -> resolveAssistantDisplayedAnswerContent(content, assistantTraceSnapshot)
@@ -630,8 +645,12 @@ open class ChatMessagePanel(
 
         val base = when (role) {
             MessageRole.ASSISTANT -> {
-                val answerOnly = assistantBaseContent.ifBlank { normalized }
-                stripWorkflowSectionHeadings(answerOnly).ifBlank { answerOnly }
+                if (suppressStoppedAnswer) {
+                    ""
+                } else {
+                    val answerOnly = assistantBaseContent.ifBlank { normalized }
+                    stripWorkflowSectionHeadings(answerOnly).ifBlank { answerOnly }
+                }
             }
             else -> normalized
         }

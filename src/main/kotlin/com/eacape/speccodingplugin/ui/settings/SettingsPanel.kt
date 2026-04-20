@@ -126,8 +126,7 @@ class SettingsPanel(
     private val detectCliButton = JButton(SpecCodingBundle.message("settings.cli.detectButton"))
     private val claudeCliStatusLabel = JBLabel("")
     private val codexCliStatusLabel = JBLabel("")
-    private val localSetupSummaryLabel = JBLabel("")
-    private val localSetupDetailsArea = JBTextArea()
+    private val cliToolsHintArea = JBTextArea()
     private val defaultModeCombo = ComboBox(OperationMode.entries.toTypedArray())
     private val interfaceLanguageCombo = ComboBox(InterfaceLanguage.entries.toTypedArray())
     private val teamPromptRepoUrlField = JBTextField()
@@ -167,10 +166,8 @@ class SettingsPanel(
     private var basicSectionPanel: JPanel? = null
     private var skillsSectionPanel: JPanel? = null
     private val sidebarToggleButton = JButton()
-    private val experimentalSectionsToggleButton = JButton()
     private lateinit var sidebarCardPanel: JPanel
     private var sidebarExpanded = false
-    private var experimentalSectionsVisible = false
     private var syncingUi = false
     private val autoSaveTimer = Timer(AUTO_SAVE_DEBOUNCE_MILLIS) {
         persistSettings(reason = "settings-panel-auto-save")
@@ -259,7 +256,6 @@ class SettingsPanel(
         styleSkillActionIconButton(skillDeleteButton, SKILL_ACTION_DELETE_ICON)
         styleSkillActionIconButton(skillSaveButton, SKILL_ACTION_SAVE_TARGET_ICON)
         styleSkillActionIconButton(skillSaveCurrentButton, SKILL_ACTION_SAVE_CURRENT_ICON)
-        updateExperimentalSectionsTogglePresentation()
         updateSkillComboPreferredSizes()
 
         buildSectionCards()
@@ -276,7 +272,6 @@ class SettingsPanel(
 
         add(centerPanel, BorderLayout.CENTER)
         updateCliStatusLabels()
-        updateLocalSetupPreview()
         resetSkillEditorForNewDraft()
         refreshSkillDiscovery(forceReload = true)
     }
@@ -322,14 +317,12 @@ class SettingsPanel(
         sectionCardPanel.add(basicSectionPanel, SettingsSidebarSection.BASIC.cardId)
         sectionCardPanel.add(
             createEmbeddedSection(
-                section = SettingsSidebarSection.PROMPTS,
                 component = promptPanel,
             ),
             SettingsSidebarSection.PROMPTS.cardId,
         )
         sectionCardPanel.add(
             createEmbeddedSection(
-                section = SettingsSidebarSection.MCP,
                 component = mcpPanel,
             ),
             SettingsSidebarSection.MCP.cardId,
@@ -338,7 +331,6 @@ class SettingsPanel(
         sectionCardPanel.add(skillsSectionPanel, SettingsSidebarSection.SKILLS.cardId)
         sectionCardPanel.add(
             createEmbeddedSection(
-                section = SettingsSidebarSection.HOOKS,
                 component = hookPanel,
             ),
             SettingsSidebarSection.HOOKS.cardId,
@@ -349,9 +341,6 @@ class SettingsPanel(
         styleSidebarToggleButton(sidebarToggleButton)
         sidebarToggleButton.addActionListener {
             setSidebarExpanded(!sidebarExpanded)
-        }
-        experimentalSectionsToggleButton.addActionListener {
-            setExperimentalSectionsVisible(!experimentalSectionsVisible)
         }
 
         val scrollPane = JBScrollPane(sectionList).apply {
@@ -364,7 +353,6 @@ class SettingsPanel(
         val toggleHost = JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(4, 4, 2, 4)
-            add(experimentalSectionsToggleButton, BorderLayout.WEST)
             add(sidebarToggleButton, BorderLayout.EAST)
         }
 
@@ -417,7 +405,7 @@ class SettingsPanel(
     }
 
     private fun createBasicSection(): JPanel {
-        configureLocalSetupPreviewArea()
+        configureCliToolsHintArea()
         val cliDetectPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
             isOpaque = false
             add(detectCliButton)
@@ -433,6 +421,7 @@ class SettingsPanel(
             .addComponent(cliDetectPanel)
             .addLabeledComponent(SpecCodingBundle.message("settings.cli.claudeLabel"), claudeCliStatusLabel)
             .addLabeledComponent(SpecCodingBundle.message("settings.cli.codexLabel"), codexCliStatusLabel)
+            .addComponent(cliToolsHintArea)
             .panel.apply {
                 isOpaque = false
                 border = JBUI.Borders.empty()
@@ -477,27 +466,9 @@ class SettingsPanel(
                 isOpaque = false
                 border = JBUI.Borders.empty()
             }
-        val localSetupPanel = JPanel().apply {
-            layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            isOpaque = false
-            localSetupSummaryLabel.alignmentX = JComponent.LEFT_ALIGNMENT
-            localSetupDetailsArea.alignmentX = JComponent.LEFT_ALIGNMENT
-            add(localSetupSummaryLabel)
-            add(Box.createVerticalStrut(JBUI.scale(8)))
-            add(localSetupDetailsArea)
-        }
-
         val stackPanel = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             isOpaque = false
-            add(
-                createBasicModuleCard(
-                    titleKey = "settings.section.localSetup",
-                    summary = SpecCodingBundle.message("settings.section.localSetup.summary"),
-                    content = localSetupPanel,
-                ),
-            )
-            add(Box.createVerticalStrut(JBUI.scale(8)))
             add(
                 createBasicModuleCard(
                     titleKey = "settings.section.cliTools",
@@ -772,41 +743,12 @@ class SettingsPanel(
     }
 
     private fun createEmbeddedSection(
-        section: SettingsSidebarSection,
         component: JPanel,
     ): JPanel {
-        val contentHost = JPanel(BorderLayout()).apply {
+        return JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.empty(2)
             add(component, BorderLayout.CENTER)
-        }
-        if (!section.experimental) {
-            return contentHost
-        }
-
-        val noteLabel = JBLabel(
-            SpecCodingBundle.message(
-                "settings.experimental.section.note",
-                SpecCodingBundle.message(section.titleKey),
-            ),
-        ).apply {
-            font = JBUI.Fonts.smallFont()
-            foreground = EXPERIMENT_NOTE_FG
-        }
-        val notePanel = JPanel(BorderLayout()).apply {
-            isOpaque = true
-            background = EXPERIMENT_NOTE_BG
-            border = BorderFactory.createCompoundBorder(
-                SpecUiStyle.roundedLineBorder(EXPERIMENT_NOTE_BORDER, JBUI.scale(10)),
-                JBUI.Borders.empty(6, 8, 6, 8),
-            )
-            add(noteLabel, BorderLayout.CENTER)
-        }
-
-        return JPanel(BorderLayout()).apply {
-            isOpaque = false
-            add(notePanel, BorderLayout.NORTH)
-            add(contentHost, BorderLayout.CENTER)
         }
     }
 
@@ -957,8 +899,6 @@ class SettingsPanel(
         sidebarToggleButton.toolTipText = SpecCodingBundle.message(
             if (expanded) "settings.sidebar.collapse.tooltip" else "settings.sidebar.expand.tooltip",
         )
-        experimentalSectionsToggleButton.isVisible = expanded
-        updateExperimentalSectionsTogglePresentation()
 
         sidebarCardPanel.revalidate()
         sidebarCardPanel.repaint()
@@ -1150,7 +1090,6 @@ class SettingsPanel(
             styleSkillActionIconButton(skillDeleteButton, SKILL_ACTION_DELETE_ICON)
             styleSkillActionIconButton(skillSaveButton, SKILL_ACTION_SAVE_TARGET_ICON)
             styleSkillActionIconButton(skillSaveCurrentButton, SKILL_ACTION_SAVE_CURRENT_ICON)
-            updateExperimentalSectionsTogglePresentation()
 
             rebuildLocalizedSectionCards()
             updateSkillComboPreferredSizes()
@@ -1174,14 +1113,12 @@ class SettingsPanel(
         sectionCardPanel.add(basicSectionPanel, SettingsSidebarSection.BASIC.cardId)
         sectionCardPanel.add(
             createEmbeddedSection(
-                section = SettingsSidebarSection.PROMPTS,
                 component = promptPanel,
             ),
             SettingsSidebarSection.PROMPTS.cardId,
         )
         sectionCardPanel.add(
             createEmbeddedSection(
-                section = SettingsSidebarSection.MCP,
                 component = mcpPanel,
             ),
             SettingsSidebarSection.MCP.cardId,
@@ -1189,7 +1126,6 @@ class SettingsPanel(
         sectionCardPanel.add(skillsSectionPanel, SettingsSidebarSection.SKILLS.cardId)
         sectionCardPanel.add(
             createEmbeddedSection(
-                section = SettingsSidebarSection.HOOKS,
                 component = hookPanel,
             ),
             SettingsSidebarSection.HOOKS.cardId,
@@ -1214,18 +1150,8 @@ class SettingsPanel(
         autoSaveTimer.restart()
     }
 
-    private fun setExperimentalSectionsVisible(visible: Boolean) {
-        if (experimentalSectionsVisible == visible) {
-            return
-        }
-        experimentalSectionsVisible = visible
-        refreshSidebarSections(sectionList.selectedValue)
-        updateExperimentalSectionsTogglePresentation()
-        showSelectedSection()
-    }
-
     private fun refreshSidebarSections(selectedSection: SettingsSidebarSection?) {
-        val visibleSections = SettingsSidebarSection.visibleSections(experimentalSectionsVisible)
+        val visibleSections = SettingsSidebarSection.visibleSections()
         val targetSelection = selectedSection
             ?.takeIf { visibleSections.contains(it) }
             ?: visibleSections.firstOrNull()
@@ -1239,30 +1165,7 @@ class SettingsPanel(
         }
     }
 
-    private fun updateExperimentalSectionsTogglePresentation() {
-        experimentalSectionsToggleButton.text = SpecCodingBundle.message(
-            if (experimentalSectionsVisible) {
-                "settings.experimental.toggle.hide"
-            } else {
-                "settings.experimental.toggle.show"
-            },
-        )
-        experimentalSectionsToggleButton.toolTipText = experimentalSectionsToggleButton.text
-        styleActionButton(experimentalSectionsToggleButton)
-    }
-
-    private fun sidebarSectionTitle(section: SettingsSidebarSection): String {
-        val title = SpecCodingBundle.message(section.titleKey)
-        return if (section.experimental) {
-            SpecCodingBundle.message(
-                "settings.sidebar.experimental.entry",
-                title,
-                SpecCodingBundle.message("beta.badge.experimental"),
-            )
-        } else {
-            title
-        }
-    }
+    private fun sidebarSectionTitle(section: SettingsSidebarSection): String = SpecCodingBundle.message(section.titleKey)
 
     private fun sidebarSectionIcon(section: SettingsSidebarSection): Icon {
         return when (section) {
@@ -1275,7 +1178,7 @@ class SettingsPanel(
     }
 
     private fun onCliPathEdited() {
-        updateLocalSetupPreview()
+        updateCliToolsHint()
         scheduleAutoSave()
     }
 
@@ -1490,40 +1393,48 @@ class SettingsPanel(
             codexCliStatusLabel.text = SpecCodingBundle.message("settings.cli.codex.notFound")
             codexCliStatusLabel.foreground = STATUS_NORMAL_FG
         }
-        updateLocalSetupPreview()
+        updateCliToolsHint()
     }
 
-    private fun configureLocalSetupPreviewArea() {
-        localSetupSummaryLabel.font = JBUI.Fonts.smallFont().deriveFont(Font.BOLD)
-        localSetupDetailsArea.apply {
+    private fun configureCliToolsHintArea() {
+        cliToolsHintArea.apply {
             isEditable = false
             isOpaque = false
             isFocusable = false
             lineWrap = true
             wrapStyleWord = true
-            rows = 7
+            rows = 1
             columns = 48
             border = JBUI.Borders.empty()
-            font = JBUI.Fonts.smallFont()
-            foreground = STATUS_NORMAL_FG
-            maximumSize = java.awt.Dimension(Int.MAX_VALUE, preferredSize.height)
+            font = JBUI.Fonts.miniFont()
+            foreground = STATUS_WARNING_FG
+            isVisible = false
         }
     }
 
-    private fun updateLocalSetupPreview() {
+    private fun updateCliToolsHint() {
         val readiness = LocalEnvironmentReadiness.inspect(
             project = project,
             configuredClaudePath = claudeCodeCliPathField.text,
             configuredCodexPath = codexCliPathField.text,
             settings = settings,
         )
-        localSetupSummaryLabel.text = readiness.summary
-        localSetupSummaryLabel.foreground = when (readiness.summarySeverity) {
-            LocalEnvironmentCheckSeverity.READY -> STATUS_SUCCESS_FG
-            LocalEnvironmentCheckSeverity.WARNING -> STATUS_WARNING_FG
-            LocalEnvironmentCheckSeverity.BLOCKER -> STATUS_ERROR_FG
+        val cliPathCheck = readiness.detailChecks.firstOrNull {
+            it.label == SpecCodingBundle.message("local.setup.check.cliPath")
         }
-        localSetupDetailsArea.text = LocalEnvironmentReadiness.formatDetails(readiness)
+        if (cliPathCheck != null && cliPathCheck.severity != LocalEnvironmentCheckSeverity.READY) {
+            cliToolsHintArea.text = cliPathCheck.detail
+            cliToolsHintArea.foreground = when (cliPathCheck.severity) {
+                LocalEnvironmentCheckSeverity.WARNING -> STATUS_WARNING_FG
+                LocalEnvironmentCheckSeverity.BLOCKER -> STATUS_ERROR_FG
+                LocalEnvironmentCheckSeverity.READY -> STATUS_NORMAL_FG
+            }
+            cliToolsHintArea.isVisible = true
+        } else {
+            cliToolsHintArea.text = ""
+            cliToolsHintArea.isVisible = false
+        }
+        cliToolsHintArea.parent?.revalidate()
     }
 
     private fun refreshModelCombo() {
@@ -2787,9 +2698,6 @@ class SettingsPanel(
         private val ACTION_ICON_BUTTON_FG = JBColor(Color(51, 73, 108), Color(209, 220, 238))
         private val SKILL_STATUS_BG = JBColor(Color(238, 245, 255), Color(65, 76, 93))
         private val SKILL_STATUS_BORDER = JBColor(Color(182, 200, 226), Color(101, 118, 142))
-        private val EXPERIMENT_NOTE_BG = JBColor(Color(252, 247, 235), Color(73, 67, 53))
-        private val EXPERIMENT_NOTE_BORDER = JBColor(Color(228, 199, 134), Color(124, 107, 76))
-        private val EXPERIMENT_NOTE_FG = JBColor(Color(104, 76, 24), Color(229, 214, 186))
         private val SKILL_ITEM_BG = JBColor(Color(250, 253, 255), Color(58, 66, 77))
         private val SKILL_ITEM_BORDER = JBColor(Color(216, 228, 245), Color(93, 106, 125))
         private val SKILL_ITEM_TITLE_FG = JBColor(Color(27, 47, 82), Color(223, 232, 246))

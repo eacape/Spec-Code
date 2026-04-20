@@ -1,25 +1,12 @@
 package com.eacape.speccodingplugin.ui.settings
 
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class SettingsSidebarSectionCatalogTest {
 
     @Test
-    fun `visible sections should keep beta primary sections first by default`() {
-        assertEquals(
-            listOf(
-                SettingsSidebarSection.BASIC,
-                SettingsSidebarSection.PROMPTS,
-                SettingsSidebarSection.SKILLS,
-            ),
-            SettingsSidebarSection.visibleSections(includeExperimental = false),
-        )
-    }
-
-    @Test
-    fun `visible sections should append experimental automation when requested`() {
+    fun `visible sections should include mcp and hooks by default`() {
         assertEquals(
             listOf(
                 SettingsSidebarSection.BASIC,
@@ -28,9 +15,7 @@ class SettingsSidebarSectionCatalogTest {
                 SettingsSidebarSection.MCP,
                 SettingsSidebarSection.HOOKS,
             ),
-            SettingsSidebarSection.visibleSections(includeExperimental = true),
+            SettingsSidebarSection.visibleSections(),
         )
-        assertTrue(SettingsSidebarSection.MCP.experimental)
-        assertTrue(SettingsSidebarSection.HOOKS.experimental)
     }
 }

@@ -132,6 +132,8 @@ import com.intellij.util.ui.JBUI
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -2428,7 +2430,7 @@ class ImprovedChatPanel(
             if (project.isDisposed || _isDisposed) {
                 return@invokeLater
             }
-            panelToFinish?.finishMessage()
+            panelToFinish?.finishMessage(stoppedByUser = true)
         }
         activeLlmRequest?.let { request -> cancelRequestAcrossProviders(request) }
         activeOperationJob?.cancel(CancellationException("Stopped by user"))
@@ -2612,7 +2614,6 @@ class ImprovedChatPanel(
         )
         clearComposerInput()
 
-        val beforeSnapshot = captureWorkspaceSnapshot()
         val requestId = UUID.randomUUID().toString()
         val resolvedProviderId = resolveProviderIdForRequest(providerId)
         stopRequested.set(false)
@@ -2620,11 +2621,19 @@ class ImprovedChatPanel(
         executionState = executionState.withFinalizing(false)
         setSendingState(true)
         val assistantStartedAtMillis = System.currentTimeMillis()
-        val assistantPanel = addAssistantMessage(startedAtMillis = assistantStartedAtMillis)
-        currentAssistantPanel = assistantPanel
+        currentAssistantPanel = null
         val promptEchoFilter = PromptReferenceEchoFilter.fromTextBlocks(promptSystemMessages)
 
         activeOperationJob = taskCoordinator.launchIo {
+            var assistantPanel: ChatMessagePanel? = null
+            val ensureAssistantPanel = {
+                assistantPanel ?: addAssistantMessage(startedAtMillis = assistantStartedAtMillis).also { panel ->
+                    assistantPanel = panel
+                    currentAssistantPanel = panel
+                }
+            }
+            val beforeSnapshot = captureWorkspaceSnapshot()
+            currentCoroutineContext().ensureActive()
             val streamedTraceEvents = mutableListOf<ChatStreamEvent>()
             val assistantContent = StringBuilder()
             val pendingDelta = StringBuilder()
@@ -2673,7 +2682,7 @@ class ImprovedChatPanel(
                     if (stopRequested.get()) {
                         return@invokeLater
                     }
-                    assistantPanel.appendStreamContent(delta, events)
+                    ensureAssistantPanel().appendStreamContent(delta, events)
                 }
             }
             try {
@@ -2686,11 +2695,15 @@ class ImprovedChatPanel(
                 } else {
                     ensureActiveSessionAsync(visibleInput, providerId)
                 }
+                currentCoroutineContext().ensureActive()
                 if (sessionId != null) {
                     persistMessage(sessionId, ConversationRole.USER, visibleInput)
                 }
+                currentCoroutineContext().ensureActive()
                 val explicitItems = loadExplicitItemContents(pendingContextItems)
+                currentCoroutineContext().ensureActive()
                 val contextSnapshot = collectContextSnapshotSafely(explicitItems)
+                currentCoroutineContext().ensureActive()
                 projectService.chat(
                     providerId = resolvedProviderId,
                     userInput = chatInput,
@@ -2738,7 +2751,7 @@ class ImprovedChatPanel(
                                 return@invokeLater
                             }
                             setResponseFinalizingState(true)
-                            assistantPanel.finishMessage()
+                            assistantPanel?.finishMessage()
                             messagesPanel.scrollToBottom()
                         }
                     } else {
@@ -2813,7 +2826,7 @@ class ImprovedChatPanel(
                         return@invokeLater
                     }
                     cleanupTransientClipboardImages(selectedImagePaths)
-                    assistantPanel.finishMessage()
+                    assistantPanel?.finishMessage(stoppedByUser = wasStopped)
                     setSendingState(false)
                 }
                 runCatching {
@@ -6744,7 +6757,6 @@ class ImprovedChatPanel(
         val providerId = providerComboBox.selectedItem as? String
         val modelId = (modelComboBox.selectedItem as? ModelInfo)?.id
         val operationMode = modeManager.getCurrentMode()
-        val beforeSnapshot = captureWorkspaceSnapshot()
         val requestId = UUID.randomUUID().toString()
         val resolvedProviderId = resolveProviderIdForRequest(providerId)
         stopRequested.set(false)
@@ -6752,11 +6764,19 @@ class ImprovedChatPanel(
         executionState = executionState.withFinalizing(false)
         setSendingState(true)
         val assistantStartedAtMillis = System.currentTimeMillis()
-        val assistantPanel = addAssistantMessage(startedAtMillis = assistantStartedAtMillis)
-        currentAssistantPanel = assistantPanel
+        currentAssistantPanel = null
         val promptEchoFilter = PromptReferenceEchoFilter.fromTextBlocks(promptSystemMessages)
 
         activeOperationJob = taskCoordinator.launchIo {
+            var assistantPanel: ChatMessagePanel? = null
+            val ensureAssistantPanel = {
+                assistantPanel ?: addAssistantMessage(startedAtMillis = assistantStartedAtMillis).also { panel ->
+                    assistantPanel = panel
+                    currentAssistantPanel = panel
+                }
+            }
+            val beforeSnapshot = captureWorkspaceSnapshot()
+            currentCoroutineContext().ensureActive()
             val streamedTraceEvents = mutableListOf<ChatStreamEvent>()
             val assistantContent = StringBuilder()
             val pendingDelta = StringBuilder()
@@ -6804,10 +6824,11 @@ class ImprovedChatPanel(
                     if (stopRequested.get()) {
                         return@invokeLater
                     }
-                    assistantPanel.appendStreamContent(delta, events)
+                    ensureAssistantPanel().appendStreamContent(delta, events)
                 }
             }
             try {
+                currentCoroutineContext().ensureActive()
                 projectService.chat(
                     providerId = resolvedProviderId,
                     userInput = userInput,
@@ -6853,7 +6874,7 @@ class ImprovedChatPanel(
                                 return@invokeLater
                             }
                             setResponseFinalizingState(true)
-                            assistantPanel.finishMessage()
+                            assistantPanel?.finishMessage()
                             messagesPanel.scrollToBottom()
                         }
                     } else {
@@ -6922,7 +6943,7 @@ class ImprovedChatPanel(
                     if (project.isDisposed || _isDisposed) {
                         return@invokeLater
                     }
-                    assistantPanel.finishMessage()
+                    assistantPanel?.finishMessage(stoppedByUser = wasStopped)
                     setSendingState(false)
                 }
                 runCatching {

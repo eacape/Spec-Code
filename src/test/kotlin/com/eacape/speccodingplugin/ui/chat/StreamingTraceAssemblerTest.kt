@@ -4,6 +4,7 @@ import com.eacape.speccodingplugin.stream.ChatStreamEvent
 import com.eacape.speccodingplugin.stream.ChatTraceKind
 import com.eacape.speccodingplugin.stream.ChatTraceStatus
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.nio.charset.Charset
@@ -28,6 +29,32 @@ class StreamingTraceAssemblerTest {
         val snapshot = assembler.snapshot(content = "")
         assertEquals(1, snapshot.items.size)
         assertEquals(expected, snapshot.items.first().detail)
+    }
+
+    @Test
+    fun `mixed output block should repair garbled chinese line without dropping code lines`() {
+        val expected = "命令输出"
+        val garbled = String(expected.toByteArray(StandardCharsets.UTF_8), Charset.forName("GBK"))
+        val assembler = StreamingTraceAssembler()
+
+        assembler.onStructuredEvent(
+            ChatStreamEvent(
+                kind = ChatTraceKind.OUTPUT,
+                detail = """
+                    fun completeWorkflow(workflowId: String): Result<SpecWorkflow> {
+                    return stageTransitionCoordinator.completeWorkflow(workflowId)
+                    $garbled
+                    fun pauseWorkflow(workflowId: String): Result<SpecWorkflow> {
+                """.trimIndent(),
+                status = ChatTraceStatus.INFO,
+            )
+        )
+
+        val detail = assembler.snapshot(content = "").items.single().detail
+        assertTrue(detail.contains("fun completeWorkflow(workflowId: String): Result<SpecWorkflow> {"))
+        assertTrue(detail.contains(expected))
+        assertFalse(detail.contains(garbled))
+        assertTrue(detail.contains("fun pauseWorkflow(workflowId: String): Result<SpecWorkflow> {"))
     }
 
     @Test

@@ -43,8 +43,6 @@ class WorktreePanelTest {
         assertEquals(2, panel.itemsForTest().size)
         assertEquals("wt-1", panel.selectedWorktreeIdForTest())
         assertEquals("worktree", panel.titleTextForTest())
-        assertEquals(SpecCodingBundle.message("beta.badge.experimental"), panel.experimentalBadgeTextForTest())
-        assertTrue(panel.noteTextForTest().isNotBlank())
         assertTrue(panel.detailSpecTaskIdTextForTest().contains("SPEC-1"))
         assertTrue(panel.detailStatusTextForTest().contains(SpecCodingBundle.message("worktree.status.active")))
 

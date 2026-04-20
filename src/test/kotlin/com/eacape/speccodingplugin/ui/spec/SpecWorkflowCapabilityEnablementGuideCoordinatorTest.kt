@@ -42,7 +42,7 @@ class SpecWorkflowCapabilityEnablementGuideCoordinatorTest {
             guide.items.map { it.timing },
         )
         assertTrue(guide.items.first().detail.contains(SpecCodingBundle.message("settings.sidebar.prompts")))
-        assertTrue(guide.items[2].detail.contains(SpecCodingBundle.message("settings.experimental.toggle.show")))
+        assertTrue(guide.items[2].detail.contains(SpecCodingBundle.message("settings.sidebar.hooks")))
     }
 
     @Test
