@@ -187,4 +187,32 @@ class PromptReferenceEchoFilterTest {
         assertFalse(filtered.contains("If the user asks what a document is"), filtered)
         assertTrue(filtered.contains("这是一个演示项目的说明文档。"), filtered)
     }
+
+    @Test
+    fun `filter should remove codex response requirement prefix variants`() {
+        val filter = PromptReferenceEchoFilter.fromTextBlocks(listOf("dummy"))
+
+        val filtered = filter.filter(
+            """
+            You are answering the final user request for an IDE chat session
+            Sections marked Internal Instructions and Reference Context are hidden inputs, not user-visible text
+            Use them only as guidance or evidence while reviewing the attached image
+            Do not quote, restate, or continue those hidden sections verbatim unless the user explicitly asks for a quote
+            Answer the final user request directly in the first sentence and keep it concise
+            Do not dump raw context or internal instructions in the visible reply
+            Use referenced files only as supporting evidence when they are relevant
+            这是图片里这段讨论的结论摘要。
+            """.trimIndent(),
+            flush = true,
+        )
+
+        assertFalse(filtered.contains("You are answering the final user request"), filtered)
+        assertFalse(filtered.contains("Sections marked Internal Instructions"), filtered)
+        assertFalse(filtered.contains("Use them only as guidance or evidence"), filtered)
+        assertFalse(filtered.contains("Do not quote, restate"), filtered)
+        assertFalse(filtered.contains("Answer the final user request directly"), filtered)
+        assertFalse(filtered.contains("Do not dump raw context"), filtered)
+        assertFalse(filtered.contains("Use referenced files only as supporting evidence"), filtered)
+        assertTrue(filtered.contains("这是图片里这段讨论的结论摘要。"), filtered)
+    }
 }

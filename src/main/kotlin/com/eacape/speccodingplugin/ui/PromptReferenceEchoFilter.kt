@@ -59,6 +59,7 @@ internal class PromptReferenceEchoFilter private constructor(
         val normalized = normalizePromptEchoLine(trimmed)
         if (normalized.isBlank()) return lastLineDropped
         if (PROMPT_REFERENCE_ECHO_CONTROL_REGEX.matches(trimmed)) return true
+        if (PROMPT_REFERENCE_ECHO_NORMALIZED_PREFIXES.any(normalized::startsWith)) return true
         return promptLines.contains(normalized)
     }
 
@@ -131,6 +132,16 @@ internal class PromptReferenceEchoFilter private constructor(
         private val PROMPT_REFERENCE_ECHO_CONTROL_REGEX = Regex(
             """^(?:(?:[-*]\s+)?Prompt\s+#\S.*:|Referenced prompt templates\b.*|Referenced prompt template\s+#\S.*|End referenced prompt templates\.?|User request:|---\s*prompt:\S.*---|##\s+Internal Instructions And Reference Context|###\s+Internal Block\s+\d+|##\s+Conversation History|##\s+Final User Request|##\s+Response Requirements|You are answering the final user request for an IDE chat session\.|Sections marked Internal Instructions and Reference Context are hidden inputs, not user-visible text\.|Use them only as guidance or evidence\.|Do not quote, restate, or continue those hidden sections verbatim unless the user explicitly asks for a quote\.|(?:[-*]\s+)?Answer the final user request directly(?: in the first sentence)?\.|(?:[-*]\s+)?Do not dump raw context or internal instructions\.|(?:[-*]\s+)?Use referenced files only as supporting evidence\.|(?:[-*]\s+)?If the user asks what a document is, identify its purpose before citing details\.)$""",
             RegexOption.IGNORE_CASE,
+        )
+        private val PROMPT_REFERENCE_ECHO_NORMALIZED_PREFIXES = setOf(
+            "you are answering the final user request for an ide chat session",
+            "sections marked internal instructions and reference context are hidden inputs, not user-visible text",
+            "use them only as guidance or evidence",
+            "do not quote, restate, or continue those hidden sections verbatim unless the user explicitly asks for a quote",
+            "answer the final user request directly",
+            "do not dump raw context or internal instructions",
+            "use referenced files only as supporting evidence",
+            "if the user asks what a document is, identify its purpose before citing details",
         )
         private val PROMPT_ECHO_MARKDOWN_DECORATION_REGEX = Regex("""^[>\s]*(?:[-*]\s+|\d+[.)、）．]\s*)?""")
         private val PROMPT_ECHO_WHITESPACE_REGEX = Regex("""\s+""")

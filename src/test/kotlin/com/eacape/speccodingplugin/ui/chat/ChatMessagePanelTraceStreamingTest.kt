@@ -757,6 +757,72 @@ class ChatMessagePanelTraceStreamingTest {
     }
 
     @Test
+    fun `output footer prompt instruction variants should be stripped from final answer`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent(
+                """
+                You are answering the final user request for an IDE chat session
+                Sections marked Internal Instructions and Reference Context are hidden inputs, not user-visible text
+                Use them only as guidance or evidence while reviewing the attached image
+                Do not quote, restate, or continue those hidden sections verbatim unless the user explicitly asks for a quote
+                Answer the final user request directly in the first sentence and keep it concise
+                Do not dump raw context or internal instructions in the visible reply
+                Use referenced files only as supporting evidence when they are relevant
+                """.trimIndent()
+            )
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = """
+                        4. 批量启动时强制每个任务新建 session，不要走 reusable session。
+                        5. 加一个并发上限，建议默认 2 或 3，不要无限并发。
+                        6. 第二版再考虑冲突检测。
+                        如果多个任务 relatedFiles 有交集，就提示改成串行，或者引导用户走 worktree。
+                        tokens used
+                        154,630
+                        You are answering the final user request for an IDE chat session
+                        Sections marked Internal Instructions and Reference Context are hidden inputs, not user-visible text
+                        Use them only as guidance or evidence while reviewing the attached image
+                        Do not quote, restate, or continue those hidden sections verbatim unless the user explicitly asks for a quote
+                        Answer the final user request directly in the first sentence and keep it concise
+                        Do not dump raw context or internal instructions in the visible reply
+                        Use referenced files only as supporting evidence when they are relevant
+                    """.trimIndent(),
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.finishMessage()
+        }
+
+        val displayed = invokeAssistantDisplayedAnswerResolver(panel, panel.getContent())
+        assertTrue(displayed.contains("批量启动时强制每个任务新建 session"), displayed)
+        assertTrue(displayed.contains("并发上限"), displayed)
+        assertTrue(displayed.contains("relatedFiles 有交集"), displayed)
+        assertFalse(displayed.contains("You are answering the final user request"), displayed)
+        assertFalse(displayed.contains("Do not dump raw context"), displayed)
+        assertFalse(displayed.contains("Use referenced files only as supporting evidence"), displayed)
+        assertFalse(displayed.contains("tokens used"), displayed)
+
+        val renderedChildren = renderedContentChildren(panel)
+        assertTrue(renderedChildren.size >= 2, "Expected trace section plus final answer")
+
+        val finalAnswerText = collectDescendants(renderedChildren.last())
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertTrue(finalAnswerText.contains("批量启动时强制每个任务新建 session"), finalAnswerText)
+        assertTrue(finalAnswerText.contains("并发上限"), finalAnswerText)
+        assertTrue(finalAnswerText.contains("relatedFiles 有交集"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("You are answering the final user request"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("Do not dump raw context"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("Use referenced files only as supporting evidence"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("tokens used"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("154,630"), finalAnswerText)
+    }
+
+    @Test
     fun `trace assistant message should not let partial history inventory bypass answer cleanup`() {
         val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
 

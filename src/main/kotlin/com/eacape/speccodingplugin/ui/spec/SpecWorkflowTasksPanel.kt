@@ -41,7 +41,7 @@ import javax.swing.SwingUtilities
 internal class SpecWorkflowTasksPanel(
     private val onTransitionStatus: (taskId: String, to: TaskStatus) -> Unit = { _, _ -> },
     private val onCancelExecution: (taskId: String) -> Unit = {},
-    private val onExecuteTask: (taskId: String, retry: Boolean) -> Unit = { _, _ -> },
+    private val onExecuteTask: (taskId: String, retry: Boolean) -> Boolean = { _, _ -> false },
     private val onOpenWorkflowChat: (workflowId: String, taskId: String) -> Unit = { _, _ -> },
     private val onUpdateDependsOn: (taskId: String, dependsOn: List<String>) -> Unit = { _, _ -> },
     private val onCompleteWithRelatedFiles: (
@@ -73,6 +73,11 @@ internal class SpecWorkflowTasksPanel(
         horizontalAlignment = SwingConstants.RIGHT
         font = JBUI.Fonts.smallFont().deriveFont(10.5f)
         foreground = HEADER_SECONDARY_FG
+    }
+    private val parallelExecuteButton = createIconActionButton {
+        handleExecuteReadyTasks()
+    }.apply {
+        isVisible = false
     }
     private val headerPanel = buildHeader()
 
@@ -126,9 +131,7 @@ internal class SpecWorkflowTasksPanel(
     init {
         isOpaque = false
         border = JBUI.Borders.empty(6, 4, 6, 4)
-        if (showHeader) {
-            add(headerPanel, BorderLayout.NORTH)
-        }
+        add(headerPanel, BorderLayout.NORTH)
         add(tasksScrollPane, BorderLayout.CENTER)
         add(controlsPanel, BorderLayout.SOUTH)
 
@@ -166,12 +169,13 @@ internal class SpecWorkflowTasksPanel(
         if (fixedHeight != null) {
             return Dimension(base.width, fixedHeight)
         }
+        val headerHeight = if (headerPanel.isVisible) headerPanel.preferredSize.height else 0
         val height = insets.top +
             insets.bottom +
             dynamicListHeight() +
             controlsPanel.preferredSize.height +
             preferredVerticalGaps() +
-            if (showHeader) headerPanel.preferredSize.height else 0
+            headerHeight
         return Dimension(base.width, height)
     }
 
@@ -282,6 +286,14 @@ internal class SpecWorkflowTasksPanel(
             "headerTitle" to headerTitleLabel.text.orEmpty(),
             "headerSummary" to headerSummaryLabel.text.orEmpty(),
             "headerRefreshed" to headerRefreshedLabel.text.orEmpty(),
+            "parallelText" to parallelExecuteButton.text.orEmpty(),
+            "parallelIconId" to SpecWorkflowIcons.debugId(parallelExecuteButton.icon),
+            "parallelHasIcon" to (parallelExecuteButton.icon != null).toString(),
+            "parallelEnabled" to parallelExecuteButton.isEnabled.toString(),
+            "parallelVisible" to parallelExecuteButton.isVisible.toString(),
+            "parallelTooltip" to parallelExecuteButton.toolTipText.orEmpty(),
+            "parallelAccessibleName" to parallelExecuteButton.accessibleContext.accessibleName.orEmpty(),
+            "parallelAccessibleDescription" to parallelExecuteButton.accessibleContext.accessibleDescription.orEmpty(),
             "tasks" to tasks,
             "selectedTaskId" to selectedId,
             "selectedTaskMeta" to selectedTask?.let(::taskMetaText).orEmpty(),
@@ -374,8 +386,27 @@ internal class SpecWorkflowTasksPanel(
         return requestExecutionForSelection()
     }
 
+    internal fun requestExecutionForExecutableTasks(): Int {
+        val candidates = executableTaskLaunchCandidates()
+        if (candidates.size < 2) {
+            return 0
+        }
+        var launched = 0
+        for (candidate in candidates) {
+            if (!onExecuteTask(candidate.taskId, candidate.retry)) {
+                break
+            }
+            launched += 1
+        }
+        return launched
+    }
+
     internal fun clickExecuteTaskForTest() {
         executeTaskButton.doClick()
+    }
+
+    internal fun clickParallelExecuteTasksForTest() {
+        parallelExecuteButton.doClick()
     }
 
     internal fun clickOpenWorkflowChatForTest() {
@@ -488,12 +519,19 @@ internal class SpecWorkflowTasksPanel(
             isOpaque = false
             add(headerTitleLabel, BorderLayout.NORTH)
             add(headerSummaryLabel, BorderLayout.CENTER)
+            isVisible = showHeader
+        }
+        headerRefreshedLabel.isVisible = showHeader
+        val right = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0)).apply {
+            isOpaque = false
+            add(parallelExecuteButton)
+            add(headerRefreshedLabel)
         }
         return JPanel(BorderLayout()).apply {
             isOpaque = false
             border = JBUI.Borders.emptyBottom(2)
             add(left, BorderLayout.CENTER)
-            add(headerRefreshedLabel, BorderLayout.EAST)
+            add(right, BorderLayout.EAST)
         }
     }
 
@@ -522,6 +560,7 @@ internal class SpecWorkflowTasksPanel(
     }
 
     private fun applyActionButtonPresentation() {
+        updateParallelExecuteButtonPresentation()
         updateExecuteButtonPresentation(tasksList.selectedValue)
         updateOpenWorkflowChatButtonPresentation(tasksList.selectedValue)
         updateSecondaryActionsButtonPresentation(tasksList.selectedValue)
@@ -549,9 +588,11 @@ internal class SpecWorkflowTasksPanel(
         headerRefreshedLabel.text = refreshed?.let { millis ->
             REFRESHED_AT_FORMATTER.format(Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()))
         }.orEmpty()
+        updateHeaderVisibility()
     }
 
     private fun updateControlsForSelection() {
+        updateParallelExecuteButtonPresentation()
         val selected = tasksList.selectedValue
         if (selected == null) {
             updateExecuteButtonPresentation(null)
@@ -567,6 +608,40 @@ internal class SpecWorkflowTasksPanel(
         updateSecondaryActionsButtonPresentation(selected)
         updateVerificationButtonPresentation(selected)
         updateDependsOnButtonPresentation(selected)
+    }
+
+    private fun updateParallelExecuteButtonPresentation() {
+        val executableCount = executableTaskLaunchCandidates().size
+        val visible = executableCount >= 2
+        val disabledReason = when {
+            executableCount == 1 -> SpecCodingBundle.message("spec.toolwindow.tasks.batch.execute.single")
+            else -> SpecCodingBundle.message("spec.toolwindow.tasks.batch.execute.none")
+        }
+        SpecUiStyle.applyIconActionPresentation(
+            button = parallelExecuteButton,
+            presentation = SpecIconActionPresentation(
+                icon = SpecWorkflowIcons.Execute,
+                text = if (visible) {
+                    SpecCodingBundle.message("spec.toolwindow.tasks.batch.execute.button", executableCount)
+                } else {
+                    ""
+                },
+                tooltip = if (visible) {
+                    SpecCodingBundle.message("spec.toolwindow.tasks.batch.execute.tooltip", executableCount)
+                } else {
+                    disabledReason
+                },
+                accessibleName = if (visible) {
+                    SpecCodingBundle.message("spec.toolwindow.tasks.batch.execute.button", executableCount)
+                } else {
+                    SpecCodingBundle.message("spec.toolwindow.tasks.batch.execute.button", 2)
+                },
+                enabled = visible,
+                disabledReason = if (visible) null else disabledReason,
+            ),
+        )
+        parallelExecuteButton.isVisible = visible
+        updateHeaderVisibility()
     }
 
     private fun updateExecuteButtonPresentation(selected: StructuredTask?) {
@@ -774,6 +849,10 @@ internal class SpecWorkflowTasksPanel(
         requestExecutionForSelection()
     }
 
+    private fun handleExecuteReadyTasks() {
+        requestExecutionForExecutableTasks()
+    }
+
     private fun handleOpenWorkflowChat() {
         val selectedTask = tasksList.selectedValue ?: return
         val workflowId = currentWorkflowId?.trim()?.ifBlank { null } ?: return
@@ -897,14 +976,14 @@ internal class SpecWorkflowTasksPanel(
                 if (selectedTask.executionBlockedReason(retry = false) != null) {
                     return false
                 }
-                onExecuteTask(selectedTask.id, false)
+                return onExecuteTask(selectedTask.id, false)
             }
 
             selectedTask.displayStatus == TaskStatus.BLOCKED -> {
                 if (selectedTask.executionBlockedReason(retry = true) != null) {
                     return false
                 }
-                onExecuteTask(selectedTask.id, true)
+                return onExecuteTask(selectedTask.id, true)
             }
 
             else -> return false
@@ -1068,6 +1147,37 @@ internal class SpecWorkflowTasksPanel(
             id,
             constraint.blockingDependentTaskIds.joinToString(", "),
         )
+    }
+
+    private fun executableTaskLaunchCandidates(): List<TaskExecutionLaunchCandidate> {
+        return currentTasksInDisplayOrder().mapNotNull { task ->
+            val progressPhase = executionPresentation(task)?.phase
+            when {
+                progressPhase != null || task.displayStatus == TaskStatus.IN_PROGRESS -> null
+                task.displayStatus == TaskStatus.PENDING && task.executionBlockedReason(retry = false) == null -> {
+                    TaskExecutionLaunchCandidate(task.id, retry = false)
+                }
+
+                task.displayStatus == TaskStatus.BLOCKED && task.executionBlockedReason(retry = true) == null -> {
+                    TaskExecutionLaunchCandidate(task.id, retry = true)
+                }
+
+                else -> null
+            }
+        }
+    }
+
+    private fun currentTasksInDisplayOrder(): List<StructuredTask> {
+        return (0 until listModel.size()).map { index -> listModel[index] }
+    }
+
+    private fun updateHeaderVisibility() {
+        val shouldShowHeader = showHeader || parallelExecuteButton.isVisible
+        if (headerPanel.isVisible != shouldShowHeader) {
+            headerPanel.isVisible = shouldShowHeader
+            revalidate()
+            repaint()
+        }
     }
 
     private fun handleEditDependsOn() {
@@ -1383,6 +1493,11 @@ internal class SpecWorkflowTasksPanel(
     private data class TaskRowPrimaryAction(
         val taskId: String,
         val presentation: SpecIconActionPresentation,
+    )
+
+    private data class TaskExecutionLaunchCandidate(
+        val taskId: String,
+        val retry: Boolean,
     )
 
     private data class ChipPalette(

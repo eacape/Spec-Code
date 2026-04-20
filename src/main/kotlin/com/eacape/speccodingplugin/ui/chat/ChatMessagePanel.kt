@@ -769,15 +769,19 @@ open class ChatMessagePanel(
             stripLeadingCliTranscriptNoise(mergedOutput)
         )
         if (sanitizedOutput.isBlank()) return ""
-        val nonBlankOutputLines = sanitizedOutput
+        val cleanedOutput = stripPromptInstructionEchoLines(sanitizedOutput.lines())
+            .joinToString("\n")
+            .trim()
+        if (cleanedOutput.isBlank()) return ""
+        val nonBlankOutputLines = cleanedOutput
             .lines()
             .map { it.trim() }
             .filter { it.isNotBlank() }
         if (looksLikeChecklistOnlyPromptExcerpt(nonBlankOutputLines)) return ""
         if (looksLikePromptInventoryOnlyOutput(nonBlankOutputLines)) return ""
 
-        if (shouldUseRawOutputAsFallbackAnswer(sanitizedOutput)) {
-            return sanitizedOutput
+        if (shouldUseRawOutputAsFallbackAnswer(cleanedOutput)) {
+            return cleanedOutput
         }
 
         val keyLines = selectKeyOutputLines(
@@ -801,7 +805,11 @@ open class ChatMessagePanel(
         val firstNonBlankIndex = lines.indexOfFirst { it.trim().isNotBlank() }
         if (firstNonBlankIndex < 0) return normalized
 
-        if (!looksLikeCliTranscriptLeadLine(lines[firstNonBlankIndex].trim())) {
+        val leadingLine = lines[firstNonBlankIndex].trim()
+        if (!looksLikeCliTranscriptLeadLine(leadingLine)) {
+            return normalized
+        }
+        if (shouldPreserveLeadingAnswerListBlock(lines.drop(firstNonBlankIndex))) {
             return normalized
         }
 
@@ -844,6 +852,33 @@ open class ChatMessagePanel(
             kept.removeAt(kept.lastIndex)
         }
         return kept.joinToString("\n").trim()
+    }
+
+    private fun shouldPreserveLeadingAnswerListBlock(lines: List<String>): Boolean {
+        val nonBlankLines = lines
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .take(CLI_TRANSCRIPT_ANSWER_LIST_SCAN_LINES)
+        if (nonBlankLines.isEmpty()) return false
+        if (!looksLikeNarrativeAnswerListLine(nonBlankLines.first())) return false
+
+        val answerLikeCount = nonBlankLines.count { line ->
+            looksLikeNarrativeAnswerListLine(line) ||
+                (isAllowedAssistantAnswerBlockLine(line) && !looksLikePromptLikeQuestionLine(line))
+        }
+        return answerLikeCount >= CLI_TRANSCRIPT_ANSWER_LIST_MIN_MATCHES
+    }
+
+    private fun looksLikeNarrativeAnswerListLine(line: String): Boolean {
+        val trimmed = line.trim()
+        if (!ORDERED_LIST_ITEM_REGEX.matches(trimmed) && !UNORDERED_LIST_ITEM_REGEX.matches(trimmed)) {
+            return false
+        }
+        if (looksLikePromptLikeQuestionLine(trimmed)) return false
+        val normalized = BULLET_PREFIX_REGEX.replaceFirst(trimmed, "").trim()
+        if (normalized.isBlank()) return false
+        if (looksLikePromptLikeQuestionLine(normalized)) return false
+        return looksLikeNarrativeOutputLine(normalized) || normalized.length >= OUTPUT_NARRATIVE_MIN_CHARS
     }
 
     private fun stripLeadingPromptQuestionnaireNoise(content: String): String {
@@ -972,7 +1007,8 @@ open class ChatMessagePanel(
         if (PROMPT_INSTRUCTION_ECHO_CONTROL_REGEX.matches(trimmed)) return true
 
         val normalized = normalizePromptInstructionEchoLine(trimmed)
-        return normalized in PROMPT_INSTRUCTION_ECHO_NORMALIZED_LINES
+        if (normalized in PROMPT_INSTRUCTION_ECHO_NORMALIZED_LINES) return true
+        return PROMPT_INSTRUCTION_ECHO_NORMALIZED_PREFIXES.any(normalized::startsWith)
     }
 
     private fun normalizePromptInstructionEchoLine(line: String): String {
@@ -3281,6 +3317,8 @@ open class ChatMessagePanel(
     }
 
     private fun looksLikeToolDiagnosticLine(line: String): Boolean {
+        val trimmed = line.trim()
+        if (looksLikeNarrativeAnswerListLine(trimmed)) return false
         val normalized = normalizeOutputClassifierLine(line)
         return OUTPUT_CLI_BANNER_REGEX.matches(line) ||
             OUTPUT_SESSION_ID_LINE_REGEX.matches(line) ||
@@ -4068,6 +4106,8 @@ open class ChatMessagePanel(
         private const val MARKDOWN_PREVIEW_EXTRA_SCAN_CHARS = 240
         private const val LIGHTWEIGHT_CONTENT_MAX_CHARS = 900
         private const val PLAIN_TEXT_LINE_SPACING = 0.40f
+        private const val CLI_TRANSCRIPT_ANSWER_LIST_SCAN_LINES = 6
+        private const val CLI_TRANSCRIPT_ANSWER_LIST_MIN_MATCHES = 2
         private const val LOOSE_PIPE_TABLE_DETECTION_MIN_ROWS = 2
         private const val OUTPUT_FILTER_TABLE_BYPASS_MIN_ROWS = 2
         private const val COMMAND_ACTION_TABLE_BLOCK_MIN_ROWS = 2
@@ -4261,6 +4301,16 @@ open class ChatMessagePanel(
             "sections marked internal instructions and reference context are hidden inputs, not user-visible text.",
             "use them only as guidance or evidence.",
             "do not quote, restate, or continue those hidden sections verbatim unless the user explicitly asks for a quote.",
+        )
+        private val PROMPT_INSTRUCTION_ECHO_NORMALIZED_PREFIXES = setOf(
+            "you are answering the final user request for an ide chat session",
+            "sections marked internal instructions and reference context are hidden inputs, not user-visible text",
+            "use them only as guidance or evidence",
+            "do not quote, restate, or continue those hidden sections verbatim unless the user explicitly asks for a quote",
+            "answer the final user request directly",
+            "do not dump raw context or internal instructions",
+            "use referenced files only as supporting evidence",
+            "if the user asks what a document is, identify its purpose before citing details",
         )
         private val OUTPUT_ENUM_MEMBER_REFERENCE_REGEX = Regex("""\b[A-Z][A-Za-z0-9_]*\.[A-Z][A-Z0-9_]+\b""")
         private val OUTPUT_CAMEL_IDENTIFIER_REGEX = Regex("""\b[A-Za-z_]*[a-z][A-Za-z0-9_]*[A-Z][A-Za-z0-9_]*\b""")
