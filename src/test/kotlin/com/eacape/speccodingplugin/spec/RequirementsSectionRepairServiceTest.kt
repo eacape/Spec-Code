@@ -141,6 +141,59 @@ class RequirementsSectionRepairServiceTest {
     }
 
     @Test
+    fun `previewRepair should parse numbered inline section lines from AI draft`() {
+        val workflow = engine.createWorkflow(
+            title = "repair-inline-sections",
+            description = "parse inline section bodies",
+        ).getOrThrow()
+        engine.updateDocumentContent(workflow.id, SpecPhase.SPECIFY, ENGLISH_REQUIREMENTS_WITH_GAPS).getOrThrow()
+        val service = repairService(
+            draft = """
+                1. Non-Functional Requirements: Keep the repair deterministic and scoped to missing sections.
+                2. User Stories: As a planner, I want targeted repairs, so that I can keep the current draft unchanged.
+            """.trimIndent(),
+        )
+
+        val preview = service.previewRepair(workflow.id, emptyList())
+
+        assertTrue(
+            preview.updatedContent.contains(
+                "## Non-Functional Requirements\nKeep the repair deterministic and scoped to missing sections.",
+            ),
+        )
+        assertTrue(
+            preview.updatedContent.contains(
+                "## User Stories\nAs a planner, I want targeted repairs, so that I can keep the current draft unchanged.",
+            ),
+        )
+    }
+
+    @Test
+    fun `previewRepair should parse emphasized localized section headings from AI draft`() {
+        val workflow = engine.createWorkflow(
+            title = "repair-emphasized-localized-sections",
+            description = "parse emphasized localized headings",
+        ).getOrThrow()
+        engine.updateDocumentContent(workflow.id, SpecPhase.SPECIFY, CHINESE_REQUIREMENTS_WITH_GAPS).getOrThrow()
+        val service = repairService(
+            draft = """
+                **非功能需求**:
+                - 保持补全流程稳定且仅补齐缺失章节。
+
+                **用户故事**:
+                作为规范作者，我希望只补全缺失章节，以便保留现有内容。
+            """.trimIndent(),
+        )
+
+        val preview = service.previewRepair(workflow.id, emptyList())
+
+        assertTrue(preview.updatedContent.contains("## 非功能需求"))
+        assertTrue(preview.updatedContent.contains("- 保持补全流程稳定且仅补齐缺失章节。"))
+        assertTrue(preview.updatedContent.contains("## 用户故事"))
+        assertTrue(preview.updatedContent.contains("作为规范作者，我希望只补全缺失章节，以便保留现有内容。"))
+    }
+
+    @Test
     fun `previewRepair should insert missing leading sections before the first later section in canonical order`() {
         val workflow = engine.createWorkflow(
             title = "repair-leading-sections",

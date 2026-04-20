@@ -90,16 +90,57 @@ internal object ImprovedChatPanelComposerSubmissionCoordinator {
         return "$normalizedPrompt\n\n$attachmentBlock"
     }
 
-    fun buildVisibleInput(rawInput: String, imagePaths: List<String>): String {
-        if (imagePaths.isEmpty()) {
-            return rawInput.ifBlank { SpecCodingBundle.message("toolwindow.image.default.prompt") }
+    fun appendContextLabelsToPrompt(prompt: String, contextLabels: List<String>): String {
+        val normalizedLabels = contextLabels
+            .asSequence()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .distinct()
+            .toList()
+        if (normalizedLabels.isEmpty()) return prompt
+        val contextBlock = buildContextPromptBlock(
+            prompt = prompt,
+            contextLabels = normalizedLabels,
+        )
+        return if (prompt.isBlank()) contextBlock else "$prompt\n\n$contextBlock"
+    }
+
+    fun buildVisibleInput(
+        rawInput: String,
+        imagePaths: List<String>,
+        contextLabels: List<String> = emptyList(),
+    ): String {
+        val attachmentLines = mutableListOf<String>()
+        if (imagePaths.isNotEmpty()) {
+            val names = imagePaths.indices.joinToString(", ") { index -> "image#${index + 1}" }
+            attachmentLines += SpecCodingBundle.message("toolwindow.image.visible.entry", names)
         }
-        val names = imagePaths.indices.joinToString(", ") { index -> "image#${index + 1}" }
-        val attachmentLine = SpecCodingBundle.message("toolwindow.image.visible.entry", names)
+        contextLabels
+            .asSequence()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .distinct()
+            .forEach { label ->
+                attachmentLines += SpecCodingBundle.message("toolwindow.context.visible.entry", label)
+            }
+
         if (rawInput.isBlank()) {
-            return attachmentLine
+            return if (attachmentLines.isNotEmpty()) {
+                attachmentLines.joinToString("\n")
+            } else {
+                SpecCodingBundle.message("toolwindow.image.default.prompt")
+            }
         }
-        return "$rawInput\n$attachmentLine"
+        if (attachmentLines.isEmpty()) {
+            return rawInput
+        }
+        return buildString {
+            append(rawInput)
+            attachmentLines.forEach { line ->
+                append('\n')
+                append(line)
+            }
+        }
     }
 
     fun shouldRouteToWorkflowCommand(
@@ -125,5 +166,58 @@ internal object ImprovedChatPanelComposerSubmissionCoordinator {
         "back",
         "complete",
         "help",
+    )
+
+    private fun buildContextPromptBlock(prompt: String, contextLabels: List<String>): String {
+        val normalizedPrompt = prompt.trim()
+        val lines = mutableListOf<String>()
+        val isSingleContextIdentityQuestion =
+            contextLabels.size == 1 && looksLikeDocumentIdentityQuestion(normalizedPrompt)
+        if (isSingleContextIdentityQuestion) {
+            lines += "The user's deictic reference (for example \"this\" or \"这个\") refers to the referenced context item below."
+            lines += "Answer in this order:"
+            lines += "1. Identify what the referenced document/file is in the first sentence."
+            lines += "2. Briefly explain its purpose or scope."
+            lines += "3. Cite only short supporting evidence."
+            lines += "Do not start with a long section-by-section summary."
+        } else {
+            lines += "The referenced context items below are the subject and evidence for this request."
+            lines += "If the user uses deictic wording like \"this\", \"that\", \"这个\", or \"该文档\", resolve it against these referenced items first."
+            lines += "Answer directly before summarizing the referenced content."
+            lines += "Do not dump long excerpts from the referenced content."
+        }
+        lines += SpecCodingBundle.message("toolwindow.context.prompt.header")
+        contextLabels.forEach { label ->
+            lines += "- $label"
+        }
+        return lines.joinToString("\n")
+    }
+
+    private fun looksLikeDocumentIdentityQuestion(prompt: String): Boolean {
+        if (prompt.isBlank()) return false
+        val normalized = prompt.lowercase(Locale.ROOT)
+        if (IDENTITY_QUESTION_PATTERNS.any(normalized::contains)) {
+            return true
+        }
+        return IDENTITY_QUESTION_REGEX.containsMatchIn(normalized)
+    }
+
+    private val IDENTITY_QUESTION_PATTERNS = listOf(
+        "这个是什么文档",
+        "这是什么文档",
+        "这个文档是什么",
+        "这份文档是什么",
+        "这个文件是什么",
+        "这是什么文件",
+        "这个是啥文档",
+        "what is this document",
+        "what document is this",
+        "what is this file",
+        "what file is this",
+    )
+
+    private val IDENTITY_QUESTION_REGEX = Regex(
+        """(?:这个|这份|该)(?:是什么)?(?:文档|文件)|what\s+(?:is\s+)?this\s+(?:document|file)|what\s+(?:document|file)\s+is\s+this""",
+        RegexOption.IGNORE_CASE,
     )
 }

@@ -130,4 +130,58 @@ class ImprovedChatPanelCommandRoutingTest {
             rendered,
         )
     }
+
+    @Test
+    fun `build visible input should append context markers after prompt`() {
+        val rendered = ImprovedChatPanelComposerSubmissionCoordinator.buildVisibleInput(
+            rawInput = "这个是什么文档",
+            imagePaths = emptyList(),
+            contextLabels = listOf("README.md", "src/main/"),
+        )
+
+        assertEquals(
+            """
+            这个是什么文档
+            ${SpecCodingBundle.message("toolwindow.context.visible.entry", "README.md")}
+            ${SpecCodingBundle.message("toolwindow.context.visible.entry", "src/main/")}
+            """.trimIndent(),
+            rendered,
+        )
+    }
+
+    @Test
+    fun `append context labels to prompt should add reference block for model grounding`() {
+        val rendered = ImprovedChatPanelComposerSubmissionCoordinator.appendContextLabelsToPrompt(
+            prompt = "这个是什么文档",
+            contextLabels = listOf("spec-design-review.md"),
+        )
+
+        assertTrue(rendered.startsWith("这个是什么文档"), rendered)
+        assertTrue(
+            rendered.contains("The user's deictic reference"),
+            rendered,
+        )
+        assertTrue(
+            rendered.contains("Identify what the referenced document/file is in the first sentence."),
+            rendered,
+        )
+        assertTrue(
+            rendered.contains(SpecCodingBundle.message("toolwindow.context.prompt.header")),
+            rendered,
+        )
+        assertTrue(rendered.contains("- spec-design-review.md"), rendered)
+    }
+
+    @Test
+    fun `append context labels to prompt should use generic grounding rules for non identity questions`() {
+        val rendered = ImprovedChatPanelComposerSubmissionCoordinator.appendContextLabelsToPrompt(
+            prompt = "请根据这些文件给我一个修改建议",
+            contextLabels = listOf("README.md", "src/main/"),
+        )
+
+        assertTrue(rendered.startsWith("请根据这些文件给我一个修改建议"), rendered)
+        assertTrue(rendered.contains("The referenced context items below are the subject and evidence for this request."), rendered)
+        assertTrue(rendered.contains("- README.md"), rendered)
+        assertTrue(rendered.contains("- src/main/"), rendered)
+    }
 }

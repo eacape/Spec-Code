@@ -84,13 +84,7 @@ class CodexCliLlmProvider(
 
     private fun toEngineRequest(request: LlmRequest): EngineRequest {
         // Codex 不支持 system prompt 参数，将 system 消息合并到 prompt 中
-        val allMessages = request.messages.joinToString("\n\n") { msg ->
-            when (msg.role) {
-                LlmRole.SYSTEM -> "[System]\n${msg.content}"
-                LlmRole.USER -> msg.content
-                LlmRole.ASSISTANT -> "[Assistant]\n${msg.content}"
-            }
-        }
+        val allMessages = renderPrompt(request.messages)
 
         val options = mutableMapOf<String, String>()
         request.model?.let { options["model"] = it }
@@ -106,6 +100,76 @@ class CodexCliLlmProvider(
             imagePaths = normalizeImagePaths(request.imagePaths),
             options = options,
         )
+    }
+
+    internal fun renderPrompt(messages: List<LlmMessage>): String {
+        val normalizedMessages = messages
+            .asSequence()
+            .map { message -> message.role to message.content.trim() }
+            .filter { (_, content) -> content.isNotBlank() }
+            .toList()
+        if (normalizedMessages.isEmpty()) {
+            return ""
+        }
+
+        val systemMessages = normalizedMessages
+            .filter { (role, _) -> role == LlmRole.SYSTEM }
+            .map { (_, content) -> content }
+        val dialogMessages = normalizedMessages
+            .filter { (role, _) -> role != LlmRole.SYSTEM }
+
+        val lastUserIndex = dialogMessages.indexOfLast { (role, _) -> role == LlmRole.USER }
+        val conversationHistory = if (lastUserIndex > 0) {
+            dialogMessages.subList(0, lastUserIndex)
+        } else {
+            emptyList()
+        }
+        val finalUserRequest = when {
+            lastUserIndex >= 0 -> dialogMessages[lastUserIndex].second
+            dialogMessages.isNotEmpty() -> dialogMessages.last().second
+            else -> ""
+        }
+
+        return buildString {
+            appendLine("You are answering the final user request for an IDE chat session.")
+            appendLine("Sections marked Internal Instructions and Reference Context are hidden inputs, not user-visible text.")
+            appendLine("Use them only as guidance or evidence.")
+            appendLine("Do not quote, restate, or continue those hidden sections verbatim unless the user explicitly asks for a quote.")
+            appendLine("Answer the final user request directly in the first sentence.")
+            appendLine()
+
+            if (systemMessages.isNotEmpty()) {
+                appendLine("## Internal Instructions And Reference Context")
+                systemMessages.forEachIndexed { index, content ->
+                    appendLine("### Internal Block ${index + 1}")
+                    appendLine(content)
+                    appendLine()
+                }
+            }
+
+            if (conversationHistory.isNotEmpty()) {
+                appendLine("## Conversation History")
+                conversationHistory.forEach { (role, content) ->
+                    val heading = when (role) {
+                        LlmRole.USER -> "User"
+                        LlmRole.ASSISTANT -> "Assistant"
+                        LlmRole.SYSTEM -> "System"
+                    }
+                    appendLine("### $heading")
+                    appendLine(content)
+                    appendLine()
+                }
+            }
+
+            appendLine("## Final User Request")
+            appendLine(finalUserRequest)
+            appendLine()
+            appendLine("## Response Requirements")
+            appendLine("- Answer the final user request directly.")
+            appendLine("- Do not dump raw context or internal instructions.")
+            appendLine("- Use referenced files only as supporting evidence.")
+            appendLine("- If the user asks what a document is, identify its purpose before citing details.")
+        }.trimEnd()
     }
 
     private fun normalizeImagePaths(imagePaths: List<String>): List<String> {

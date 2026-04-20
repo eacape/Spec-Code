@@ -114,6 +114,13 @@ open class ChatMessagePanel(
             emptyList()
         }
     }
+    private val userContextAttachments: List<UserContextAttachment> by lazy(LazyThreadSafetyMode.NONE) {
+        if (role == MessageRole.USER) {
+            loadUserContextAttachments(contentBuilder.toString())
+        } else {
+            emptyList()
+        }
+    }
 
     enum class MessageRole {
         USER, ASSISTANT, SYSTEM, ERROR
@@ -323,12 +330,12 @@ open class ChatMessagePanel(
         } else {
             contentHost.removeAll()
             if (role == MessageRole.USER) {
-                if (userImageAttachments.isEmpty()) {
+                if (userImageAttachments.isEmpty() && userContextAttachments.isEmpty()) {
                     contentHost.add(contentPane, BorderLayout.CENTER)
                     renderUserPromptAwareContent(contentPane.styledDocument, content, outputFontSize)
                     refreshTextPaneCursor(contentPane)
                 } else {
-                    contentHost.add(createUserPromptWithImages(content, outputFontSize), BorderLayout.CENTER)
+                    contentHost.add(createUserPromptWithAttachments(content, outputFontSize), BorderLayout.CENTER)
                 }
             } else {
                 contentHost.add(contentPane, BorderLayout.CENTER)
@@ -449,7 +456,7 @@ open class ChatMessagePanel(
         }
     }
 
-    private fun createUserPromptWithImages(content: String, fontSize: Int): JPanel {
+    private fun createUserPromptWithAttachments(content: String, fontSize: Int): JPanel {
         val container = JPanel()
         container.layout = BoxLayout(container, BoxLayout.Y_AXIS)
         container.isOpaque = false
@@ -459,25 +466,49 @@ open class ChatMessagePanel(
             renderUserPromptAwareContent(contentPane.styledDocument, textContent, fontSize)
             refreshTextPaneCursor(contentPane)
             container.add(contentPane)
-            if (userImageAttachments.isNotEmpty()) {
+            if (userImageAttachments.isNotEmpty() || userContextAttachments.isNotEmpty()) {
                 container.add(createVerticalSpacer(USER_IMAGE_TEXT_GAP))
             }
         }
 
-        if (userImageAttachments.isNotEmpty()) {
-            container.add(createUserImageAttachmentStrip())
+        if (userImageAttachments.isNotEmpty() || userContextAttachments.isNotEmpty()) {
+            container.add(createUserAttachmentStrip())
         }
 
         return container
     }
 
-    private fun createUserImageAttachmentStrip(): JPanel {
+    private fun createUserAttachmentStrip(): JPanel {
         val strip = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(USER_IMAGE_CHIP_GAP), JBUI.scale(USER_IMAGE_ROW_VGAP)))
         strip.isOpaque = false
+        userContextAttachments.forEach { attachment ->
+            strip.add(createUserContextChip(attachment))
+        }
         userImageAttachments.forEach { attachment ->
             strip.add(createUserImageChip(attachment))
         }
         return strip
+    }
+
+    private fun createUserContextChip(attachment: UserContextAttachment): JPanel {
+        val chip = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(3), 0))
+        chip.isOpaque = true
+        chip.background = USER_IMAGE_CHIP_BG
+        chip.border = buildRoundedContainerBorder(
+            lineColor = USER_IMAGE_CHIP_BORDER,
+            arc = 8,
+            padding = JBUI.insets(2, 6, 2, 6),
+        )
+
+        val icon = if (attachment.isDirectory) AllIcons.Nodes.Folder else AllIcons.FileTypes.Text
+        val label = JBLabel(attachment.displayName, icon, JBLabel.LEADING)
+        label.font = JBUI.Fonts.smallFont()
+        label.foreground = USER_IMAGE_META_FG
+        label.iconTextGap = JBUI.scale(4)
+        label.toolTipText = buildUserContextTooltip(attachment)
+        chip.toolTipText = label.toolTipText
+        chip.add(label)
+        return chip
     }
 
     private fun createUserImageChip(attachment: UserImageAttachment): JPanel {
@@ -506,6 +537,10 @@ open class ChatMessagePanel(
         return "${attachment.displayName} (${attachment.originalFileName}, ${attachment.image.width}×${attachment.image.height})"
     }
 
+    private fun buildUserContextTooltip(attachment: UserContextAttachment): String {
+        return attachment.fullLabel
+    }
+
     private fun createVerticalSpacer(height: Int): JPanel {
         val spacer = JPanel()
         spacer.isOpaque = false
@@ -520,7 +555,9 @@ open class ChatMessagePanel(
         val normalized = content.replace("\r\n", "\n").replace('\r', '\n')
         val lines = normalized.lines()
         val filtered = lines.filterNot { line ->
-            USER_IMAGE_ATTACHMENT_LINE_REGEX.matches(line.trim())
+            val trimmed = line.trim()
+            USER_IMAGE_ATTACHMENT_LINE_REGEX.matches(trimmed) ||
+                USER_CONTEXT_ATTACHMENT_LINE_REGEX.matches(trimmed)
         }
         return filtered.joinToString("\n").trimEnd()
     }
@@ -540,6 +577,38 @@ open class ChatMessagePanel(
                 image = image,
             )
         }
+    }
+
+    private fun loadUserContextAttachments(content: String): List<UserContextAttachment> {
+        if (content.isBlank()) return emptyList()
+        val seen = linkedSetOf<String>()
+        return content
+            .replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .lineSequence()
+            .mapNotNull { line ->
+                val trimmed = line.trim()
+                if (!USER_CONTEXT_ATTACHMENT_LINE_REGEX.matches(trimmed)) {
+                    return@mapNotNull null
+                }
+                val fullLabel = trimmed.substringAfter(']').trim()
+                    .replace('\\', '/')
+                    .takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+                val dedupeKey = fullLabel.lowercase(Locale.ROOT)
+                if (!seen.add(dedupeKey)) {
+                    return@mapNotNull null
+                }
+                val isDirectory = fullLabel.endsWith("/")
+                val normalized = fullLabel.trimEnd('/')
+                val leafName = normalized.substringAfterLast('/').ifBlank { normalized }
+                UserContextAttachment(
+                    displayName = if (isDirectory) "$leafName/" else leafName,
+                    fullLabel = fullLabel,
+                    isDirectory = isDirectory,
+                )
+            }
+            .toList()
     }
 
     private fun installImagePreviewOpenAction(component: JComponent, attachment: UserImageAttachment) {
@@ -706,6 +775,7 @@ open class ChatMessagePanel(
             nonBlankOutputLines,
         )
         if (looksLikePromptInventoryOnlyOutput(keyLines)) return ""
+        if (keyLines.size == 1 && !looksLikeLikelyAnswerSummaryLine(keyLines.first())) return ""
         return keyLines.joinToString("\n").trim()
     }
 
@@ -808,7 +878,11 @@ open class ChatMessagePanel(
         val lines = normalized.lines()
         val withoutEcho = stripLeadingEchoedUserPromptLines(lines)
         val withoutTrailingNoise = stripTrailingPromptQuestionnaireNoise(withoutEcho)
-        return withoutTrailingNoise.joinToString("\n").trim()
+        val leadingAnswerBlock = extractLeadingAssistantAnswerBlock(withoutTrailingNoise)
+        return leadingAnswerBlock
+            .ifEmpty { withoutTrailingNoise }
+            .joinToString("\n")
+            .trim()
     }
 
     private fun stripLeadingEchoedUserPromptLines(lines: List<String>): List<String> {
@@ -884,6 +958,93 @@ open class ChatMessagePanel(
             return false
         }
         return nonBlankLines.any(::looksLikeLikelyAnswerSummaryLine)
+    }
+
+    private fun extractLeadingAssistantAnswerBlock(lines: List<String>): List<String> {
+        if (lines.isEmpty()) return emptyList()
+
+        val kept = mutableListOf<String>()
+        var started = false
+        var insideFence = false
+        var pendingBlank = false
+
+        for ((index, rawLine) in lines.withIndex()) {
+            val trimmed = rawLine.trim()
+
+            if (!started) {
+                if (trimmed.isBlank()) continue
+                if (!isAllowedAssistantAnswerBlockLine(trimmed)) continue
+                started = true
+                insideFence = trimmed.startsWith("```")
+                kept += rawLine
+                continue
+            }
+
+            if (insideFence) {
+                kept += rawLine
+                if (trimmed.startsWith("```")) {
+                    insideFence = false
+                }
+                continue
+            }
+
+            if (trimmed.isBlank()) {
+                pendingBlank = kept.isNotEmpty()
+                continue
+            }
+
+            if (trimmed.startsWith("```")) {
+                if (pendingBlank && kept.lastOrNull()?.isNotBlank() == true) {
+                    kept += ""
+                }
+                pendingBlank = false
+                kept += rawLine
+                insideFence = true
+                continue
+            }
+
+            if (!isAllowedAssistantAnswerBlockLine(trimmed)) {
+                val hasTail = lines
+                    .drop(index)
+                    .any { candidate -> candidate.trim().isNotBlank() }
+                return if (hasTail) {
+                    kept.dropLastWhile(String::isBlank)
+                } else {
+                    emptyList()
+                }
+            }
+
+            if (pendingBlank && kept.lastOrNull()?.isNotBlank() == true) {
+                kept += ""
+            }
+            pendingBlank = false
+            kept += rawLine
+        }
+
+        return emptyList()
+    }
+
+    private fun isAllowedAssistantAnswerBlockLine(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.isBlank()) return false
+        if (looksLikeRawCodeOrPatchLine(trimmed)) return false
+        if (looksLikeToolDiagnosticLine(trimmed)) return false
+        if (looksLikePromptInventorySignalLine(trimmed)) return false
+        if (OUTPUT_METADATA_KEY_VALUE_REGEX.matches(trimmed)) return false
+        if (trimmed.startsWith("```")) return true
+        if (trimmed.startsWith("|")) return true
+        if (MARKDOWN_HEADING_REGEX.matches(trimmed)) return true
+        if (BLOCKQUOTE_LINE_REGEX.matches(trimmed)) return true
+        if (MARKDOWN_HORIZONTAL_RULE_REGEX.matches(trimmed)) return true
+        if (UNORDERED_LIST_ITEM_REGEX.matches(trimmed)) return true
+        if (ORDERED_LIST_ITEM_REGEX.matches(trimmed)) return true
+        if (CHECKBOX_LIST_ITEM_REGEX.matches(trimmed)) return true
+        if (MARKDOWN_INLINE_LINK_REGEX.containsMatchIn(trimmed)) return true
+        if (trimmed.contains("**") || trimmed.contains('`')) return true
+        if (OUTPUT_ALLOWED_HEADING_REGEX.matches(trimmed)) return true
+        if (OUTPUT_SHORT_STATUS_REGEX.matches(trimmed)) return true
+        if (isLikelyWorkflowHeading(trimmed)) return true
+        return looksLikeNarrativeOutputLine(trimmed)
     }
 
     private fun shouldPreferExplicitAssistantAnswer(content: String): Boolean {
@@ -2859,6 +3020,11 @@ open class ChatMessagePanel(
     }
 
     private fun selectKeyOutputLines(lines: List<String>): List<String> {
+        val leadingAnswerBlock = extractLeadingAssistantAnswerBlock(lines)
+        if (leadingAnswerBlock.isNotEmpty()) {
+            return leadingAnswerBlock.take(OUTPUT_FILTER_MAX_LINES)
+        }
+
         val deduped = lines
             .filter(::looksLikeWhitelistedOutputLine)
             .distinct()
@@ -3836,6 +4002,8 @@ open class ChatMessagePanel(
         private const val MARKDOWN_NBSP_CHAR = '\u00A0'
         private val MARKDOWN_STAR_PAIR_WITH_SPACES_REGEX = Regex("""\*\s+\*""")
         private val USER_IMAGE_ATTACHMENT_LINE_REGEX = Regex("""^\[(?:图片|images?|image)\]\s+.+$""", RegexOption.IGNORE_CASE)
+        private val USER_CONTEXT_ATTACHMENT_LINE_REGEX =
+            Regex("""^\[(?:上下文|contexts?|files?|file)\]\s+.+$""", RegexOption.IGNORE_CASE)
         private val PROMPT_REFERENCE_TOKEN_REGEX = Regex("""(?<!\S)#([\p{L}\p{N}_.-]+)""")
         private val PROMPT_ECHO_LINE_REGEX = Regex(
             """^(?:你|你们|您|请|能否|是否|为什么|怎么|怎样|啥|什么|who\b|what\b|why\b|how\b|can\b|could\b|please\b).+$""",
@@ -4102,6 +4270,12 @@ open class ChatMessagePanel(
         val displayName: String,
         val originalFileName: String,
         val image: BufferedImage,
+    )
+
+    private data class UserContextAttachment(
+        val displayName: String,
+        val fullLabel: String,
+        val isDirectory: Boolean,
     )
 
     private sealed class MarkdownSegment {

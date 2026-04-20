@@ -457,6 +457,51 @@ class ChatMessagePanelTraceStreamingTest {
     }
 
     @Test
+    fun `assistant displayed answer should stop before leaked execution fragments after a valid answer block`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent(
+                """
+                这是一个针对当前 Spec 工作流的设计评审和演进建议文档。
+                它主要回答的是 change intent 和阶段边界该怎么收敛。
+
+                ) / previous()
+                SpecChangeIntent.FULL | INCREMENTAL
+                已更新 enum mapping 和 workflow summary rendering。
+                """.trimIndent()
+            )
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = "captured output for final answer rendering",
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.finishMessage()
+        }
+
+        val displayed = invokeAssistantDisplayedAnswerResolver(panel, panel.getContent())
+        assertEquals(
+            """
+            这是一个针对当前 Spec 工作流的设计评审和演进建议文档。
+            它主要回答的是 change intent 和阶段边界该怎么收敛。
+            """.trimIndent(),
+            displayed,
+        )
+
+        val renderedText = collectDescendants(panel)
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertTrue(renderedText.contains("这是一个针对当前 Spec 工作流的设计评审和演进建议文档。"), renderedText)
+        assertTrue(renderedText.contains("它主要回答的是 change intent 和阶段边界该怎么收敛。"), renderedText)
+        assertFalse(renderedText.contains("previous()"), renderedText)
+        assertFalse(renderedText.contains("SpecChangeIntent.FULL | INCREMENTAL"), renderedText)
+        assertFalse(renderedText.contains("workflow summary rendering"), renderedText)
+    }
+
+    @Test
     fun `assistant answer should suppress leading codex prompt transcript before narrative summary`() {
         val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
 
@@ -1704,6 +1749,36 @@ class ChatMessagePanelTraceStreamingTest {
             .filter { it.icon.iconWidth > maxChipIcon || it.icon.iconHeight > maxChipIcon }
             .toList()
         assertTrue(oversizedPreviewLabels.isEmpty(), "Expected compact attachment chips instead of image thumbnails")
+    }
+
+    @Test
+    fun `user message should render referenced context entries as compact chips`() {
+        lateinit var panel: ChatMessagePanel
+        runOnEdt {
+            panel = ChatMessagePanel(
+                role = ChatMessagePanel.MessageRole.USER,
+                initialContent = """
+                    请先看这两个上下文
+                    [上下文] src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt
+                    [上下文] README.md
+                """.trimIndent(),
+            )
+            panel.finishMessage()
+        }
+
+        val textContent = collectDescendants(panel)
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { it.text.orEmpty() }
+        assertTrue(textContent.contains("请先看这两个上下文"))
+        assertFalse(textContent.contains("[上下文]"))
+
+        val contextLabels = collectDescendants(panel)
+            .filterIsInstance<JLabel>()
+            .filter { it.text == "ImprovedChatPanel.kt" || it.text == "README.md" }
+            .toList()
+        assertEquals(2, contextLabels.size)
+        assertTrue(contextLabels.all { it.icon != null })
+        assertTrue(contextLabels.any { it.toolTipText == "src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt" })
     }
 
     @Test

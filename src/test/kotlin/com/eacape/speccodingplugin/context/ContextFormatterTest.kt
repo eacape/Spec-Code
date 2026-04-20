@@ -32,6 +32,8 @@ class ContextFormatterTest {
 
         val result = ContextFormatter.format(snapshot)
 
+        assertTrue(result.contains("## Reference Project Context"))
+        assertTrue(result.contains("Answer the user's question directly"))
         assertTrue(result.contains("### Current File: Main.kt"))
         assertTrue(result.contains("File: `/src/Main.kt`"))
         assertTrue(result.contains("fun main() {}"))

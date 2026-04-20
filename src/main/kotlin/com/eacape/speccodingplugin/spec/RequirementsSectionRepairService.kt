@@ -286,15 +286,9 @@ internal class RequirementsSectionRepairService(
             )
         }
 
-        val headingMatches = SECTION_HEADING_REGEX.findAll(sanitized).toList()
-        val extractedBlocks = linkedMapOf<RequirementsSectionId, String>()
-        headingMatches.forEachIndexed { index, match ->
-            val sectionId = RequirementsSectionId.fromHeadingTitle(match.groupValues[1]) ?: return@forEachIndexed
-            val nextOffset = headingMatches.getOrNull(index + 1)?.range?.first ?: sanitized.length
-            extractedBlocks.putIfAbsent(sectionId, sanitized.substring(match.range.first, nextOffset).trim())
-        }
+        val extractedBodies = extractDraftedSectionBodies(sanitized)
 
-        val missingFromDraft = missingSections.filterNot(extractedBlocks::containsKey)
+        val missingFromDraft = missingSections.filterNot(extractedBodies::containsKey)
         if (missingFromDraft.isNotEmpty()) {
             throw IllegalStateException(
                 SpecCodingBundle.message(
@@ -306,8 +300,7 @@ internal class RequirementsSectionRepairService(
 
         return linkedMapOf<RequirementsSectionId, String>().apply {
             missingSections.forEach { sectionId ->
-                val rawBlock = extractedBlocks.getValue(sectionId)
-                val body = sectionBody(rawBlock)
+                val body = extractedBodies.getValue(sectionId)
                 if (body.isBlank()) {
                     throw IllegalStateException(
                         SpecCodingBundle.message(
@@ -414,7 +407,10 @@ internal class RequirementsSectionRepairService(
             Return markdown only.
             Never rewrite or repeat existing sections.
             Never add explanations, code fences, YAML, or commentary.
-            Only output the requested level-2 sections and their bodies.
+            Output every requested section exactly once using a level-2 markdown heading.
+            Keep the section titles exactly as requested.
+            Do not merge sections, rename headings, or skip a section.
+            If some details are uncertain, write a concise best-effort draft under the correct heading instead of omitting the section.
         """.trimIndent()
     }
 
@@ -422,6 +418,15 @@ internal class RequirementsSectionRepairService(
         val sectionList = request.missingSections.joinToString(separator = "\n") { section ->
             "- ${section.heading(request.headingStyle)}"
         }
+        val outputSkeleton = buildString {
+            request.missingSections.forEachIndexed { index, section ->
+                appendLine(section.heading(request.headingStyle))
+                appendLine("<section body>")
+                if (index < request.missingSections.lastIndex) {
+                    appendLine()
+                }
+            }
+        }.trim()
         val clarificationContext = request.confirmedContext
             .takeIf { context -> context.isNotBlank() }
             ?.let { context ->
@@ -457,6 +462,65 @@ internal class RequirementsSectionRepairService(
             appendLine("- Do not include any other headings.")
             appendLine("- Do not include introductory or closing text.")
             appendLine("- The result must be ready to append into the existing requirements.md.")
+            appendLine("- Replace `<section body>` with real markdown content; do not output `<section body>` literally.")
+            appendLine()
+            appendLine("Output skeleton:")
+            appendLine("```markdown")
+            appendLine(outputSkeleton)
+            appendLine("```")
+        }
+    }
+
+    private fun extractDraftedSectionBodies(sanitizedDraft: String): LinkedHashMap<RequirementsSectionId, String> {
+        val lines = normalizeContent(sanitizedDraft).lines()
+        val matches = lines.mapIndexedNotNull { lineIndex, line ->
+            matchDraftSectionLine(line)?.copy(lineIndex = lineIndex)
+        }
+        if (matches.isEmpty()) {
+            return linkedMapOf()
+        }
+
+        return linkedMapOf<RequirementsSectionId, String>().apply {
+            matches.forEachIndexed { index, match ->
+                if (containsKey(match.sectionId)) {
+                    return@forEachIndexed
+                }
+                val nextLineIndex = matches.getOrNull(index + 1)?.lineIndex ?: lines.size
+                val bodyLines = mutableListOf<String>()
+                match.inlineBody
+                    .takeIf(String::isNotBlank)
+                    ?.let(bodyLines::add)
+                bodyLines += lines.subList(match.lineIndex + 1, nextLineIndex)
+                put(match.sectionId, bodyLines.joinToString("\n").trim())
+            }
+        }
+    }
+
+    private fun matchDraftSectionLine(line: String): DraftSectionMatch? {
+        val trimmed = line.trim()
+        if (trimmed.isBlank()) {
+            return null
+        }
+        val regexes = buildDraftSectionLineRegexes()
+        return RequirementsSectionId.entries.firstNotNullOfOrNull { sectionId ->
+            regexes.getValue(sectionId).matchEntire(trimmed)?.let { match ->
+                DraftSectionMatch(
+                    sectionId = sectionId,
+                    inlineBody = match.groupValues.getOrElse(1) { "" }.trim(),
+                )
+            }
+        }
+    }
+
+    private fun buildDraftSectionLineRegexes(): Map<RequirementsSectionId, Regex> {
+        val linePrefixPattern =
+            """^(?:>+\s*)?(?:#{1,6}\s*|[-*+]\s+|\d+[.)]\s+|[\uFF08(]?\d+[\uFF09)]\s+|[\u4E00\u4E8C\u4E09\u56DB\u4E94\u516D\u4E03\u516B\u4E5D\u5341]+[\u3001.]\s+)?"""
+        return RequirementsSectionId.entries.associateWith { sectionId ->
+            val aliases = sectionId.titleAliases.joinToString(separator = "|") { alias -> Regex.escape(alias) }
+            Regex(
+                """$linePrefixPattern(?:[*_`~]{1,3}\s*)?(?:$aliases)(?:\s*[*_`~]{1,3})?\s*(?:[:\uFF1A\-\u2013\u2014]\s*(.*))?$""",
+                RegexOption.IGNORE_CASE,
+            )
         }
     }
 
@@ -497,11 +561,26 @@ internal class RequirementsSectionRepairService(
         val insertBeforeSectionId: RequirementsSectionId? = null,
     )
 
+    private data class DraftSectionMatch(
+        val sectionId: RequirementsSectionId,
+        val lineIndex: Int = -1,
+        val inlineBody: String = "",
+    )
+
     companion object {
-        private val SECTION_HEADING_REGEX = Regex("""(?m)^##\s+(.+?)\s*$""")
         private val FENCE_OPEN_REGEX = Regex("""(?m)^(```|~~~)\w*\s*$""")
         private val FENCE_CLOSE_REGEX = Regex("""(?m)^(```|~~~)\s*$""")
         private val TRAILING_VALIDATION_SECTION_REGEX =
             Regex("""(?s)\n---\n\n##\s+(?:验证结果|Validation Result)\s*\n.*$""")
+        private val DRAFT_SECTION_LINE_PREFIX_REGEX =
+            Regex("""^(?:>+\s*)?(?:#{1,6}\s*|[-*+]\s+|\d+[.)]\s+|[（(]?\d+[）)]\s+|[一二三四五六七八九十]+[、.]\s+)?""")
+        private val DRAFT_SECTION_LINE_REGEXES: Map<RequirementsSectionId, Regex> =
+            RequirementsSectionId.entries.associateWith { sectionId ->
+                val aliases = sectionId.titleAliases.joinToString(separator = "|") { alias -> Regex.escape(alias) }
+                Regex(
+                    """${DRAFT_SECTION_LINE_PREFIX_REGEX.pattern}(?:[*_`~]{1,3}\s*)?(?:$aliases)(?:\s*[*_`~]{1,3})?\s*(?:[:：\-–—]\s*(.*))?$""",
+                    RegexOption.IGNORE_CASE,
+                )
+            }
     }
 }

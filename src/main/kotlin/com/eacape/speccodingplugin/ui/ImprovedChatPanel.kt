@@ -3,6 +3,7 @@ package com.eacape.speccodingplugin.ui
 import com.eacape.speccodingplugin.SpecCodingBundle
 import com.eacape.speccodingplugin.context.ContextConfig
 import com.eacape.speccodingplugin.context.ContextCollector
+import com.eacape.speccodingplugin.context.ContextFormatter
 import com.eacape.speccodingplugin.context.ContextItem
 import com.eacape.speccodingplugin.context.ContextTrimmer
 import com.eacape.speccodingplugin.context.ContextType
@@ -2562,14 +2563,20 @@ class ImprovedChatPanel(
         }
 
         val promptReference = resolvePromptReferences(rawInput)
+        val pendingContextItems = contextPreviewPanel.getItems()
+        val contextLabels = buildVisibleContextLabels(pendingContextItems)
         val baseChatInput = buildChatInput(
             mode = interactionMode,
             userInput = promptReference.cleanedInput.ifBlank {
                 rawInput.ifBlank { SpecCodingBundle.message("toolwindow.image.default.prompt") }
             },
         )
-        val chatInput = ImprovedChatPanelComposerSubmissionCoordinator.appendImagePathsToPrompt(
+        val chatInputWithContext = ImprovedChatPanelComposerSubmissionCoordinator.appendContextLabelsToPrompt(
             prompt = baseChatInput,
+            contextLabels = contextLabels,
+        )
+        val chatInput = ImprovedChatPanelComposerSubmissionCoordinator.appendImagePathsToPrompt(
+            prompt = chatInputWithContext,
             imagePaths = selectedImagePaths,
         )
         val promptSystemMessages = buildPromptReferenceSystemMessages(
@@ -2579,6 +2586,7 @@ class ImprovedChatPanel(
         val visibleInput = ImprovedChatPanelComposerSubmissionCoordinator.buildVisibleInput(
             rawInput = visibleRawInput,
             imagePaths = selectedImagePaths,
+            contextLabels = contextLabels,
         )
 
         val providerId = providerComboBox.selectedItem as? String
@@ -2599,7 +2607,6 @@ class ImprovedChatPanel(
         if (!resolvedWorkflowId.isNullOrBlank()) {
             activeSpecWorkflowId = resolvedWorkflowId
         }
-        val pendingContextItems = contextPreviewPanel.getItems()
         contextPreviewPanel.clear()
         clearImageAttachments(purgeTransientFiles = false)
 
@@ -2622,8 +2629,6 @@ class ImprovedChatPanel(
         setSendingState(true)
         val assistantStartedAtMillis = System.currentTimeMillis()
         currentAssistantPanel = null
-        val promptEchoFilter = PromptReferenceEchoFilter.fromTextBlocks(promptSystemMessages)
-
         activeOperationJob = taskCoordinator.launchIo {
             var assistantPanel: ChatMessagePanel? = null
             val ensureAssistantPanel = {
@@ -2704,6 +2709,14 @@ class ImprovedChatPanel(
                 currentCoroutineContext().ensureActive()
                 val contextSnapshot = collectContextSnapshotSafely(explicitItems)
                 currentCoroutineContext().ensureActive()
+                val promptEchoFilter = PromptReferenceEchoFilter.fromTextBlocks(
+                    buildList {
+                        addAll(promptSystemMessages)
+                        ContextFormatter.format(contextSnapshot)
+                            .takeIf(String::isNotBlank)
+                            ?.let(::add)
+                    }
+                )
                 projectService.chat(
                     providerId = resolvedProviderId,
                     userInput = chatInput,
@@ -6660,6 +6673,33 @@ class ImprovedChatPanel(
         }.onFailure {
             logger.debug("Failed to capture workspace snapshot", it)
         }.getOrNull()
+    }
+
+    private fun buildVisibleContextLabels(items: List<ContextItem>): List<String> {
+        return items.mapNotNull { item ->
+            val relativePath = item.filePath?.let(::toProjectRelativePath)
+            val displayLabel = relativePath
+                ?.takeIf { it.isNotBlank() }
+                ?: item.label.trim().takeIf { it.isNotBlank() }
+                ?: return@mapNotNull null
+            if (item.type == ContextType.PROJECT_STRUCTURE && !displayLabel.endsWith("/")) {
+                "$displayLabel/"
+            } else {
+                displayLabel
+            }
+        }.distinct()
+    }
+
+    private fun toProjectRelativePath(rawPath: String): String? {
+        val basePath = project.basePath ?: return null
+        val root = runCatching { Paths.get(basePath).toAbsolutePath().normalize() }.getOrNull() ?: return null
+        val candidate = runCatching { Paths.get(rawPath).toAbsolutePath().normalize() }.getOrNull() ?: return null
+        if (!candidate.startsWith(root)) {
+            return null
+        }
+        return runCatching { root.relativize(candidate).toString().replace('\\', '/') }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
     }
 
     private fun persistWorkflowCommandChangeset(

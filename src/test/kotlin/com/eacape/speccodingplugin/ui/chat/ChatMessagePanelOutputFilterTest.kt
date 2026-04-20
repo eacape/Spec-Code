@@ -96,6 +96,48 @@ class ChatMessagePanelOutputFilterTest {
     }
 
     @Test
+    fun `output key filter should stop after leading answer block when execution leak appears later`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent(
+                """
+                [Output] 这是一个针对当前 Spec 工作流的设计评审和演进建议文档。
+                [Output] 建议先统一 change intent 与 stage 的职责边界。
+                [Output] ) / previous()
+                [Output] SpecChangeIntent.FULL | INCREMENTAL
+                [Output] Updated enum mapping and workflow summary rendering.
+                """.trimIndent()
+            )
+            panel.finishMessage()
+        }
+
+        val expandButton = collectDescendants(panel)
+            .filterIsInstance<JButton>()
+            .firstOrNull { it.text == SpecCodingBundle.message("chat.timeline.toggle.expand") }
+        println(
+            collectDescendants(panel)
+                .filterIsInstance<JButton>()
+                .map { button -> "text=${button.text}, tooltip=${button.toolTipText}" }
+                .toList()
+        )
+        assertNotNull(expandButton, "Expected output expand button")
+        runOnEdt { expandButton!!.doClick() }
+
+        val filteredText = collectText(panel)
+        assertTrue(filteredText.contains("这是一个针对当前 Spec 工作流的设计评审和演进建议文档。"))
+        assertTrue(filteredText.contains("建议先统一 change intent 与 stage 的职责边界。"))
+        assertFalse(filteredText.contains("previous()"))
+        assertFalse(filteredText.contains("SpecChangeIntent.FULL | INCREMENTAL"))
+        assertFalse(filteredText.contains("Updated enum mapping and workflow summary rendering."))
+        assertTrue(
+            filteredText.contains(
+                SpecCodingBundle.message("chat.timeline.output.filtered.more", 3)
+            )
+        )
+    }
+
+    @Test
     fun `output key filter should hide screenshot style command diagnostics and keep explanation`() {
         val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
 

@@ -42,6 +42,9 @@ enum class RequirementsSectionId(
     internal val markers: List<String>
         get() = listOf("## $englishTitle", "## $localizedTitle")
 
+    internal val titleAliases: List<String>
+        get() = listOf(englishTitle, localizedTitle)
+
     fun displayName(): String = SpecCodingBundle.message(displayNameKey)
 
     fun heading(style: RequirementsHeadingStyle): String = "## " + when (style) {
@@ -50,9 +53,8 @@ enum class RequirementsSectionId(
     }
 
     fun matchesHeadingTitle(title: String): Boolean {
-        val normalized = title.trim()
-        return normalized.equals(englishTitle, ignoreCase = true) ||
-            normalized.equals(localizedTitle, ignoreCase = true)
+        val normalized = normalizeTitleToken(title)
+        return titleAliases.any { candidate -> normalizeTitleToken(candidate) == normalized }
     }
 
     companion object {
@@ -61,6 +63,22 @@ enum class RequirementsSectionId(
 
         fun fromHeadingTitle(title: String): RequirementsSectionId? =
             entries.firstOrNull { section -> section.matchesHeadingTitle(title) }
+
+        internal fun normalizeTitleToken(title: String): String {
+            return title
+                .trim()
+                .replace(TITLE_EDGE_DECORATION_REGEX, "")
+                .replace(TRAILING_TITLE_DELIMITER_REGEX, "")
+                .replace(TITLE_EDGE_DECORATION_REGEX, "")
+                .replace(TITLE_WHITESPACE_REGEX, " ")
+                .replace("-", "")
+                .trim()
+                .lowercase()
+        }
+
+        private val TITLE_EDGE_DECORATION_REGEX = Regex("""^[*_`~#\s]+|[*_`~#\s]+$""")
+        private val TRAILING_TITLE_DELIMITER_REGEX = Regex("""\s*[:：]\s*$""")
+        private val TITLE_WHITESPACE_REGEX = Regex("""\s+""")
     }
 }
 

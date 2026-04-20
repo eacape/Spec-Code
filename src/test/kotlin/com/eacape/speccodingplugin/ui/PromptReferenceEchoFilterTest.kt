@@ -106,4 +106,62 @@ class PromptReferenceEchoFilterTest {
         assertTrue(filtered.contains("已恢复正文优先布局"), filtered)
         assertTrue(filtered.contains("最终回复位于执行过程和输出下面"), filtered)
     }
+    @Test
+    fun `filter should remove echoed referenced context block lines`() {
+        val filter = PromptReferenceEchoFilter.fromTextBlocks(
+            listOf(
+                """
+                ## Reference Project Context
+                Use the following project materials as reference data for the next user request.
+                Answer the user's question directly before summarizing or citing these materials.
+
+                ### Referenced File: spec-design-review.md
+                File: `D:/repo/spec-design-review.md`
+                ```
+                当前设计要求严格的 SPECIFY → DESIGN → IMPLEMENT 线性流程
+                ```
+                """.trimIndent()
+            )
+        )
+
+        val filtered = filter.filter(
+            """
+            ## Reference Project Context
+            Use the following project materials as reference data for the next user request.
+            Answer the user's question directly before summarizing or citing these materials.
+            ### Referenced File: spec-design-review.md
+            File: `D:/repo/spec-design-review.md`
+            当前设计要求严格的 SPECIFY → DESIGN → IMPLEMENT 线性流程
+            这是一个关于 spec 工作流设计评审的文档。
+            """.trimIndent(),
+            flush = true,
+        )
+
+        assertFalse(filtered.contains("Reference Project Context"), filtered)
+        assertFalse(filtered.contains("spec-design-review.md"), filtered)
+        assertFalse(filtered.contains("SPECIFY → DESIGN → IMPLEMENT"), filtered)
+        assertTrue(filtered.contains("这是一个关于 spec 工作流设计评审的文档"), filtered)
+    }
+
+    @Test
+    fun `filter should remove codex internal scaffold headings`() {
+        val filter = PromptReferenceEchoFilter.fromTextBlocks(listOf("dummy"))
+
+        val filtered = filter.filter(
+            """
+            You are answering the final user request for an IDE chat session.
+            ## Internal Instructions And Reference Context
+            ### Internal Block 1
+            ## Final User Request
+            ## Response Requirements
+            这是设计评审文档。
+            """.trimIndent(),
+            flush = true,
+        )
+
+        assertFalse(filtered.contains("Internal Instructions And Reference Context"), filtered)
+        assertFalse(filtered.contains("Final User Request"), filtered)
+        assertFalse(filtered.contains("Response Requirements"), filtered)
+        assertTrue(filtered.contains("这是设计评审文档"), filtered)
+    }
 }
