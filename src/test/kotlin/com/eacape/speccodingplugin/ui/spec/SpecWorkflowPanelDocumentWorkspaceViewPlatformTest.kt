@@ -63,10 +63,7 @@ class SpecWorkflowPanelDocumentWorkspaceViewPlatformTest : BasePlatformTestCase(
 
         assertFalse(panel.visibleWorkspaceSectionIdsForTest().contains(SpecWorkflowWorkspaceSectionId.TASKS))
         assertEquals("DOCUMENT", panel.documentWorkspaceViewForTest())
-        assertEquals(
-            SpecCodingBundle.message("spec.toolwindow.documents.view.label"),
-            panel.documentWorkspaceViewLabelForTest(),
-        )
+        assertEquals("", panel.documentWorkspaceViewLabelForTest())
         assertEquals(
             listOf(
                 "DOCUMENT:${SpecCodingBundle.message("spec.toolwindow.documents.view.document")}",
@@ -74,6 +71,7 @@ class SpecWorkflowPanelDocumentWorkspaceViewPlatformTest : BasePlatformTestCase(
             ),
             panel.documentWorkspaceViewButtonsForTest(),
         )
+        assertTrue(panel.documentWorkspaceInlineActionTextsForTest().isEmpty())
         assertEquals(
             mapOf(
                 "DOCUMENT" to JBUI.scale(22),

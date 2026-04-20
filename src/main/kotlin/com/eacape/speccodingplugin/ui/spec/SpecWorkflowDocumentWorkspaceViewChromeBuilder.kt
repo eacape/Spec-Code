@@ -17,6 +17,7 @@ internal data class SpecWorkflowDocumentWorkspaceViewChrome(
     val label: JBLabel,
     val tabsPanel: JPanel,
     val switcherPanel: JPanel,
+    val actionsPanel: JPanel,
     val cardPanel: JPanel,
     val buttons: Map<DocumentWorkspaceView, JButton>,
     val uiHost: SpecWorkflowDocumentWorkspaceViewUiHost,
@@ -25,6 +26,7 @@ internal data class SpecWorkflowDocumentWorkspaceViewChrome(
 internal class SpecWorkflowDocumentWorkspaceViewChromeBuilder(
     private val documentContent: Component,
     private val structuredTasksContent: Component,
+    private val trailingActions: List<Component> = emptyList(),
     private val installToolbarButtonCursorTracking: (JButton) -> Unit,
     private val onViewSelected: (DocumentWorkspaceView) -> Unit,
     private val resolvePresentation: () -> SpecWorkflowDocumentWorkspaceViewPresentation,
@@ -35,9 +37,8 @@ internal class SpecWorkflowDocumentWorkspaceViewChromeBuilder(
     fun build(): SpecWorkflowDocumentWorkspaceViewChrome {
         val buttons = linkedMapOf<DocumentWorkspaceView, JButton>()
         var uiHost: SpecWorkflowDocumentWorkspaceViewUiHost? = null
-        val label = JBLabel(message("spec.toolwindow.documents.view.label")).apply {
-            foreground = DOCUMENT_WORKSPACE_VIEW_LABEL_FG
-            font = JBUI.Fonts.smallFont().deriveFont(DOCUMENT_WORKSPACE_VIEW_LABEL_FONT_SIZE)
+        val label = JBLabel().apply {
+            isVisible = false
         }
         val switcherPanel = JPanel(
             FlowLayout(
@@ -59,16 +60,20 @@ internal class SpecWorkflowDocumentWorkspaceViewChromeBuilder(
                 ),
             )
         }
-        val tabsPanel = JPanel(
+        val actionsPanel = JPanel(
             FlowLayout(
-                FlowLayout.LEFT,
-                JBUI.scale(DOCUMENT_WORKSPACE_VIEW_ROW_GAP),
+                FlowLayout.RIGHT,
+                JBUI.scale(DOCUMENT_WORKSPACE_VIEW_ACTION_GAP),
                 0,
             ),
         ).apply {
             isOpaque = false
-            add(label)
-            add(switcherPanel)
+            trailingActions.forEach(::add)
+        }
+        val tabsPanel = JPanel(BorderLayout(JBUI.scale(DOCUMENT_WORKSPACE_VIEW_ROW_GAP), 0)).apply {
+            isOpaque = false
+            add(switcherPanel, BorderLayout.WEST)
+            add(actionsPanel, BorderLayout.EAST)
         }
         DocumentWorkspaceView.entries.forEach { view ->
             switcherPanel.add(
@@ -110,6 +115,7 @@ internal class SpecWorkflowDocumentWorkspaceViewChromeBuilder(
             label = label,
             tabsPanel = tabsPanel,
             switcherPanel = switcherPanel,
+            actionsPanel = actionsPanel,
             cardPanel = cardPanel,
             buttons = buttons,
             uiHost = host,
@@ -159,12 +165,11 @@ internal class SpecWorkflowDocumentWorkspaceViewChromeBuilder(
     }
 
     private companion object {
-        private val DOCUMENT_WORKSPACE_VIEW_LABEL_FG = JBColor(Color(112, 124, 143), Color(172, 182, 196))
         private val DOCUMENT_WORKSPACE_VIEW_GROUP_BG = JBColor(Color(242, 247, 255), Color(57, 63, 73))
         private val DOCUMENT_WORKSPACE_VIEW_GROUP_BORDER = JBColor(Color(202, 215, 236), Color(89, 100, 116))
-        private const val DOCUMENT_WORKSPACE_VIEW_LABEL_FONT_SIZE = 10.5f
         private const val DOCUMENT_WORKSPACE_VIEW_ROW_GAP = 6
         private const val DOCUMENT_WORKSPACE_VIEW_SWITCHER_GAP = 2
+        private const val DOCUMENT_WORKSPACE_VIEW_ACTION_GAP = 6
         private const val DOCUMENT_WORKSPACE_VIEW_GROUP_INSET = 2
         private const val DOCUMENT_WORKSPACE_VIEW_GROUP_ARC = 11
         private const val DOCUMENT_WORKSPACE_VIEW_CONTAINER_GAP = 6

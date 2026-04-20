@@ -770,6 +770,7 @@ open class ChatMessagePanel(
         )
         if (sanitizedOutput.isBlank()) return ""
         val cleanedOutput = stripPromptInstructionEchoLines(sanitizedOutput.lines())
+            .let(::stripTrailingOutputFooterNoise)
             .joinToString("\n")
             .trim()
         if (cleanedOutput.isBlank()) return ""
@@ -934,9 +935,10 @@ open class ChatMessagePanel(
         val withoutEcho = stripLeadingEchoedUserPromptLines(lines)
         val withoutTrailingNoise = stripTrailingPromptQuestionnaireNoise(withoutEcho)
         val withoutPromptInstructionEcho = stripPromptInstructionEchoLines(withoutTrailingNoise)
-        val leadingAnswerBlock = extractLeadingAssistantAnswerBlock(withoutPromptInstructionEcho)
+        val withoutFooterNoise = stripTrailingOutputFooterNoise(withoutPromptInstructionEcho)
+        val leadingAnswerBlock = extractLeadingAssistantAnswerBlock(withoutFooterNoise)
         return leadingAnswerBlock
-            .ifEmpty { withoutPromptInstructionEcho }
+            .ifEmpty { withoutFooterNoise }
             .joinToString("\n")
             .trim()
     }
@@ -999,6 +1001,23 @@ open class ChatMessagePanel(
             return emptyList()
         }
         return filtered
+    }
+
+    private fun stripTrailingOutputFooterNoise(lines: List<String>): List<String> {
+        if (lines.isEmpty()) return lines
+        val nonBlankIndices = lines.indices.filter { lines[it].trim().isNotBlank() }
+        if (nonBlankIndices.isEmpty()) return lines
+
+        val footerStartIndex = nonBlankIndices.firstOrNull { index ->
+            OUTPUT_TOKEN_USAGE_LINE_REGEX.matches(lines[index].trim())
+        } ?: return lines
+
+        val prefixLines = lines.take(footerStartIndex)
+        return if (shouldKeepAnswerPrefix(prefixLines)) {
+            prefixLines
+        } else {
+            emptyList()
+        }
     }
 
     private fun looksLikePromptInstructionEchoLine(line: String): Boolean {
@@ -4247,6 +4266,10 @@ open class ChatMessagePanel(
         private val OUTPUT_PROMPT_SECTION_HEADING_REGEX = Regex(
             """^(?:[\p{IsHan}\p{L}\p{N} _./()\-]{1,18})[:\uFF1A]$""",
         )
+        private val OUTPUT_TOKEN_USAGE_LINE_REGEX = Regex(
+            """^(?:tokens?\s+used|token\s+usage)\s*:?\s*$""",
+            RegexOption.IGNORE_CASE,
+        )
         private val OUTPUT_PROMPT_INSTRUCTION_LINE_REGEX = Regex(
             """^(?:\d+[.)]\s+.+|Prefer\b.+|Keep\b.+|During\b.+|Never\b.+|If no file edit\b.+|For non-trivial\b.+|When including code\b.+|Do not force\b.+|Do not stop at\b.+|In vibe-style\b.+|Read-only analysis mode\b.+|You may provide\b.+|Execute end-to-end\b.+|Apply real file edits\b.+|(?:\u4f60\u5fc5\u987b|\u8bf7|\u4f18\u5148|\u4e0d\u8981|\u4e25\u7981|\u9ed8\u8ba4|\u6bcf\u6b21|\u672c\u8f6e\u53ea).+)$""",
             RegexOption.IGNORE_CASE,
@@ -4304,6 +4327,17 @@ open class ChatMessagePanel(
         )
         private val PROMPT_INSTRUCTION_ECHO_NORMALIZED_PREFIXES = setOf(
             "you are answering the final user request for an ide chat session",
+            "you are the in-ide project development copilot",
+            "prefer workflow-oriented responses for implementation tasks",
+            "clarify objective and constraints briefly",
+            "propose a concrete implementation plan",
+            "provide executable code-level changes",
+            "include verification/check steps",
+            "during implementation replies, include short progress lines when relevant, using prefixes",
+            "never claim files were created/modified/deleted unless tools actually executed those edits",
+            "if no file edit was performed, describe it as a proposal rather than completed work",
+            "keep responses practical, specific to this repository, and avoid generic filler",
+            "for non-trivial development requests, use this markdown structure",
             "sections marked internal instructions and reference context are hidden inputs, not user-visible text",
             "use them only as guidance or evidence",
             "do not quote, restate, or continue those hidden sections verbatim unless the user explicitly asks for a quote",

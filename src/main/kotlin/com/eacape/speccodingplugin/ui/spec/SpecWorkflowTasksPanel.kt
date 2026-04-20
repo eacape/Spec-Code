@@ -409,6 +409,8 @@ internal class SpecWorkflowTasksPanel(
         parallelExecuteButton.doClick()
     }
 
+    internal fun parallelExecuteButtonForInlineHost(): JButton = parallelExecuteButton
+
     internal fun clickOpenWorkflowChatForTest() {
         openWorkflowChatButton.doClick()
     }
@@ -1172,7 +1174,10 @@ internal class SpecWorkflowTasksPanel(
     }
 
     private fun updateHeaderVisibility() {
-        val shouldShowHeader = showHeader || parallelExecuteButton.isVisible
+        val shouldShowHeader = showHeader || (
+            parallelExecuteButton.isVisible &&
+                SwingUtilities.isDescendingFrom(parallelExecuteButton, headerPanel)
+            )
         if (headerPanel.isVisible != shouldShowHeader) {
             headerPanel.isVisible = shouldShowHeader
             revalidate()

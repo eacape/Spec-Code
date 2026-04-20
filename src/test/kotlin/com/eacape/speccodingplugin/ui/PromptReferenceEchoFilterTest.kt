@@ -215,4 +215,62 @@ class PromptReferenceEchoFilterTest {
         assertFalse(filtered.contains("Use referenced files only as supporting evidence"), filtered)
         assertTrue(filtered.contains("这是图片里这段讨论的结论摘要。"), filtered)
     }
+
+    @Test
+    fun `filter should remove project development copilot instruction variants`() {
+        val filter = PromptReferenceEchoFilter.fromTextBlocks(listOf("dummy"))
+
+        val filtered = filter.filter(
+            """
+            You are the in-IDE project development copilot.
+            Prefer workflow-oriented responses for implementation tasks:
+            1) clarify objective and constraints briefly,
+            2) propose a concrete implementation plan,
+            3) provide executable code-level changes,
+            4) include verification/check steps.
+            During implementation replies, include short progress lines when relevant, using prefixes: [Thinking], [Read], [Edit], [Task], [Verify].
+            Never claim files were created/modified/deleted unless tools actually executed those edits.
+            If no file edit was performed, describe it as a proposal rather than completed work.
+            Keep responses practical, specific to this repository, and avoid generic filler.
+            这是界面评审结论。
+            """.trimIndent(),
+            flush = true,
+        )
+
+        assertFalse(filtered.contains("project development copilot"), filtered)
+        assertFalse(filtered.contains("clarify objective and constraints briefly"), filtered)
+        assertFalse(filtered.contains("propose a concrete implementation plan"), filtered)
+        assertFalse(filtered.contains("provide executable code-level changes"), filtered)
+        assertFalse(filtered.contains("include verification/check steps"), filtered)
+        assertFalse(filtered.contains("During implementation replies"), filtered)
+        assertFalse(filtered.contains("Never claim files were created"), filtered)
+        assertFalse(filtered.contains("If no file edit was performed"), filtered)
+        assertFalse(filtered.contains("Keep responses practical"), filtered)
+        assertTrue(filtered.contains("这是界面评审结论。"), filtered)
+    }
+
+    @Test
+    fun `filter should remove built-in prompt instruction echoes even without referenced text blocks`() {
+        val filter = PromptReferenceEchoFilter.fromTextBlocks(emptyList())
+
+        val filtered = filter.filter(
+            """
+            You are the in-IDE project development copilot.
+            Prefer workflow-oriented responses for implementation tasks:
+            1) clarify objective and constraints briefly,
+            2) propose a concrete implementation plan,
+            3) provide executable code-level changes,
+            4) include verification/check steps.
+            During implementation replies, include short progress lines when relevant, using prefixes: [Thinking], [Read], [Edit], [Task], [Verify].
+            这是图片评审的最终结论。
+            """.trimIndent(),
+            flush = true,
+        )
+
+        assertFalse(filtered.contains("project development copilot"), filtered)
+        assertFalse(filtered.contains("clarify objective and constraints briefly"), filtered)
+        assertFalse(filtered.contains("include verification/check steps"), filtered)
+        assertFalse(filtered.contains("During implementation replies"), filtered)
+        assertTrue(filtered.contains("这是图片评审的最终结论。"), filtered)
+    }
 }

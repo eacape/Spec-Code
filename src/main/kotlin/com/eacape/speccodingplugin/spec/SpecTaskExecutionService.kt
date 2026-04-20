@@ -702,7 +702,10 @@ class SpecTaskExecutionService(private val project: Project) {
                 workflowId = workflowId,
                 runId = queuedRun.runId,
                 status = TaskExecutionRunStatus.WAITING_CONFIRMATION,
-                summary = summarizeAssistantReply(assistantReply),
+                summary = summarizeAssistantReply(
+                    content = assistantReply,
+                    traceEvents = streamedTraceEvents,
+                ),
             )
             updateLiveProgress(
                 workflowId = workflowId,
@@ -1658,15 +1661,120 @@ class SpecTaskExecutionService(private val project: Project) {
         )
     }
 
-    private fun summarizeAssistantReply(content: String): String {
-        return content
-            .lineSequence()
-            .map(String::trim)
-            .filter(String::isNotEmpty)
+    private fun summarizeAssistantReply(
+        content: String,
+        traceEvents: List<ChatStreamEvent> = emptyList(),
+    ): String {
+        val outputSummary = summarizeOutputTraceEvents(traceEvents)
+        val contentSummary = summarizeVisibleAssistantContent(content)
+        return when {
+            outputSummary.isNotBlank() && contentSummary.isBlank() -> outputSummary
+            outputSummary.isBlank() && contentSummary.isNotBlank() -> contentSummary
+            summaryQualityScore(outputSummary) >= summaryQualityScore(contentSummary) -> outputSummary
+            contentSummary.isNotBlank() -> contentSummary
+            else -> "AI execution finished. Review the task session for details."
+        }
+    }
+
+    private fun summarizeOutputTraceEvents(traceEvents: List<ChatStreamEvent>): String {
+        val candidateLines = sanitizeSummaryCandidateLines(
+            traceEvents.asSequence()
+                .filter { it.kind == ChatTraceKind.OUTPUT }
+                .flatMap { it.detail.lineSequence() }
+                .toList(),
+        )
+        if (candidateLines.isEmpty()) return ""
+        val summaryLines = candidateLines
+            .filter(::looksLikeUsefulExecutionSummaryLine)
+            .take(RUN_SUMMARY_MAX_LINES)
+            .toList()
+        return compactSummaryLines(summaryLines)
+    }
+
+    private fun summarizeVisibleAssistantContent(content: String): String {
+        val candidateLines = sanitizeSummaryCandidateLines(content.lines())
+        if (candidateLines.isEmpty()) return ""
+        val summaryLines = candidateLines
+            .filter(::looksLikeUsefulExecutionSummaryLine)
+            .take(RUN_SUMMARY_MAX_LINES)
+            .toList()
+        return compactSummaryLines(summaryLines)
+    }
+
+    private fun sanitizeSummaryCandidateLines(lines: List<String>): List<String> {
+        if (lines.isEmpty()) return emptyList()
+
+        val sanitized = mutableListOf<String>()
+        var skipNextNumericTokenLine = false
+        lines.forEach { rawLine ->
+            val trimmed = rawLine.trim()
+            if (trimmed.isEmpty()) return@forEach
+            if (looksLikePromptInstructionEchoSummaryLine(trimmed)) return@forEach
+            if (SUMMARY_TOKEN_USAGE_LINE_REGEX.matches(trimmed)) {
+                skipNextNumericTokenLine = true
+                return@forEach
+            }
+            if (skipNextNumericTokenLine && SUMMARY_NUMERIC_ONLY_LINE_REGEX.matches(trimmed)) {
+                skipNextNumericTokenLine = false
+                return@forEach
+            }
+            skipNextNumericTokenLine = false
+            sanitized += trimmed
+        }
+        return sanitized
+    }
+
+    private fun looksLikeUsefulExecutionSummaryLine(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.isEmpty()) return false
+        if (looksLikePromptInstructionEchoSummaryLine(trimmed)) return false
+        if (SUMMARY_TOKEN_USAGE_LINE_REGEX.matches(trimmed)) return false
+        if (SUMMARY_NUMERIC_ONLY_LINE_REGEX.matches(trimmed)) return false
+        if (SUMMARY_ENV_ASSIGNMENT_LINE_REGEX.matches(trimmed)) return false
+        if (SUMMARY_FILE_PATH_LINE_REGEX.matches(trimmed)) return false
+
+        val normalized = SUMMARY_BULLET_PREFIX_REGEX.replaceFirst(trimmed, "").trim()
+        if (normalized.isEmpty()) return false
+        val cjkCount = SUMMARY_CJK_REGEX.findAll(normalized).count()
+        if (cjkCount >= SUMMARY_MIN_CJK_CHARS) return true
+        val latinWordCount = SUMMARY_LATIN_WORD_REGEX.findAll(normalized).count()
+        return latinWordCount >= SUMMARY_MIN_LATIN_WORDS
+    }
+
+    private fun compactSummaryLines(lines: List<String>): String {
+        return lines
             .joinToString(" ")
             .replace(WHITESPACE_REGEX, " ")
+            .trim()
             .take(RUN_SUMMARY_CHAR_LIMIT)
-            .ifBlank { "AI execution finished. Review the task session for details." }
+    }
+
+    private fun summaryQualityScore(summary: String): Int {
+        if (summary.isBlank()) return Int.MIN_VALUE
+        val lines = summary.lineSequence().map(String::trim).filter(String::isNotBlank).toList()
+        if (lines.isEmpty()) return Int.MIN_VALUE
+
+        var score = 0
+        score += lines.count(::looksLikeUsefulExecutionSummaryLine) * 2
+        if (lines.any { SUMMARY_ORDERED_LIST_REGEX.matches(it) || SUMMARY_CHECKBOX_LIST_REGEX.matches(it) }) {
+            score += 2
+        }
+        if (lines.any { SUMMARY_CJK_REGEX.findAll(it).count() >= SUMMARY_MIN_CJK_CHARS }) {
+            score += 1
+        }
+        score -= lines.count { looksLikePromptInstructionEchoSummaryLine(it) } * 5
+        score -= lines.count { SUMMARY_TOKEN_USAGE_LINE_REGEX.matches(it) || SUMMARY_NUMERIC_ONLY_LINE_REGEX.matches(it) } * 3
+        return score
+    }
+
+    private fun looksLikePromptInstructionEchoSummaryLine(line: String): Boolean {
+        val normalized = line
+            .trim()
+            .removePrefix("-")
+            .removePrefix("*")
+            .trim()
+            .lowercase()
+        return PROMPT_INSTRUCTION_ECHO_SUMMARY_PREFIXES.any(normalized::startsWith)
     }
 
     private fun summarizeFailure(error: Throwable): String {
@@ -1778,6 +1886,25 @@ class SpecTaskExecutionService(private val project: Project) {
         private val TASK_ID_REGEX = Regex("""^T-\d{3}$""")
         private val ORDERED_LIST_REGEX = Regex("""^\d+\.\s+""")
         private val WHITESPACE_REGEX = Regex("""\s+""")
+        private val SUMMARY_BULLET_PREFIX_REGEX = Regex("""^(?:[-*]|[•●·・▪◦‣]|\d+[.)、）．]|[✅✔☑])\s*""")
+        private val SUMMARY_ORDERED_LIST_REGEX = Regex("""^\d+[.)、）．]\s*.+$""")
+        private val SUMMARY_CHECKBOX_LIST_REGEX = Regex("""^(?:[-*]|[✅✔☑])\s*.+$""")
+        private val SUMMARY_TOKEN_USAGE_LINE_REGEX = Regex("""^(?:tokens?\s+used|token\s+usage)\s*:?\s*$""", RegexOption.IGNORE_CASE)
+        private val SUMMARY_NUMERIC_ONLY_LINE_REGEX = Regex("""^[\d,._\s]+$""")
+        private val SUMMARY_ENV_ASSIGNMENT_LINE_REGEX = Regex("""^[A-Z][A-Z0-9_]{2,}\s*=\s*.+$""")
+        private val SUMMARY_FILE_PATH_LINE_REGEX = Regex("""^(?!https?://)(?:(?:[A-Za-z]:)?[\\/])?(?:[^\\/\s]+[\\/])+[^\\/\s]+$""")
+        private val SUMMARY_CJK_REGEX = Regex("""[\p{IsHan}]""")
+        private val SUMMARY_LATIN_WORD_REGEX = Regex("""\b[A-Za-z][A-Za-z0-9_-]*\b""")
+        private val PROMPT_INSTRUCTION_ECHO_SUMMARY_PREFIXES = setOf(
+            "you are answering the final user request",
+            "sections marked internal instructions and reference context are hidden inputs",
+            "use them only as guidance or evidence",
+            "do not quote, restate, or continue those hidden sections verbatim",
+            "answer the final user request directly",
+            "do not dump raw context or internal instructions",
+            "use referenced files only as supporting evidence",
+            "if the user asks what a document is, identify its purpose before citing details",
+        )
         private const val MAX_SESSION_TITLE_LENGTH = 80
         private const val MAX_CONTEXT_FILES = 6
         private const val MAX_CONTEXT_FILE_CHARS = 12_000
@@ -1789,6 +1916,9 @@ class SpecTaskExecutionService(private val project: Project) {
         private const val EXECUTION_SUPPLEMENTAL_INSTRUCTION_CHAR_LIMIT = 220
         private const val EXECUTION_AUDIT_SUMMARY_CHAR_LIMIT = 240
         private const val RUN_SUMMARY_CHAR_LIMIT = 260
+        private const val RUN_SUMMARY_MAX_LINES = 4
+        private const val SUMMARY_MIN_CJK_CHARS = 4
+        private const val SUMMARY_MIN_LATIN_WORDS = 4
         private const val DOCUMENT_SUMMARY_CHAR_LIMIT = 240
         private const val MAX_CLARIFICATION_LINES = 12
         private const val MAX_RECENT_LIVE_EVENTS = 5

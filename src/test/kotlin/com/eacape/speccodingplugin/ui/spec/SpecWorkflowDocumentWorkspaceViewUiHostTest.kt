@@ -59,7 +59,7 @@ class SpecWorkflowDocumentWorkspaceViewUiHostTest {
 
         fixture.host.refreshLocalizedTexts()
 
-        assertEquals("View", fixture.viewLabel.text)
+        assertEquals("", fixture.viewLabel.text)
         assertEquals("Doc", fixture.documentButton.text)
         assertEquals("Open doc", fixture.documentButton.toolTipText)
         assertEquals("Structured tasks", fixture.structuredTasksButton.text)

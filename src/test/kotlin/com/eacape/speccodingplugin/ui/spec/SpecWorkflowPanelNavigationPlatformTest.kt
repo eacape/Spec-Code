@@ -751,11 +751,12 @@ class SpecWorkflowPanelNavigationPlatformTest : BasePlatformTestCase() {
 
         assertFalse(panel.visibleWorkspaceSectionIdsForTest().contains(SpecWorkflowWorkspaceSectionId.TASKS))
         assertEquals("DOCUMENT", panel.documentWorkspaceViewForTest())
-        assertEquals("视图", panel.documentWorkspaceViewLabelForTest())
+        assertEquals("", panel.documentWorkspaceViewLabelForTest())
         assertEquals(
             listOf("DOCUMENT:文档", "STRUCTURED_TASKS:结构化任务"),
             panel.documentWorkspaceViewButtonsForTest(),
         )
+        assertTrue(panel.documentWorkspaceInlineActionTextsForTest().isEmpty())
 
         assertEquals(JBUI.scale(26), panel.documentWorkspaceViewSwitcherHeightForTest())
         assertEquals(
@@ -833,6 +834,53 @@ class SpecWorkflowPanelNavigationPlatformTest : BasePlatformTestCase() {
             panel.detailTasksSnapshotForTest().getValue("tasks").contains("${task.id}:IN_PROGRESS") &&
                 panel.tasksSnapshotForTest().getValue("tasks").contains("${task.id}:IN_PROGRESS")
         }
+    }
+
+    fun `test structured tasks tab should place batch execute action in the document workspace header`() {
+        val engine = SpecEngine.getInstance(project)
+        val tasksService = SpecTasksService(project)
+        val workflow = engine.createWorkflow(
+            title = "Tasks Dual View Batch Execute",
+            description = "embedded task view should surface batch execute inline",
+        ).getOrThrow()
+        tasksService.addTask(workflow.id, "Execute first embedded task", TaskPriority.P1)
+        tasksService.addTask(workflow.id, "Execute second embedded task", TaskPriority.P1)
+        stageWorkflow(
+            workflowId = workflow.id,
+            currentStage = StageId.IMPLEMENT,
+            verifyEnabled = false,
+            includeTasksDocument = true,
+        )
+        val panel = createPanel()
+
+        waitUntil {
+            workflow.id in panel.workflowIdsForTest()
+        }
+
+        ApplicationManager.getApplication().invokeAndWait {
+            panel.openWorkflowForTest(workflow.id)
+        }
+
+        waitUntil {
+            panel.isDetailModeForTest() &&
+                panel.selectedWorkflowIdForTest() == workflow.id &&
+                panel.focusedStageForTest() == StageId.IMPLEMENT &&
+                panel.isDocumentWorkspaceViewTabsVisibleForTest()
+        }
+
+        ApplicationManager.getApplication().invokeAndWait {
+            panel.clickDocumentWorkspaceViewForTest("STRUCTURED_TASKS")
+        }
+
+        waitUntil {
+            panel.documentWorkspaceViewForTest() == "STRUCTURED_TASKS" &&
+                panel.detailTasksSnapshotForTest().getValue("parallelVisible") == "true"
+        }
+
+        assertEquals(
+            listOf(SpecCodingBundle.message("spec.toolwindow.tasks.batch.execute.button", 2)),
+            panel.documentWorkspaceInlineActionTextsForTest(),
+        )
     }
 
     fun `test stage navigation should stay read only while current stage keeps the primary path`() {

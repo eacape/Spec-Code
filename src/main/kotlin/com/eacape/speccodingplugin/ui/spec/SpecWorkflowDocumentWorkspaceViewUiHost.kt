@@ -53,7 +53,7 @@ internal class SpecWorkflowDocumentWorkspaceViewUiHost(
     }
 
     fun refreshLocalizedTexts() {
-        viewLabel.text = message("spec.toolwindow.documents.view.label")
+        viewLabel.text = ""
         buttons.forEach { (view, button) ->
             val (labelKey, tooltipKey) = buttonPresentationKeys(view)
             button.text = message(labelKey)

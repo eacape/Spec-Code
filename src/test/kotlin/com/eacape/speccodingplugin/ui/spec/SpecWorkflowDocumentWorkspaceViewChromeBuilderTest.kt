@@ -15,7 +15,8 @@ class SpecWorkflowDocumentWorkspaceViewChromeBuilderTest {
 
         val chrome = fixture.build()
 
-        assertEquals("View", chrome.label.text)
+        assertTrue(chrome.label.text.isNullOrEmpty())
+        assertTrue(!chrome.label.isVisible)
         assertSame(chrome.container, chrome.tabsPanel.parent)
         assertSame(chrome.container, chrome.cardPanel.parent)
         assertEquals(
@@ -24,6 +25,8 @@ class SpecWorkflowDocumentWorkspaceViewChromeBuilderTest {
         )
         assertEquals("Document", chrome.buttons.getValue(DocumentWorkspaceView.DOCUMENT).text)
         assertEquals("Structured Tasks", chrome.buttons.getValue(DocumentWorkspaceView.STRUCTURED_TASKS).text)
+        assertSame(chrome.tabsPanel, chrome.actionsPanel.parent)
+        assertSame(fixture.trailingActionButton, chrome.actionsPanel.components.single())
         assertEquals(2, fixture.cursorTrackedButtons.size)
         assertSame(chrome.cardPanel, fixture.documentContent.parent)
         assertSame(chrome.cardPanel, fixture.structuredTasksContent.parent)
@@ -46,11 +49,13 @@ class SpecWorkflowDocumentWorkspaceViewChromeBuilderTest {
         val structuredTasksContent = JPanel()
         val cursorTrackedButtons = mutableListOf<JButton>()
         val selectedViews = mutableListOf<DocumentWorkspaceView>()
+        val trailingActionButton = JButton("Run")
 
         fun build(): SpecWorkflowDocumentWorkspaceViewChrome {
             return SpecWorkflowDocumentWorkspaceViewChromeBuilder(
                 documentContent = documentContent,
                 structuredTasksContent = structuredTasksContent,
+                trailingActions = listOf(trailingActionButton),
                 installToolbarButtonCursorTracking = { button -> cursorTrackedButtons += button },
                 onViewSelected = { view -> selectedViews += view },
                 resolvePresentation = {

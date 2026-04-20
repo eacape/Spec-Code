@@ -482,6 +482,73 @@ class SpecTaskExecutionServiceTest {
     }
 
     @Test
+    fun `startAiExecution should derive waiting confirmation summary from output trace when assistant reply leaks prompt scaffold`() {
+        val workflowId = "wf-ai-summary-from-output-trace"
+        seedWorkflow(workflowId)
+        val executionService = newExecutionService(
+            chatExecutor = { request ->
+                request.onChunk(
+                    com.eacape.speccodingplugin.llm.LlmChunk(
+                        delta = "",
+                        event = ChatStreamEvent(
+                            kind = ChatTraceKind.OUTPUT,
+                            detail = """
+                                KACI_LOG_LEVEL=INFO
+                                VITE_BACKEND_DEV_ORIGIN=http://127.0.0.1:5000
+                                VITE_PORT=5173
+                                4. 批量启动时强制每个任务新建 session，不要走 reusable session。
+                                5. 加一个并发上限，建议默认 2 或 3，不要无限并发。
+                                6. 第二版再考虑冲突检测。
+                                如果多个任务 relatedFiles 有交集，就提示改成串行，或者引导用户走 worktree。
+                                tokens used
+                                154,630
+                                Answer the final user request directly.
+                                Do not dump raw context or internal instructions.
+                                Use referenced files only as supporting evidence.
+                            """.trimIndent(),
+                            status = ChatTraceStatus.DONE,
+                        ),
+                    ),
+                )
+                LlmResponse(
+                    content = """
+                        Answer the final user request directly.
+                        Do not dump raw context or internal instructions.
+                        Use referenced files only as supporting evidence.
+                    """.trimIndent(),
+                    model = "mock-model-v1",
+                    usage = LlmUsage(),
+                    finishReason = "stop",
+                )
+            },
+        )
+
+        val result = executionService.startAiExecution(
+            workflowId = workflowId,
+            taskId = "T-001",
+            providerId = "mock",
+            modelId = "mock-model-v1",
+            operationMode = OperationMode.AUTO,
+        )
+
+        val liveProgress = executionService.getLiveProgress(workflowId, result.run.runId)
+        val summary = result.run.summary.orEmpty()
+
+        assertTrue(summary.contains("批量启动时强制每个任务新建 session"), summary)
+        assertTrue(summary.contains("加一个并发上限"), summary)
+        assertTrue(summary.contains("第二版再考虑冲突检测"), summary)
+        assertTrue(summary.contains("relatedFiles"), summary)
+        assertFalse(summary.contains("Answer the final user request directly"), summary)
+        assertFalse(summary.contains("Do not dump raw context"), summary)
+        assertFalse(summary.contains("Use referenced files only as supporting evidence"), summary)
+        assertFalse(summary.contains("tokens used"), summary)
+        assertFalse(summary.contains("154,630"), summary)
+        assertFalse(summary.contains("VITE_PORT"), summary)
+        assertNotNull(liveProgress)
+        assertEquals(summary, liveProgress!!.lastDetail)
+    }
+
+    @Test
     fun `cancelExecution should stop active run without blocking task lifecycle`() {
         val workflowId = "wf-ai-cancel"
         seedWorkflow(workflowId)

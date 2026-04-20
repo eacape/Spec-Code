@@ -2107,6 +2107,7 @@ class SpecWorkflowPanel(
         documentWorkspaceViewChrome = SpecWorkflowDocumentWorkspaceViewChromeBuilder(
             documentContent = detailPanel,
             structuredTasksContent = detailTasksPanel,
+            trailingActions = listOf(detailTasksPanel.parallelExecuteButtonForInlineHost()),
             installToolbarButtonCursorTracking = ::installToolbarButtonCursorTracking,
             onViewSelected = { view ->
                 selectedDocumentWorkspaceView = view
@@ -2682,9 +2683,9 @@ class SpecWorkflowPanel(
         )
     }
 
-    private fun onTaskExecutionRequested(taskId: String, retry: Boolean) {
-        val workflowId = selectedWorkflowId ?: return
-        taskExecutionEntryCoordinator.requestExecution(
+    private fun onTaskExecutionRequested(taskId: String, retry: Boolean): Boolean {
+        val workflowId = selectedWorkflowId ?: return false
+        return taskExecutionEntryCoordinator.requestExecution(
             SpecWorkflowTaskExecutionLaunchRequest(
                 workflowId = workflowId,
                 taskId = taskId,
@@ -3116,9 +3117,16 @@ class SpecWorkflowPanel(
             }
         }
 
+    internal fun documentWorkspaceInlineActionTextsForTest(): List<String> =
+        documentWorkspaceViewChrome.actionsPanel.components
+            .filterIsInstance<JButton>()
+            .mapNotNull { button -> button.text?.takeIf(String::isNotBlank) }
+
     internal fun documentWorkspaceViewLabelForTest(): String =
         if (::documentWorkspaceViewChrome.isInitialized) {
-            documentWorkspaceViewChrome.label.text.orEmpty()
+            documentWorkspaceViewChrome.label.text.orEmpty().takeIf {
+                documentWorkspaceViewChrome.label.isVisible
+            }.orEmpty()
         } else {
             ""
         }
@@ -3149,6 +3157,14 @@ class SpecWorkflowPanel(
 
     internal fun requestExecutionForDetailTaskForTest(taskId: String): Boolean =
         detailTasksPanel.requestExecutionForTask(taskId)
+
+    internal fun clickParallelExecuteTasksForTest() {
+        tasksPanel.clickParallelExecuteTasksForTest()
+    }
+
+    internal fun clickParallelExecuteDetailTasksForTest() {
+        detailTasksPanel.clickParallelExecuteTasksForTest()
+    }
 
     internal fun clickOpenWorkflowChatForSelectedTaskForTest() {
         tasksPanel.clickOpenWorkflowChatForTest()

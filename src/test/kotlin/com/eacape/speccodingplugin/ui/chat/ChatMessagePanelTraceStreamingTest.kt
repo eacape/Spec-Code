@@ -823,6 +823,121 @@ class ChatMessagePanelTraceStreamingTest {
     }
 
     @Test
+    fun `development copilot prompt instructions should not override output answer in final answer slot`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent(
+                """
+                You are the in-IDE project development copilot.
+                Prefer workflow-oriented responses for implementation tasks:
+                1) clarify objective and constraints briefly,
+                2) propose a concrete implementation plan,
+                3) provide executable code-level changes,
+                4) include verification/check steps.
+                During implementation replies, include short progress lines when relevant, using prefixes: [Thinking], [Read], [Edit], [Task], [Verify].
+                Keep responses practical, specific to this repository, and avoid generic filler.
+                """.trimIndent()
+            )
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = """
+                        整体是清爽、克制、偏工具型的 UI，但现在有点“太素”了，完成度像原型多于正式产品。
+                        优点是结构直观；上方标签、中部内容区、下方输入区基本开学分成块。
+                        如果这是面向开发者的 IDE 内部工具界面，我会评估为“能用，但不够精致”。
+                        tokens used
+                        12,981
+                    """.trimIndent(),
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.finishMessage()
+        }
+
+        val displayed = invokeAssistantDisplayedAnswerResolver(panel, panel.getContent())
+        assertTrue(displayed.contains("整体是清爽、克制、偏工具型的 UI"), displayed)
+        assertTrue(displayed.contains("能用，但不够精致"), displayed)
+        assertFalse(displayed.contains("project development copilot"), displayed)
+        assertFalse(displayed.contains("clarify objective and constraints briefly"), displayed)
+        assertFalse(displayed.contains("include verification/check steps"), displayed)
+        assertFalse(displayed.contains("tokens used"), displayed)
+
+        val renderedChildren = renderedContentChildren(panel)
+        assertTrue(renderedChildren.size >= 2, "Expected trace section plus final answer")
+
+        val finalAnswerText = collectDescendants(renderedChildren.last())
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertTrue(finalAnswerText.contains("整体是清爽、克制、偏工具型的 UI"), finalAnswerText)
+        assertTrue(finalAnswerText.contains("能用，但不够精致"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("project development copilot"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("clarify objective and constraints briefly"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("include verification/check steps"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("tokens used"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("12,981"), finalAnswerText)
+    }
+
+    @Test
+    fun `token footer and trailing transcript should be stripped from final answer fallback`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = """
+                        推断?/判断:
+                        推断判断: 核心用户应该是已经在 JetBrains IDE 里重度使用 AI 编码，并且希望把变更过程“留痕、可审查、可回滚、可团队化”的开发者或团队。
+                        推断判断: 当前最大风险不是“能力缺失”，而是 UI 和 workflow 复杂度高。
+                        如果你要我下一步继续，我建议 10 分钟内可以做成初步执行建议。
+                        tokens used
+                        91,409
+                        M src/main/kotlin/com/eacape/speccodingplugin/spec/SpecTaskExecutionService.kt
+                        M src/test/kotlin/com/eacape/speccodingplugin/spec/SpecTaskExecutionServiceTest.kt
+                        Spec Code keeps requirements, design decisions, tasks, implementation, verification, and archive state in one place so c
+                        Structured spec workflows for requirements, design, tasks, implementation, verification, and archive
+                        4. Create a workflow and pick a template that matches the task.
+                        Verify the declared support floor and current upper-edge IDE branch.
+                        Create/modify required files first, then provide concise verification steps.
+                    """.trimIndent(),
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.finishMessage()
+        }
+
+        val displayed = invokeAssistantDisplayedAnswerResolver(panel, panel.getContent())
+        assertTrue(displayed.contains("核心用户应该是已经在 JetBrains IDE 里重度使用 AI 编码"), displayed)
+        assertTrue(displayed.contains("当前最大风险不是“能力缺失”"), displayed)
+        assertTrue(displayed.contains("10 分钟内可以做成初步执行建议"), displayed)
+        assertFalse(displayed.contains("tokens used"), displayed)
+        assertFalse(displayed.contains("91,409"), displayed)
+        assertFalse(displayed.contains("M src/main/kotlin"), displayed)
+        assertFalse(displayed.contains("Structured spec workflows"), displayed)
+        assertFalse(displayed.contains("Create a workflow and pick a template"), displayed)
+        assertFalse(displayed.contains("Create/modify required files first"), displayed)
+
+        val renderedChildren = renderedContentChildren(panel)
+        assertTrue(renderedChildren.size >= 2, "Expected trace section plus final answer")
+
+        val finalAnswerText = collectDescendants(renderedChildren.last())
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertTrue(finalAnswerText.contains("核心用户应该是已经在 JetBrains IDE 里重度使用 AI 编码"), finalAnswerText)
+        assertTrue(finalAnswerText.contains("当前最大风险不是“能力缺失”"), finalAnswerText)
+        assertTrue(finalAnswerText.contains("10 分钟内可以做成初步执行建议"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("tokens used"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("91,409"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("M src/main/kotlin"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("Structured spec workflows"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("Create a workflow and pick a template"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("Create/modify required files first"), finalAnswerText)
+    }
+
+    @Test
     fun `trace assistant message should not let partial history inventory bypass answer cleanup`() {
         val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
 
