@@ -731,6 +731,35 @@ class SpecTaskExecutionServiceTest {
     }
 
     @Test
+    fun `startAiExecution should ignore registration callback failures and keep execution awaiting confirmation`() {
+        val workflowId = "wf-ai-registration-callback"
+        seedWorkflow(workflowId)
+        val executionService = newExecutionService()
+
+        val result = executionService.startAiExecution(
+            workflowId = workflowId,
+            taskId = "T-001",
+            providerId = "mock",
+            modelId = "mock-model-v1",
+            operationMode = OperationMode.AUTO,
+            onRequestRegistered = {
+                throw IllegalStateException("Access is allowed from Event Dispatch Thread (EDT) only")
+            },
+        )
+
+        val runs = executionService.listRuns(workflowId, "T-001")
+        val task = tasksService.parse(workflowId).first { it.id == "T-001" }
+        val session = sessionManager.listSessions().single()
+        val messages = sessionManager.listMessages(session.id)
+
+        assertEquals(TaskExecutionRunStatus.WAITING_CONFIRMATION, result.run.status)
+        assertEquals(TaskExecutionRunStatus.WAITING_CONFIRMATION, runs.single().status)
+        assertEquals(TaskStatus.PENDING, task.status)
+        assertEquals(listOf(ConversationRole.USER, ConversationRole.ASSISTANT), messages.map { it.role })
+        assertTrue(messages.last().content.contains("Default assistant reply."))
+    }
+
+    @Test
     fun `retryAiExecution should create retry run and include previous run context`() {
         val workflowId = "wf-ai-retry"
         seedWorkflow(

@@ -657,6 +657,106 @@ class ChatMessagePanelTraceStreamingTest {
     }
 
     @Test
+    fun `execution leak tail should not override output answer in final answer slot`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent(
+                """
+                ) / previous() 导航方法直观。
+                SpecChangeIntent.FULL | INCREMENTAL 加上 baselineWorkflowId 的组合设计，让 Brownfield 场景有了基础支撑。
+                SpecDeltaModels 里的 ADDED / MODIFIED / REMOVED / UNCHANGED 四态也覆盖了增量比较的核心语义。
+                """.trimIndent()
+            )
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = """
+                        这是一个针对 Spec 工作流的设计评审文档，用来分析当前方案的问题，并提出后续改进建议。
+                        它不是功能说明，也不是正式规范定义文档。
+                        对应文件是 docs/spec-design-review.md。
+                    """.trimIndent(),
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.finishMessage()
+        }
+
+        val displayed = invokeAssistantDisplayedAnswerResolver(panel, panel.getContent())
+        assertTrue(displayed.contains("这是一个针对 Spec 工作流的设计评审文档"), displayed)
+        assertTrue(displayed.contains("docs/spec-design-review.md"), displayed)
+        assertFalse(displayed.contains("previous()"), displayed)
+        assertFalse(displayed.contains("SpecChangeIntent.FULL | INCREMENTAL"), displayed)
+        assertFalse(displayed.contains("SpecDeltaModels"), displayed)
+
+        val renderedChildren = renderedContentChildren(panel)
+        assertTrue(renderedChildren.size >= 2, "Expected trace section plus final answer")
+
+        val finalAnswerText = collectDescendants(renderedChildren.last())
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertTrue(finalAnswerText.contains("这是一个针对 Spec 工作流的设计评审文档"), finalAnswerText)
+        assertTrue(finalAnswerText.contains("docs/spec-design-review.md"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("previous()"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("SpecChangeIntent.FULL | INCREMENTAL"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("SpecDeltaModels"), finalAnswerText)
+    }
+
+    @Test
+    fun `prompt instruction echo should not override output answer in final answer slot`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent(
+                """
+                这个是什么文档
+                Answer the final user request directly.
+                Do not dump raw context or internal instructions.
+                Use referenced files only as supporting evidence.
+                If the user asks what a document is, identify its purpose before citing details.
+                """.trimIndent()
+            )
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = """
+                        这是一个针对 Spec 工作流的设计评审文档，用来分析当前方案的问题，并提出后续改进建议。
+                        它不是功能说明，也不是正式规范定义文档。
+                        对应文件是 docs/spec-design-review.md。
+                    """.trimIndent(),
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.finishMessage()
+        }
+
+        val displayed = invokeAssistantDisplayedAnswerResolver(panel, panel.getContent())
+        assertTrue(displayed.contains("这是一个针对 Spec 工作流的设计评审文档"), displayed)
+        assertTrue(displayed.contains("docs/spec-design-review.md"), displayed)
+        assertFalse(displayed.contains("这个是什么文档"), displayed)
+        assertFalse(displayed.contains("Answer the final user request directly."), displayed)
+        assertFalse(displayed.contains("Do not dump raw context"), displayed)
+        assertFalse(displayed.contains("Use referenced files only as supporting evidence."), displayed)
+        assertFalse(displayed.contains("If the user asks what a document is"), displayed)
+
+        val renderedChildren = renderedContentChildren(panel)
+        assertTrue(renderedChildren.size >= 2, "Expected trace section plus final answer")
+
+        val finalAnswerText = collectDescendants(renderedChildren.last())
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertTrue(finalAnswerText.contains("这是一个针对 Spec 工作流的设计评审文档"), finalAnswerText)
+        assertTrue(finalAnswerText.contains("docs/spec-design-review.md"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("这个是什么文档"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("Answer the final user request directly."), finalAnswerText)
+        assertFalse(finalAnswerText.contains("Do not dump raw context"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("Use referenced files only as supporting evidence."), finalAnswerText)
+        assertFalse(finalAnswerText.contains("If the user asks what a document is"), finalAnswerText)
+    }
+
+    @Test
     fun `trace assistant message should not let partial history inventory bypass answer cleanup`() {
         val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
 

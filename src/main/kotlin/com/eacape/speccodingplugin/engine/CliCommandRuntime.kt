@@ -218,21 +218,18 @@ internal class CliCommandRuntime(
 
         val parentDirectory = File(executable.trim().trim('"', '\'')).parentFile
             ?.takeIf(File::isDirectory)
-        if (parentDirectory != null) {
-            val pathKey = resolveEnvironmentKey(baseEnvironment, "PATH")
-            val currentPath = overrides[pathKey] ?: envValue(baseEnvironment, "PATH").orEmpty()
-            val normalizedParent = normalizePathForComparison(parentDirectory.path)
-            val hasParentInPath = currentPath.split(File.pathSeparator)
-                .asSequence()
-                .map { normalizePathForComparison(it.trim().trim('"', '\'')) }
-                .any { it == normalizedParent }
-            if (!hasParentInPath) {
-                overrides[pathKey] = if (currentPath.isBlank()) {
-                    parentDirectory.path
-                } else {
-                    parentDirectory.path + File.pathSeparator + currentPath
-                }
-            }
+        val pathKey = resolveEnvironmentKey(baseEnvironment, "PATH")
+        val currentPath = overrides[pathKey] ?: envValue(baseEnvironment, "PATH").orEmpty()
+        val augmentedPath = CliDiscoveryService.buildAugmentedPathValue(
+            currentPath = currentPath,
+            userHome = System.getProperty("user.home"),
+            env = baseEnvironment,
+            isWindows = isWindows(),
+            isMac = isMac(),
+            extraDirectories = listOfNotNull(parentDirectory?.path),
+        )
+        if (augmentedPath.isNotBlank() && augmentedPath != currentPath) {
+            overrides[pathKey] = augmentedPath
         }
 
         if (isWindows() && executable.contains("claude", ignoreCase = true)) {
@@ -266,15 +263,9 @@ internal class CliCommandRuntime(
             ?: environment.entries.firstOrNull { it.key.equals(key, ignoreCase = true) }?.value
     }
 
-    private fun normalizePathForComparison(path: String): String {
-        return if (isWindows()) {
-            path.replace('\\', '/').trimEnd('/').lowercase()
-        } else {
-            path.replace('\\', '/').trimEnd('/')
-        }
-    }
-
     private fun isWindows(): Boolean = osNameProvider().startsWith("Windows", ignoreCase = true)
+
+    private fun isMac(): Boolean = osNameProvider().startsWith("Mac", ignoreCase = true)
 
     private companion object {
         private const val CLAUDE_GIT_BASH_ENV = "CLAUDE_CODE_GIT_BASH_PATH"

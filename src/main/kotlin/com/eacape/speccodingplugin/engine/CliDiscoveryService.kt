@@ -723,30 +723,8 @@ class CliDiscoveryService : com.intellij.openapi.Disposable {
     }
 
     private fun findInNodeVersionManagers(toolName: String, userHome: String?): List<String> {
-        if (userHome.isNullOrBlank()) return emptyList()
-        val candidates = mutableListOf<String>()
-
-        val nvmVersionsDir = File(userHome, ".nvm/versions/node")
-        if (nvmVersionsDir.isDirectory) {
-            nvmVersionsDir.listFiles()
-                ?.asSequence()
-                ?.filter { it.isDirectory }
-                ?.sortedByDescending { it.name }
-                ?.map { versionDir -> File(versionDir, "bin/$toolName").path }
-                ?.forEach { candidates += it }
-        }
-
-        val fnmVersionsDir = File(userHome, ".fnm/node-versions")
-        if (fnmVersionsDir.isDirectory) {
-            fnmVersionsDir.listFiles()
-                ?.asSequence()
-                ?.filter { it.isDirectory }
-                ?.sortedByDescending { it.name }
-                ?.map { versionDir -> File(versionDir, "installation/bin/$toolName").path }
-                ?.forEach { candidates += it }
-        }
-
-        return candidates
+        return findNodeVersionManagerBinDirectories(userHome)
+            .map { directory -> File(directory, toolName).path }
     }
 
     private fun findInLoginShellPath(toolName: String): String? {
@@ -759,20 +737,27 @@ class CliDiscoveryService : com.intellij.openapi.Disposable {
             else -> "/bin/sh"
         }
 
-        val output = commandRuntime.execute(
-            request = CliCommandRequest(
-                executable = shell,
-                args = listOf("-lc", "command -v $toolName"),
-                redirectErrorStream = true,
-                allowWindowsCmdFallback = false,
-                normalizeWindowsArgs = false,
-            ),
-            timeoutMs = 4_000L,
-        )
-        if (output.timedOut || output.exitCode != 0 || output.startupDiagnostic != null) {
-            return null
+        for (shellArgs in buildShellLookupCommands(toolName, isMac())) {
+            val output = commandRuntime.execute(
+                request = CliCommandRequest(
+                    executable = shell,
+                    args = shellArgs,
+                    redirectErrorStream = true,
+                    allowWindowsCmdFallback = false,
+                    normalizeWindowsArgs = false,
+                ),
+                timeoutMs = 4_000L,
+            )
+            if (output.timedOut || output.exitCode != 0 || output.startupDiagnostic != null) {
+                continue
+            }
+            extractExecutablePathFromShellOutput(output.output)?.let { return it }
         }
-        return output.output
+        return null
+    }
+
+    private fun extractExecutablePathFromShellOutput(output: String): String? {
+        return output
             .lineSequence()
             .map { it.trim() }
             .firstOrNull { candidate ->
@@ -987,40 +972,164 @@ class CliDiscoveryService : com.intellij.openapi.Disposable {
                 addPath(File(normalizedBase, child).path)
             }
 
+            val binDirectories = buildCommonExecutableDirectories(
+                userHome = userHome,
+                env = env,
+                isWindows = isWindows,
+                isMac = isMac,
+            )
             if (isWindows) {
-                addUnder(env["APPDATA"], "npm/$toolName.cmd")
-                addUnder(env["APPDATA"], "npm/$toolName.exe")
-                addUnder(env["APPDATA"], "npm/$toolName.bat")
-                addUnder(env["NVM_HOME"], "$toolName.cmd")
-                addUnder(env["NVM_HOME"], "$toolName.exe")
-                addUnder(userHome, "AppData/Roaming/npm/$toolName.cmd")
-                addUnder(userHome, "AppData/Roaming/npm/$toolName.exe")
-                addUnder(userHome, ".local/bin/$toolName.exe")
-                addUnder(userHome, ".local/bin/$toolName.cmd")
+                binDirectories.forEach { directory ->
+                    addUnder(directory, "$toolName.cmd")
+                    addUnder(directory, "$toolName.exe")
+                    addUnder(directory, "$toolName.bat")
+                }
                 return candidates
             }
 
-            val npmPrefix = env["NPM_CONFIG_PREFIX"] ?: env["PREFIX"]
-            addUnder(env["NVM_BIN"], toolName)
-            addUnder(env["PNPM_HOME"], toolName)
-            addUnder(env["VOLTA_HOME"], "bin/$toolName")
-            addUnder(npmPrefix, "bin/$toolName")
+            binDirectories.forEach { directory ->
+                addUnder(directory, toolName)
+            }
 
-            addUnder(userHome, ".local/bin/$toolName")
-            addUnder(userHome, ".npm-global/bin/$toolName")
-            addUnder(userHome, ".yarn/bin/$toolName")
-            addUnder(userHome, ".volta/bin/$toolName")
-            addUnder(userHome, ".asdf/shims/$toolName")
-            addUnder(userHome, ".fnm/current/bin/$toolName")
-            addUnder(userHome, ".nvm/current/bin/$toolName")
+            return candidates
+        }
+
+        internal fun buildCommonExecutableDirectories(
+            userHome: String?,
+            env: Map<String, String>,
+            isWindows: Boolean,
+            isMac: Boolean,
+        ): List<String> {
+            val directories = mutableListOf<String>()
+            val dedupe = linkedSetOf<String>()
+
+            fun addDirectory(path: String?) {
+                val raw = path?.trim()?.trim('"', '\'') ?: return
+                if (raw.isBlank()) return
+                val key = if (isWindows) {
+                    raw.replace('\\', '/').trimEnd('/').lowercase()
+                } else {
+                    raw.replace('\\', '/').trimEnd('/')
+                }
+                if (key.isBlank()) return
+                if (dedupe.add(key)) directories.add(raw)
+            }
+
+            fun addUnder(base: String?, child: String) {
+                val normalizedBase = base?.trim()?.trim('"', '\'') ?: return
+                if (normalizedBase.isBlank()) return
+                addDirectory(File(normalizedBase, child).path)
+            }
+
+            if (isWindows) {
+                addUnder(env["APPDATA"], "npm")
+                addDirectory(env["NVM_HOME"])
+                addUnder(userHome, "AppData/Roaming/npm")
+                addUnder(userHome, ".local/bin")
+                return directories
+            }
+
+            val npmPrefix = env["NPM_CONFIG_PREFIX"] ?: env["PREFIX"]
+            addDirectory(env["NVM_BIN"])
+            addDirectory(env["PNPM_HOME"])
+            addUnder(env["VOLTA_HOME"], "bin")
+            addUnder(env["BUN_INSTALL"], "bin")
+            addUnder(npmPrefix, "bin")
+
+            addUnder(userHome, ".local/bin")
+            addUnder(userHome, ".local/share/pnpm")
+            addUnder(userHome, ".npm-global/bin")
+            addUnder(userHome, ".yarn/bin")
+            addUnder(userHome, ".config/yarn/global/node_modules/.bin")
+            addUnder(userHome, ".volta/bin")
+            addUnder(userHome, ".asdf/shims")
+            addUnder(userHome, ".local/share/mise/shims")
+            addUnder(userHome, ".local/share/rtx/shims")
+            addUnder(userHome, ".fnm/current/bin")
+            addUnder(userHome, ".nvm/current/bin")
+            addUnder(userHome, ".bun/bin")
+            addUnder(userHome, "bin")
 
             if (isMac) {
-                addUnder(userHome, "Library/pnpm/$toolName")
-                addPath("/opt/homebrew/bin/$toolName")
-                addPath("/opt/local/bin/$toolName")
+                addUnder(userHome, "Library/pnpm")
+                addDirectory("/opt/homebrew/bin")
+                addDirectory("/opt/local/bin")
             }
-            addPath("/usr/local/bin/$toolName")
-            addPath("/usr/bin/$toolName")
+            addDirectory("/usr/local/bin")
+            addDirectory("/usr/bin")
+
+            return directories
+        }
+
+        internal fun buildAugmentedPathValue(
+            currentPath: String,
+            userHome: String?,
+            env: Map<String, String>,
+            isWindows: Boolean,
+            isMac: Boolean,
+            extraDirectories: List<String> = emptyList(),
+        ): String {
+            val entries = mutableListOf<String>()
+            val dedupe = linkedSetOf<String>()
+
+            fun addEntry(path: String?) {
+                val raw = path?.trim()?.trim('"', '\'') ?: return
+                if (raw.isBlank()) return
+                val key = if (isWindows) {
+                    raw.replace('\\', '/').trimEnd('/').lowercase()
+                } else {
+                    raw.replace('\\', '/').trimEnd('/')
+                }
+                if (key.isBlank()) return
+                if (dedupe.add(key)) entries.add(raw)
+            }
+
+            extraDirectories.forEach(::addEntry)
+            currentPath.split(File.pathSeparator).forEach(::addEntry)
+            buildCommonExecutableDirectories(
+                userHome = userHome,
+                env = env,
+                isWindows = isWindows,
+                isMac = isMac,
+            ).forEach(::addEntry)
+            findNodeVersionManagerBinDirectories(userHome).forEach(::addEntry)
+
+            return entries.joinToString(File.pathSeparator)
+        }
+
+        internal fun buildShellLookupCommands(toolName: String, isMac: Boolean): List<List<String>> {
+            val probeCommand = "command -v $toolName"
+            return buildList {
+                add(listOf("-lc", probeCommand))
+                if (isMac) {
+                    add(listOf("-ilc", probeCommand))
+                }
+            }
+        }
+
+        private fun findNodeVersionManagerBinDirectories(userHome: String?): List<String> {
+            if (userHome.isNullOrBlank()) return emptyList()
+            val candidates = mutableListOf<String>()
+
+            val nvmVersionsDir = File(userHome, ".nvm/versions/node")
+            if (nvmVersionsDir.isDirectory) {
+                nvmVersionsDir.listFiles()
+                    ?.asSequence()
+                    ?.filter { it.isDirectory }
+                    ?.sortedByDescending { it.name }
+                    ?.map { versionDir -> File(versionDir, "bin").path }
+                    ?.forEach { candidates += it }
+            }
+
+            val fnmVersionsDir = File(userHome, ".fnm/node-versions")
+            if (fnmVersionsDir.isDirectory) {
+                fnmVersionsDir.listFiles()
+                    ?.asSequence()
+                    ?.filter { it.isDirectory }
+                    ?.sortedByDescending { it.name }
+                    ?.map { versionDir -> File(versionDir, "installation/bin").path }
+                    ?.forEach { candidates += it }
+            }
 
             return candidates
         }

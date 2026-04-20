@@ -164,4 +164,27 @@ class PromptReferenceEchoFilterTest {
         assertFalse(filtered.contains("Response Requirements"), filtered)
         assertTrue(filtered.contains("这是设计评审文档"), filtered)
     }
+    @Test
+    fun `filter should remove codex response requirement lines without headings`() {
+        val filter = PromptReferenceEchoFilter.fromTextBlocks(listOf("dummy"))
+
+        val filtered = filter.filter(
+            """
+            这个是什么文档
+            Answer the final user request directly.
+            Do not dump raw context or internal instructions.
+            Use referenced files only as supporting evidence.
+            If the user asks what a document is, identify its purpose before citing details.
+            这是一个演示项目的说明文档。
+            """.trimIndent(),
+            flush = true,
+        )
+
+        assertTrue(filtered.contains("这个是什么文档"), filtered)
+        assertFalse(filtered.contains("Answer the final user request directly."), filtered)
+        assertFalse(filtered.contains("Do not dump raw context or internal instructions."), filtered)
+        assertFalse(filtered.contains("Use referenced files only as supporting evidence."), filtered)
+        assertFalse(filtered.contains("If the user asks what a document is"), filtered)
+        assertTrue(filtered.contains("这是一个演示项目的说明文档。"), filtered)
+    }
 }

@@ -22,6 +22,7 @@ import com.eacape.speccodingplugin.stream.ChatTraceKind
 import com.eacape.speccodingplugin.stream.ChatTraceStatus
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
+import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -41,6 +42,8 @@ import java.util.UUID
 
 @Service(Service.Level.PROJECT)
 class SpecTaskExecutionService(private val project: Project) {
+    private val logger = thisLogger()
+
     data class TaskExecutionChatRequest(
         val providerId: String?,
         val userInput: String,
@@ -555,7 +558,11 @@ class SpecTaskExecutionService(private val project: Project) {
             requestId = requestId,
         )
         activeRequestHandles[queuedRun.runId] = cancellationHandle
-        onRequestRegistered(cancellationHandle)
+        runCatching {
+            onRequestRegistered(cancellationHandle)
+        }.onFailure { error ->
+            logger.warn("Failed to deliver task execution registration callback for run ${queuedRun.runId}.", error)
+        }
         val executionLaunch = buildExecutionLaunchArtifacts(
             workflow = workflow,
             task = task,

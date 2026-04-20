@@ -115,12 +115,6 @@ class ChatMessagePanelOutputFilterTest {
         val expandButton = collectDescendants(panel)
             .filterIsInstance<JButton>()
             .firstOrNull { it.text == SpecCodingBundle.message("chat.timeline.toggle.expand") }
-        println(
-            collectDescendants(panel)
-                .filterIsInstance<JButton>()
-                .map { button -> "text=${button.text}, tooltip=${button.toolTipText}" }
-                .toList()
-        )
         assertNotNull(expandButton, "Expected output expand button")
         runOnEdt { expandButton!!.doClick() }
 

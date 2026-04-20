@@ -194,6 +194,43 @@ class RequirementsSectionRepairServiceTest {
     }
 
     @Test
+    fun `previewRepair should no-op when numbered localized headings already satisfy required sections`() {
+        val workflow = engine.createWorkflow(
+            title = "repair-numbered-localized-noop",
+            description = "numbered headings already complete",
+        ).getOrThrow()
+        val content = """
+            # 需求文档
+
+            ## 3. 功能需求
+            - 支持编号形式的中文顶级章节。
+
+            ## 4. 非功能需求
+            - 保持识别逻辑稳定。
+
+            ## 5. 首版总体验收标准
+            - [ ] 不应把验收标准别名误判为缺失。
+
+            ## 6. 用户故事
+            - 作为作者，我希望 AI 补全不会重复已有章节。
+        """.trimIndent()
+        engine.updateDocumentContent(workflow.id, SpecPhase.SPECIFY, content).getOrThrow()
+        val service = repairService(
+            draft = """
+                ## Functional Requirements
+                - This draft should never be applied.
+            """.trimIndent(),
+        )
+
+        val preview = service.previewRepair(workflow.id, emptyList())
+
+        assertTrue(preview.patches.isEmpty())
+        assertEquals(emptyList<RequirementsSectionId>(), preview.missingSectionsBefore)
+        assertEquals(content, preview.originalContent)
+        assertEquals(content, preview.updatedContent)
+    }
+
+    @Test
     fun `previewRepair should insert missing leading sections before the first later section in canonical order`() {
         val workflow = engine.createWorkflow(
             title = "repair-leading-sections",

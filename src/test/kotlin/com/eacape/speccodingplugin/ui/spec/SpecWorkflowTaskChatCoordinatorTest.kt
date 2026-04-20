@@ -12,11 +12,18 @@ import org.junit.jupiter.api.Test
 class SpecWorkflowTaskChatCoordinatorTest {
 
     @Test
-    fun `openExecutionSession should activate chat toolwindow open session and publish refresh`() {
+    fun `openExecutionSession should schedule session open after chat toolwindow activation`() {
         val recorder = RecordingEnvironment()
         val coordinator = coordinator(recorder)
 
         coordinator.openExecutionSession(" session-1 ", " wf-1 ")
+
+        assertEquals(0, recorder.activationCalls)
+        assertTrue(recorder.openedSessionIds.isEmpty())
+        assertTrue(recorder.refreshEvents.isEmpty())
+        assertEquals(1, recorder.deferredActions.size)
+
+        recorder.flushDeferredActions()
 
         assertEquals(1, recorder.activationCalls)
         assertEquals(listOf("session-1"), recorder.openedSessionIds)
@@ -39,7 +46,27 @@ class SpecWorkflowTaskChatCoordinatorTest {
         coordinator.openExecutionSession("session-2", " ")
         coordinator.openExecutionSession("session-3", "wf-3")
 
+        assertEquals(0, recorder.activationCalls)
+        assertEquals(1, recorder.deferredActions.size)
+
+        recorder.flushDeferredActions()
+
         assertEquals(1, recorder.activationCalls)
+        assertTrue(recorder.openedSessionIds.isEmpty())
+        assertTrue(recorder.refreshEvents.isEmpty())
+    }
+
+    @Test
+    fun `openExecutionSession should skip deferred open when disposed before ui dispatch`() {
+        val recorder = RecordingEnvironment()
+        val coordinator = coordinator(recorder)
+
+        coordinator.openExecutionSession("session-4", "wf-4")
+        recorder.disposed = true
+
+        recorder.flushDeferredActions()
+
+        assertEquals(0, recorder.activationCalls)
         assertTrue(recorder.openedSessionIds.isEmpty())
         assertTrue(recorder.refreshEvents.isEmpty())
     }

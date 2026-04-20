@@ -18,15 +18,20 @@ internal class SpecWorkflowTaskChatCoordinator(
     fun openExecutionSession(sessionId: String, workflowId: String) {
         val normalizedSessionId = sessionId.trim().ifBlank { return }
         val normalizedWorkflowId = workflowId.trim().ifBlank { return }
-        if (!activateChatToolWindow()) {
-            return
+        invokeLater {
+            if (isDisposed()) {
+                return@invokeLater
+            }
+            if (!activateChatToolWindow()) {
+                return@invokeLater
+            }
+            openHistorySession(normalizedSessionId)
+            publishWorkflowChatRefresh(
+                normalizedWorkflowId,
+                null,
+                "spec_task_execution_session_opened",
+            )
         }
-        openHistorySession(normalizedSessionId)
-        publishWorkflowChatRefresh(
-            normalizedWorkflowId,
-            null,
-            "spec_task_execution_session_opened",
-        )
     }
 
     fun openTaskWorkflowChat(workflowId: String, taskId: String) {

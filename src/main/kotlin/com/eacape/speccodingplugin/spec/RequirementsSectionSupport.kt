@@ -12,6 +12,8 @@ enum class RequirementsSectionId(
     val englishTitle: String,
     val localizedTitle: String,
     private val displayNameKey: String,
+    private val englishTitleAliases: List<String> = emptyList(),
+    private val localizedTitleAliases: List<String> = emptyList(),
 ) {
     FUNCTIONAL(
         stableId = "functional-requirements",
@@ -36,14 +38,18 @@ enum class RequirementsSectionId(
         englishTitle = "Acceptance Criteria",
         localizedTitle = "验收标准",
         displayNameKey = "spec.requirements.section.acceptanceCriteria",
+        englishTitleAliases = listOf("Overall Acceptance Criteria"),
+        localizedTitleAliases = listOf("总体验收标准", "首版总体验收标准"),
     ),
     ;
 
     internal val markers: List<String>
-        get() = listOf("## $englishTitle", "## $localizedTitle")
+        get() = titleAliases
+            .flatMap { alias -> listOf("## $alias", alias) }
+            .distinct()
 
     internal val titleAliases: List<String>
-        get() = listOf(englishTitle, localizedTitle)
+        get() = englishHeadingTitles + localizedHeadingTitles
 
     fun displayName(): String = SpecCodingBundle.message(displayNameKey)
 
@@ -57,6 +63,11 @@ enum class RequirementsSectionId(
         return titleAliases.any { candidate -> normalizeTitleToken(candidate) == normalized }
     }
 
+    internal fun matchesHeadingTitle(title: String, style: RequirementsHeadingStyle): Boolean {
+        val normalized = normalizeTitleToken(title)
+        return headingTitles(style).any { candidate -> normalizeTitleToken(candidate) == normalized }
+    }
+
     companion object {
         fun fromStableId(stableId: String): RequirementsSectionId? =
             entries.firstOrNull { section -> section.stableId == stableId.trim() }
@@ -68,17 +79,47 @@ enum class RequirementsSectionId(
             return title
                 .trim()
                 .replace(TITLE_EDGE_DECORATION_REGEX, "")
-                .replace(TRAILING_TITLE_DELIMITER_REGEX, "")
+                .replace(NORMALIZED_TRAILING_TITLE_DELIMITER_REGEX, "")
                 .replace(TITLE_EDGE_DECORATION_REGEX, "")
+                .let(::stripLeadingTitleNumbering)
                 .replace(TITLE_WHITESPACE_REGEX, " ")
                 .replace("-", "")
                 .trim()
                 .lowercase()
         }
 
+        private fun stripLeadingTitleNumbering(title: String): String {
+            var normalized = title.trim()
+            while (true) {
+                val updated = LEADING_TITLE_NUMBERING_REGEXES
+                    .fold(normalized) { current, regex -> regex.replaceFirst(current, "") }
+                    .trimStart()
+                if (updated == normalized) {
+                    return normalized
+                }
+                normalized = updated
+            }
+        }
+
         private val TITLE_EDGE_DECORATION_REGEX = Regex("""^[*_`~#\s]+|[*_`~#\s]+$""")
-        private val TRAILING_TITLE_DELIMITER_REGEX = Regex("""\s*[:：]\s*$""")
+        private val NORMALIZED_TRAILING_TITLE_DELIMITER_REGEX = Regex("""\s*[:\uFF1A]\s*$""")
         private val TITLE_WHITESPACE_REGEX = Regex("""\s+""")
+        private val LEADING_TITLE_NUMBERING_REGEXES = listOf(
+            Regex("""^[\(\uFF08]\d+[\)\uFF09]\s*"""),
+            Regex("""^\d+(?:[.\uFF0E]\d+)*(?:\s*[.)\]\uFF09\u3001:\uFF1A-]\s*|\s+)"""),
+            Regex("""^[\u4E00\u4E8C\u4E09\u56DB\u4E94\u516D\u4E03\u516B\u4E5D\u5341\u767E\u5343]+(?:\s*[\u3001.\uFF0E:\uFF1A-]\s*|\s+)"""),
+        )
+    }
+
+    private val englishHeadingTitles: List<String>
+        get() = listOf(englishTitle) + englishTitleAliases
+
+    private val localizedHeadingTitles: List<String>
+        get() = listOf(localizedTitle) + localizedTitleAliases
+
+    private fun headingTitles(style: RequirementsHeadingStyle): List<String> = when (style) {
+        RequirementsHeadingStyle.ENGLISH -> englishHeadingTitles
+        RequirementsHeadingStyle.CHINESE -> localizedHeadingTitles
     }
 }
 
@@ -106,8 +147,13 @@ object RequirementsSectionSupport {
 
     fun detectHeadingStyle(content: String): RequirementsHeadingStyle {
         val normalized = normalizeContent(content)
-        val hasLocalizedHeading = RequirementsSectionId.entries.any { section ->
-            normalized.contains("## ${section.localizedTitle}", ignoreCase = true)
+        val headingTitles = HEADING_REGEX.findAll(normalized)
+            .map { match -> match.groupValues[1].trim() }
+            .toList()
+        val hasLocalizedHeading = headingTitles.any { title ->
+            RequirementsSectionId.entries.any { section ->
+                section.matchesHeadingTitle(title, RequirementsHeadingStyle.CHINESE)
+            }
         }
         return if (hasLocalizedHeading) {
             RequirementsHeadingStyle.CHINESE
