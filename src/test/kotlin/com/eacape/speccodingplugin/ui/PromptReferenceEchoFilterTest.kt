@@ -294,4 +294,42 @@ class PromptReferenceEchoFilterTest {
         assertFalse(filtered.contains("按高/中/低优先级列出可执行改进建议"), filtered)
         assertTrue(filtered.contains("这是这个后端项目的一期骨架"), filtered)
     }
+
+    @Test
+    fun `filter should remove merged chinese structured prompt agenda line`() {
+        val filter = PromptReferenceEchoFilter.fromTextBlocks(emptyList())
+
+        val filtered = filter.filter(
+            """
+            发、安全、稳定性风险；10. 测试覆盖与缺口；11. 最值得优先改进的事项。要求：结论必须尽量引用具体文件、类、函数、配置项；优先指出真正影响交付和维护的问题；如果发现信息不足，明确缺失点以及下一步应补查什么。最后给出一个简洁的行动清单，按高/中/低优先级列出可执行改进建议。
+            真实结论：当前项目更像后端一期脚手架，模型真实回复应该展示这段。
+            """.trimIndent(),
+            flush = true,
+        )
+
+        assertFalse(filtered.contains("优先指出真正影响交付和维护的问题"), filtered)
+        assertFalse(filtered.contains("明确缺失点以及下一步应补查什么"), filtered)
+        assertFalse(filtered.contains("按高/中/低优先级列出可执行改进建议"), filtered)
+        assertTrue(filtered.contains("真实结论：当前项目更像后端一期脚手架"), filtered)
+    }
+
+    @Test
+    fun `filter should remove screenshot style merged prompt guidance line`() {
+        val filter = PromptReferenceEchoFilter.fromTextBlocks(emptyList())
+
+        val filtered = filter.filter(
+            """
+            发、安全、稳定性风险；10. 测试覆盖与缺口；11. 最值得优先改进的事项。要求：结论必须尽量引用具体文件、类、函数或配置项；区分“已从代码确认”和“基于现状推断”；优先指出真正影响交付和维护的问题；如果发现信息不足，明确缺失点以及下一步应怎么查。
+            真实回复：这个仓库当前更像基础后端工程骨架，核心业务还没有完整闭环。
+            """.trimIndent(),
+            flush = true,
+        )
+
+        assertFalse(filtered.contains("最值得优先改进的事项"), filtered)
+        assertFalse(filtered.contains("结论必须尽量引用具体文件"), filtered)
+        assertFalse(filtered.contains("已从代码确认"), filtered)
+        assertFalse(filtered.contains("基于现状推断"), filtered)
+        assertFalse(filtered.contains("如果发现信息不足"), filtered)
+        assertTrue(filtered.contains("真实回复：这个仓库当前更像基础后端工程骨架"), filtered)
+    }
 }

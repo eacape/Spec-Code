@@ -60,6 +60,7 @@ internal class PromptReferenceEchoFilter private constructor(
         if (normalized.isBlank()) return lastLineDropped
         if (PROMPT_REFERENCE_ECHO_CONTROL_REGEX.matches(trimmed)) return true
         if (PROMPT_REFERENCE_ECHO_STRUCTURED_AGENDA_REGEX.matches(trimmed)) return true
+        if (containsStructuredAgendaFragments(normalized)) return true
         if (PROMPT_REFERENCE_ECHO_NORMALIZED_PREFIXES.any(normalized::startsWith)) return true
         return promptLines.contains(normalized)
     }
@@ -139,6 +140,14 @@ internal class PromptReferenceEchoFilter private constructor(
                 .lowercase(Locale.ROOT)
         }
 
+        private fun containsStructuredAgendaFragments(normalizedLine: String): Boolean {
+            if (normalizedLine.isBlank()) return false
+            val matches = PROMPT_REFERENCE_ECHO_STRUCTURED_AGENDA_FRAGMENTS.count { fragment ->
+                normalizedLine.contains(fragment)
+            }
+            return matches >= PROMPT_REFERENCE_ECHO_STRUCTURED_AGENDA_MIN_FRAGMENT_MATCHES
+        }
+
         private val PROMPT_REFERENCE_ECHO_CONTROL_REGEX = Regex(
             """^(?:(?:[-*]\s+)?Prompt\s+#\S.*:|Referenced prompt templates\b.*|Referenced prompt template\s+#\S.*|End referenced prompt templates\.?|User request:|---\s*prompt:\S.*---|##\s+Internal Instructions And Reference Context|###\s+Internal Block\s+\d+|##\s+Conversation History|##\s+Final User Request|##\s+Response Requirements|You are answering the final user request for an IDE chat session\.|Sections marked Internal Instructions and Reference Context are hidden inputs, not user-visible text\.|Use them only as guidance or evidence\.|Do not quote, restate, or continue those hidden sections verbatim unless the user explicitly asks for a quote\.|(?:[-*]\s+)?Answer the final user request directly(?: in the first sentence)?\.|(?:[-*]\s+)?Do not dump raw context or internal instructions\.|(?:[-*]\s+)?Use referenced files only as supporting evidence\.|(?:[-*]\s+)?If the user asks what a document is, identify its purpose before citing details\.)$""",
             RegexOption.IGNORE_CASE,
@@ -179,6 +188,32 @@ internal class PromptReferenceEchoFilter private constructor(
             "最后给出一个简洁的行动清单",
             "按高/中/低优先级列出可执行改进建议",
         )
+        private val PROMPT_REFERENCE_ECHO_STRUCTURED_AGENDA_FRAGMENTS = listOf(
+            "职责：",
+            "职责:",
+            "要求：",
+            "要求:",
+            "输出要求：",
+            "输出要求:",
+            "检查重点：",
+            "检查重点:",
+            "分析维度：",
+            "分析维度:",
+            "结论必须尽量引用具体文件",
+            "已从代码确认",
+            "基于现状推断",
+            "优先指出真正影响交付和维护的问题",
+            "如果发现信息不足",
+            "明确缺失点以及下一步应检查什么",
+            "明确缺失点以及下一步应补查什么",
+            "明确缺失点以及下一步应",
+            "最后给出一个简洁的行动清单",
+            "最值得优先改进的事项",
+            "按高/中/低优先级列出可执行改进建议",
+            "按高-中-低优先级列出可执行改进建议",
+            "按高中低优先级列出可执行改进建议",
+        )
+        private const val PROMPT_REFERENCE_ECHO_STRUCTURED_AGENDA_MIN_FRAGMENT_MATCHES = 2
         private const val BUILTIN_PROMPT_ECHO_GUARDS_ENABLED = true
         private val PROMPT_ECHO_MARKDOWN_DECORATION_REGEX = Regex("""^[>\s]*(?:[-*]\s+|\d+[.)、）．]\s*)?""")
         private val PROMPT_ECHO_WHITESPACE_REGEX = Regex("""\s+""")

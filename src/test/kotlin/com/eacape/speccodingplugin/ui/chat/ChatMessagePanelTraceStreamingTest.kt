@@ -1404,16 +1404,6 @@ class ChatMessagePanelTraceStreamingTest {
         assertNotNull(expandButton, "Expected output expand button")
         runOnEdt { expandButton!!.doClick() }
 
-        val keyFilterText = SpecCodingBundle.message(
-            "chat.timeline.output.filter.toggle",
-            SpecCodingBundle.message("chat.timeline.output.filter.key"),
-        )
-        val filterButton = collectDescendants(panel)
-            .filterIsInstance<JButton>()
-            .firstOrNull { it.text == keyFilterText }
-        assertNotNull(filterButton, "Expected output filter button in key mode")
-        runOnEdt { filterButton!!.doClick() }
-
         val allText = collectDescendants(panel)
             .filterIsInstance<JTextPane>()
             .joinToString("\n") { it.text.orEmpty() }
@@ -1484,15 +1474,6 @@ class ChatMessagePanelTraceStreamingTest {
             .firstOrNull { it.text == expandText }
         assertNotNull(expandButton, "Expected output expand button")
         runOnEdt { expandButton!!.doClick() }
-
-        val keyFilterText = SpecCodingBundle.message(
-            "chat.timeline.output.filter.toggle",
-            SpecCodingBundle.message("chat.timeline.output.filter.key"),
-        )
-        val filterButton = collectDescendants(panel)
-            .filterIsInstance<JButton>()
-            .firstOrNull { it.text == keyFilterText }
-        assertNotNull(filterButton, "Expected output filter button in key mode")
 
         val htmlPane = collectDescendants(panel)
             .filterIsInstance<JTextPane>()
@@ -1718,7 +1699,6 @@ class ChatMessagePanelTraceStreamingTest {
             }
         assertNotNull(filterButton, "Expected output filter button in key mode")
         runOnEdt { filterButton!!.doClick() }
-
 
         val textPanes = collectDescendants(panel)
             .filterIsInstance<JTextPane>()

@@ -156,6 +156,26 @@ class ImprovedChatPanelMessageRenderCoordinatorTest {
         assertNull(decision.historyMessage)
     }
 
+    @Test
+    fun `task execution cancellation system message should be suppressed`() {
+        val message = conversationMessage(
+            role = ConversationRole.SYSTEM,
+            content = "AI execution cancelled by user.",
+            metadataJson = executionMessageMetadata(
+                rawPrompt = "Interaction mode: workflow\n## Execution Request\nExecute task T-007",
+            ),
+        )
+
+        val decision = ImprovedChatPanelMessageRenderCoordinator.planRestoredMessage(
+            message = message,
+            buildSpecCardFallbackMarkdown = { error("Spec card fallback should not be used") },
+        )
+
+        assertEquals(ImprovedChatPanelMessageRenderPlan.Suppressed, decision.plan)
+        assertNull(decision.historyMessage)
+        assertTrue(decision.marksTaskExecutionMessageRendered)
+    }
+
     private fun conversationMessage(
         role: ConversationRole,
         content: String,

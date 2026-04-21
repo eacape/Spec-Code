@@ -1174,6 +1174,9 @@ open class ChatMessagePanel(
             }
 
             if (!isAllowedAssistantAnswerBlockLine(trimmed)) {
+                if (shouldSkipAssistantAnswerInterruptionLine(trimmed)) {
+                    continue
+                }
                 val hasTail = lines
                     .drop(index)
                     .any { candidate -> candidate.trim().isNotBlank() }
@@ -1192,6 +1195,15 @@ open class ChatMessagePanel(
         }
 
         return emptyList()
+    }
+
+    private fun shouldSkipAssistantAnswerInterruptionLine(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.isBlank()) return false
+        if (looksLikePromptInventorySignalLine(trimmed)) return true
+        if (looksLikeToolDiagnosticLine(trimmed)) return true
+        if (OUTPUT_METADATA_KEY_VALUE_REGEX.matches(trimmed)) return true
+        return false
     }
 
     private fun isAllowedAssistantAnswerBlockLine(line: String): Boolean {
@@ -1447,10 +1459,17 @@ open class ChatMessagePanel(
         if (trimmed.isBlank()) return false
         val normalized = normalizeOutputClassifierLine(trimmed)
         return matchesPromptScaffoldingSignal(normalized) ||
+            looksLikeStandaloneFileReferenceLine(trimmed) ||
             OUTPUT_SOURCE_SNIPPET_PREFIX_REGEX.containsMatchIn(trimmed) ||
             OUTPUT_FILE_PATH_LINE_REGEX.matches(trimmed) ||
             OUTPUT_SOURCE_REFERENCE_WITH_VALUE_REGEX.matches(trimmed) ||
             trimmed.contains(".github/workflows", ignoreCase = true)
+    }
+
+    private fun looksLikeStandaloneFileReferenceLine(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.isBlank() || trimmed.contains(' ')) return false
+        return WorkflowQuickActionParser.parseFileActionCandidate(trimmed) != null
     }
 
     private fun looksLikeAnswerFallbackMarkdownLine(line: String): Boolean {
@@ -3230,7 +3249,7 @@ open class ChatMessagePanel(
             .filter { it.isNotBlank() }
         if (nonBlankLines.isEmpty()) return rawDetail
 
-        val keyLines = selectKeyOutputLines(nonBlankLines)
+        val keyLines = selectKeyOutputLinesForPanel(nonBlankLines)
         val filteredCount = (nonBlankLines.size - keyLines.size).coerceAtLeast(0)
         if (keyLines.isEmpty()) {
             return if (filteredCount > 0) {
@@ -3270,6 +3289,28 @@ open class ChatMessagePanel(
         return emptyList()
     }
 
+    private fun selectKeyOutputLinesForPanel(lines: List<String>): List<String> {
+        val summaries = lines
+            .filter(::looksLikePanelWhitelistedOutputLine)
+            .distinct()
+        if (summaries.isNotEmpty()) {
+            return summaries.take(OUTPUT_FILTER_MAX_LINES)
+        }
+
+        return emptyList()
+    }
+
+    private fun looksLikePanelWhitelistedOutputLine(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.isBlank()) return false
+        if (looksLikeRawCodeOrPatchLine(trimmed)) return false
+        if (looksLikeToolDiagnosticLine(trimmed)) return false
+        if (looksLikePromptInventorySignalLine(trimmed)) return false
+        if (OUTPUT_METADATA_KEY_VALUE_REGEX.matches(trimmed)) return false
+        if (containsLooseTabularSignal(trimmed)) return false
+        return looksLikeStageSummaryOutputLine(trimmed)
+    }
+
     private fun looksLikeWhitelistedOutputLine(line: String): Boolean {
         val trimmed = line.trim()
         if (trimmed.isBlank()) return false
@@ -3277,6 +3318,35 @@ open class ChatMessagePanel(
         if (looksLikeToolDiagnosticLine(trimmed)) return false
         if (looksLikePromptInventorySignalLine(trimmed)) return false
         return looksLikeNarrativeOutputLine(trimmed)
+    }
+
+    private fun looksLikeStageSummaryOutputLine(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.isBlank()) return false
+        if (OUTPUT_STAGE_SUMMARY_PREFIX_REGEX.matches(trimmed)) return true
+        if (OUTPUT_ALLOWED_HEADING_REGEX.matches(trimmed)) return true
+        if (OUTPUT_SHORT_STATUS_REGEX.matches(trimmed) && containsStageSummarySignal(trimmed)) return true
+        if (looksLikeLikelyAnswerBulletLine(trimmed) && containsStageSummarySignal(trimmed)) return true
+
+        val bulletBody = BULLET_PREFIX_REGEX.replaceFirst(trimmed, "").trim()
+        if (bulletBody != trimmed && OUTPUT_STAGE_SUMMARY_PREFIX_REGEX.matches(bulletBody)) return true
+
+        return containsStageSummarySignal(trimmed) &&
+            looksLikeNarrativeOutputLine(trimmed)
+    }
+
+    private fun containsStageSummarySignal(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.isBlank()) return false
+        if (OUTPUT_STAGE_SUMMARY_KEYWORD_REGEX.containsMatchIn(trimmed)) return true
+        return OUTPUT_FIRST_PERSON_PROGRESS_REGEX.containsMatchIn(trimmed)
+    }
+
+    private fun containsLooseTabularSignal(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.isBlank()) return false
+        if (OUTPUT_COLUMNS_HEADER_REGEX.matches(trimmed)) return true
+        return false
     }
 
     private fun looksLikeNarrativeOutputLine(line: String): Boolean {
@@ -3324,6 +3394,7 @@ open class ChatMessagePanel(
         if (trimmed.isBlank()) return false
         val normalized = normalizeOutputClassifierLine(trimmed)
         if (trimmed.startsWith("```")) return true
+        if (looksLikeLineNumberedCodeSnippet(trimmed)) return true
         if (OUTPUT_SOURCE_SNIPPET_PREFIX_REGEX.containsMatchIn(trimmed)) return true
         if (OUTPUT_DIFF_CONTROL_PREFIXES.any { trimmed.startsWith(it) }) return true
         if (OUTPUT_COMMAND_LINE_REGEX.matches(trimmed)) return true
@@ -3348,6 +3419,22 @@ open class ChatMessagePanel(
             return true
         }
         return line.endsWith("{") || line.endsWith(");") || line.endsWith("},")
+    }
+
+    private fun looksLikeLineNumberedCodeSnippet(line: String): Boolean {
+        val match = OUTPUT_LEADING_LINE_NUMBER_REGEX.find(line) ?: return false
+        val body = match.groupValues[2].trimStart()
+        if (body.isBlank()) return false
+        if (body.startsWith("```")) return true
+        if (body.startsWith("{") || body.startsWith("[") || body.startsWith("}") || body.startsWith("]")) return true
+        if (body.startsWith("\"") && body.contains("\":")) return true
+        if (OUTPUT_TYPED_ASSIGNMENT_REGEX.matches(body)) return true
+        if (OUTPUT_TYPED_PROPERTY_LINE_REGEX.matches(body)) return true
+        if (OUTPUT_IDENTIFIER_ASSIGNMENT_REGEX.matches(body)) return true
+        if (OUTPUT_CODE_DECLARATION_REGEX.matches(body)) return true
+        if (OUTPUT_OPEN_CALL_REGEX.matches(body)) return true
+        if (OUTPUT_SOURCE_SNIPPET_PREFIX_REGEX.containsMatchIn(body)) return true
+        return looksLikeSymbolDenseCodeLine(body)
     }
 
     private fun looksLikeToolDiagnosticLine(line: String): Boolean {
@@ -3714,36 +3801,35 @@ open class ChatMessagePanel(
         if (content.isBlank()) return ""
 
         val kept = mutableListOf<String>()
-        var skippingOutputBody = false
-        var skippingOutputFence = false
+        var skippingTraceContinuation = false
+        var skippingTraceFence = false
 
         content.lines().forEach { rawLine ->
             val trimmed = rawLine.trim()
             val timelineItem = ExecutionTimelineParser.parseLine(rawLine)
             if (timelineItem != null) {
-                skippingOutputBody = timelineItem.kind == ExecutionTimelineParser.Kind.OUTPUT ||
-                    timelineItem.kind == ExecutionTimelineParser.Kind.TOOL
-                skippingOutputFence = false
+                skippingTraceContinuation = true
+                skippingTraceFence = false
                 return@forEach
             }
 
-            if (skippingOutputBody) {
+            if (skippingTraceContinuation) {
                 if (trimmed.isBlank()) {
-                    skippingOutputBody = false
-                    skippingOutputFence = false
+                    skippingTraceContinuation = false
+                    skippingTraceFence = false
                 } else if (isLikelyWorkflowHeading(trimmed)) {
-                    skippingOutputBody = false
-                    skippingOutputFence = false
+                    skippingTraceContinuation = false
+                    skippingTraceFence = false
                     kept += rawLine
-                } else if (shouldSkipOutputContinuation(rawLine, trimmed, skippingOutputFence)) {
+                } else if (shouldSkipOutputContinuation(rawLine, trimmed, skippingTraceFence)) {
                     if (trimmed.startsWith("```")) {
-                        skippingOutputFence = !skippingOutputFence
+                        skippingTraceFence = !skippingTraceFence
                     }
                 } else {
-                    skippingOutputBody = false
-                    skippingOutputFence = false
+                    skippingTraceContinuation = false
+                    skippingTraceFence = false
                 }
-                if (skippingOutputBody) {
+                if (skippingTraceContinuation) {
                     return@forEach
                 }
             }
@@ -4326,6 +4412,22 @@ open class ChatMessagePanel(
             """^(?:(?:ok|okay|done|ready|complete(?:d)?|success(?:ful(?:ly)?)?|warning|note|summary|result|next(?:\s+step)?|updated|created|changed|fixed|verified|passed|failed|error)\b.*|(?:已完成|完成|成功|失败|错误|警告|注意|总结|结果|下一步|已更新|已创建|已修改|已验证).*)$""",
             RegexOption.IGNORE_CASE,
         )
+        private val OUTPUT_STAGE_SUMMARY_PREFIX_REGEX = Regex(
+            """^(?:(?:本轮|这轮|这次|当前|现在|接下来|下一步|后续|这里|目前|主逻辑|代码和测试|我(?:先|会|现在|已经|正在|这边|这里)?|已(?:经)?|已经|正在|开始|继续|完成|修复|更新|调整|补充|恢复|改成|切换|收口|验证|测试|处理|排查|定位|确认|只保留|保留)|(?:i(?:'m| am| will| already| just| now)|we(?:'re| are| will| already| just| now)|next step|currently|for now|updated|fixed|changed|verified|restored|narrowed|kept|working on|running))\b.*$""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val OUTPUT_STAGE_SUMMARY_KEYWORD_REGEX = Regex(
+            """(?:本轮|这轮|这次|当前|现在|接下来|下一步|后续|目前|主逻辑|代码和测试|已(?:经)?|正在|完成|修复|更新|调整|补充|恢复|改成|切换|收口|验证|测试|处理|排查|定位|确认|只保留|保留|进展|总结|阶段|阶段性|summary|update|updated|fixed|changed|verified|restored|narrowed|kept|working on|next step|currently)""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val OUTPUT_FIRST_PERSON_PROGRESS_REGEX = Regex(
+            """^(?:(?:我|我们).{0,12}(?:先|会|现在|已经|正在|这边|这里|后面|接下来)|(?:i|we)\s+(?:am|will|already|just|now|updated|changed|fixed|restored|narrowed|kept|verified|working))""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val OUTPUT_COLUMNS_HEADER_REGEX = Regex(
+            """^(?:mode|length|lastwritetime|name|attributes|size|type)(?:\s{2,}(?:mode|length|lastwritetime|name|attributes|size|type))+$""",
+            RegexOption.IGNORE_CASE,
+        )
         private val PROMPT_INSTRUCTION_ECHO_MARKDOWN_DECORATION_REGEX = Regex("""^[>\s]*(?:[-*]\s+|\d+[.)]\s*)?""")
         private val PROMPT_INSTRUCTION_ECHO_WHITESPACE_REGEX = Regex("""\s+""")
         private val PROMPT_INSTRUCTION_ECHO_CONTROL_REGEX = Regex(
@@ -4416,6 +4518,9 @@ open class ChatMessagePanel(
         private val OUTPUT_SOURCE_REFERENCE_WITH_VALUE_REGEX = Regex(
             """^(?!https?://)(?:(?:[A-Za-z]:)?[\\/])?(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9]+)?(?::\d+(?::\d+)?)?(?::[\p{L}\p{N}_.-]+)+(?:=.*)?$""",
         )
+        private val OUTPUT_TYPED_ASSIGNMENT_REGEX = Regex(
+            """^(?:[A-Za-z_][\w.?-]*|[\p{IsHan}]{2,16})\s*:\s*[A-Za-z_][\w.<>?(),\[\]]*\s*=\s*.+$""",
+        )
         private val OUTPUT_IDENTIFIER_ASSIGNMENT_REGEX = Regex(
             """^(?:[A-Za-z_][\w.?-]*|[\p{IsHan}]{2,16})\s*=\s*.+$""",
         )
@@ -4445,6 +4550,7 @@ open class ChatMessagePanel(
         private val OUTPUT_SOURCE_SNIPPET_PREFIX_REGEX = Regex(
             """^(?!https?://)(?:(?:[A-Za-z]:)?[\\/])?(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9]+)?:\d+:\s*""",
         )
+        private val OUTPUT_LEADING_LINE_NUMBER_REGEX = Regex("""^(\d+):\s*(.+)$""")
         private val OUTPUT_SOURCE_LINE_NUMBER_PREFIX_REGEX = Regex("""^\d+:\s*""")
         private val ASSISTANT_ACK_PREFIXES_ZH = listOf(
             "好的",

@@ -248,6 +248,8 @@ class WorkflowChatExecutionContextLinkPlatformTest : BasePlatformTestCase() {
         assertEquals(secondTask.id, secondSnapshot.getValue("taskId"))
         assertEquals("true", secondSnapshot.getValue("taskChipVisible"))
         assertEquals(1, sessionManager.listSessions().size)
+        assertEquals(1, chatPanel.executionLaunchMessageCountForTest())
+        assertEquals(secondTask.id, chatPanel.executionLaunchSnapshotForTest().getValue("taskId"))
     }
 
     fun `test task execution should restore structured execution launch card instead of raw prompt bubble`() {
@@ -874,7 +876,7 @@ class WorkflowChatExecutionContextLinkPlatformTest : BasePlatformTestCase() {
         assertEquals(task.id, launchSnapshot.getValue("taskId"))
         assertEquals("false", liveSnapshot.getValue("visible"))
         assertEquals("0", traceSnapshot.getValue("unfinishedCount"))
-        assertEquals(4, chatPanel.messageCountForTest())
+        assertEquals(3, chatPanel.messageCountForTest())
     }
 
     private fun registerSpecCodeToolWindow(): ToolWindow {

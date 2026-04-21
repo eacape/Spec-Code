@@ -5072,6 +5072,9 @@ class ImprovedChatPanel(
             },
         )
         when (val plan = renderDecision.plan) {
+            ImprovedChatPanelMessageRenderPlan.Suppressed -> {
+            }
+
             is ImprovedChatPanelMessageRenderPlan.UserPlain -> {
                 appendUserMessage(
                     content = plan.visibleContent,
@@ -5237,6 +5240,7 @@ class ImprovedChatPanel(
         rawContent: String?,
         compact: Boolean = false,
     ): WorkflowChatExecutionLaunchMessagePanel {
+        removeExistingExecutionLaunchPanels()
         val panel = WorkflowChatExecutionLaunchMessagePanel(
             payload = payload,
             visibleContent = visibleContent,
@@ -5247,6 +5251,15 @@ class ImprovedChatPanel(
         messagesPanel.addMessage(panel)
         rawContent?.takeIf(String::isNotBlank)?.let { userMessageRawContent[panel] = it } ?: userMessageRawContent.remove(panel)
         return panel
+    }
+
+    private fun removeExistingExecutionLaunchPanels() {
+        messagesPanel.getAllMessages()
+            .filterIsInstance<WorkflowChatExecutionLaunchMessagePanel>()
+            .forEach { panel ->
+                userMessageRawContent.remove(panel)
+                messagesPanel.removeMessage(panel)
+            }
     }
 
     private fun addAssistantMessage(
@@ -7448,6 +7461,11 @@ class ImprovedChatPanel(
                 "labels" to "",
                 "content" to "",
             )
+    }
+
+    internal fun executionLaunchMessageCountForTest(): Int {
+        return messagesPanel.getAllMessages()
+            .count { panel -> panel is WorkflowChatExecutionLaunchMessagePanel }
     }
 
     internal fun syncTaskExecutionSessionMessagesForTest(

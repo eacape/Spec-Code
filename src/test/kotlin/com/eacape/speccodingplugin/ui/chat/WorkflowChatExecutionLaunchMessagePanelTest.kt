@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.awt.Component
 import java.awt.Container
+import javax.swing.JLabel
 import javax.swing.JTextArea
 import javax.swing.SwingUtilities
 
@@ -78,9 +79,7 @@ class WorkflowChatExecutionLaunchMessagePanelTest {
         assertEquals("false", snapshot.getValue("rawPromptVisible"))
         assertEquals("0", snapshot.getValue("rawPromptInspectInvocations"))
 
-        val renderedText = collectDescendants(panel)
-            .filterIsInstance<JTextArea>()
-            .joinToString("\n") { it.text.orEmpty() }
+        val renderedText = collectVisibleText(panel)
         assertTrue(renderedText.contains("requirements.md"))
         assertTrue(renderedText.contains("Keep the summary compact."))
         assertTrue(renderedText.contains(SpecCodingBundle.message("chat.execution.launch.note.rawPromptHidden")))
@@ -100,9 +99,7 @@ class WorkflowChatExecutionLaunchMessagePanelTest {
             inspectedPrompts.single(),
         )
 
-        val expandedText = collectDescendants(panel)
-            .filterIsInstance<JTextArea>()
-            .joinToString("\n") { it.text.orEmpty() }
+        val expandedText = collectVisibleText(panel)
         assertFalse(expandedText.contains("Interaction mode: workflow"))
     }
 
@@ -152,12 +149,66 @@ class WorkflowChatExecutionLaunchMessagePanelTest {
         assertEquals("presentation", snapshot.getValue("kind"))
         assertEquals("true", snapshot.getValue("compactMode"))
 
-        val renderedText = collectDescendants(panel)
-            .filterIsInstance<JTextArea>()
-            .joinToString("\n") { it.text.orEmpty() }
+        val renderedText = collectVisibleText(panel)
         assertTrue(renderedText.contains(SpecCodingBundle.message("chat.execution.launch.meta.workflow", "wf-history")))
         assertTrue(renderedText.contains(SpecCodingBundle.message("chat.execution.launch.meta.run", "run-history")))
         assertFalse(renderedText.contains(SpecCodingBundle.message("chat.execution.launch.note.rawPromptHidden")))
+    }
+
+    @Test
+    fun `switching to compact mode should collapse verbose execution launch details`() {
+        val panel = runOnEdtResult {
+            WorkflowChatExecutionLaunchMessagePanel(
+                payload = WorkflowChatExecutionLaunchRestorePayload.Presentation(
+                    WorkflowChatExecutionLaunchPresentation(
+                        workflowId = "wf-compact-live",
+                        taskId = "T-099",
+                        taskTitle = "Compact previous execution launch cards",
+                        runId = "run-compact-live",
+                        focusedStage = StageId.IMPLEMENT,
+                        trigger = ExecutionTrigger.USER_EXECUTE,
+                        launchSurface = WorkflowChatExecutionLaunchSurface.WORKFLOW_CHAT,
+                        sections = listOf(
+                            WorkflowChatExecutionPresentationSection(
+                                kind = WorkflowChatExecutionPresentationSectionKind.ARTIFACT_SUMMARIES,
+                                itemCount = 2,
+                                previewItems = listOf(
+                                    "requirements.md: keep execution launch cards visually quiet.",
+                                    "design.md: older execution requests should collapse when a new run starts.",
+                                ),
+                            ),
+                            WorkflowChatExecutionPresentationSection(
+                                kind = WorkflowChatExecutionPresentationSectionKind.CODE_CONTEXT,
+                                itemCount = 1,
+                                previewItems = listOf("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt"),
+                            ),
+                            WorkflowChatExecutionPresentationSection(
+                                kind = WorkflowChatExecutionPresentationSectionKind.CLARIFICATION_CONCLUSIONS,
+                                itemCount = 1,
+                                previewItems = listOf("No additional clarification is required."),
+                            ),
+                        ),
+                        rawPromptDebugAvailable = true,
+                    ),
+                ),
+                visibleContent = "## Execution Request",
+                rawPromptContent = "Interaction mode: workflow\n## Execution Request\nExecute task T-099",
+            )
+        }
+
+        val expandedText = collectVisibleText(panel)
+        assertTrue(expandedText.contains(SpecCodingBundle.message("chat.execution.launch.summary")))
+        assertTrue(expandedText.contains(SpecCodingBundle.message("chat.execution.launch.note.rawPromptHidden")))
+
+        runOnEdtResult {
+            panel.setCompactMode(true)
+        }
+
+        val compactSnapshot = panel.snapshotForTest()
+        val compactText = collectVisibleText(panel)
+        assertEquals("true", compactSnapshot.getValue("compactMode"))
+        assertTrue(compactText.contains(SpecCodingBundle.message("chat.execution.launch.summary.history")))
+        assertFalse(compactText.contains(SpecCodingBundle.message("chat.execution.launch.note.rawPromptHidden")))
     }
 
     @Test
@@ -188,9 +239,7 @@ class WorkflowChatExecutionLaunchMessagePanelTest {
             )
         }
 
-        val renderedText = collectDescendants(panel)
-            .filterIsInstance<JTextArea>()
-            .joinToString("\n") { it.text.orEmpty() }
+        val renderedText = collectVisibleText(panel)
         assertTrue(renderedText.contains("requirements.md"))
         assertTrue(renderedText.contains("版本 v1.0.0.1"))
         assertTrue(renderedText.contains("澄清结论 No confirmed clarifications recorded."))
@@ -241,9 +290,7 @@ class WorkflowChatExecutionLaunchMessagePanelTest {
         assertEquals("false", snapshot.getValue("rawPromptVisible"))
         assertEquals("0", snapshot.getValue("rawPromptInspectInvocations"))
 
-        val renderedText = collectDescendants(panel)
-            .filterIsInstance<JTextArea>()
-            .joinToString("\n") { it.text.orEmpty() }
+        val renderedText = collectVisibleText(panel)
         assertTrue(renderedText.contains(SpecCodingBundle.message("chat.execution.launch.note.legacy")))
         assertTrue(renderedText.contains(SpecCodingBundle.message("chat.execution.launch.section.codeContext")))
         assertTrue(renderedText.contains(SpecCodingBundle.message("chat.execution.launch.section.artifactSummaries")))
@@ -277,5 +324,18 @@ class WorkflowChatExecutionLaunchMessagePanelTest {
             result += collectDescendants(child)
         }
         return result
+    }
+
+    private fun collectVisibleText(component: Component): String {
+        return collectDescendants(component)
+            .mapNotNull { child ->
+                when (child) {
+                    is JTextArea -> child.text.orEmpty()
+                    is JLabel -> child.text.orEmpty()
+                    else -> null
+                }
+            }
+            .filter(String::isNotBlank)
+            .joinToString("\n")
     }
 }

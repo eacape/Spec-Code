@@ -36,6 +36,15 @@ class ChatMessagePanelOutputFilterTest {
         assertNotNull(expandButton, "Expected output expand button")
         runOnEdt { expandButton!!.doClick() }
 
+        val filteredText = collectText(panel)
+        assertFalse(filteredText.contains("private val PASS_FG"))
+        assertFalse(filteredText.contains("diff --git"))
+        assertTrue(
+            filteredText.contains(
+                SpecCodingBundle.message("chat.timeline.output.filtered.more", 6)
+            )
+        )
+
         val filterButton = collectDescendants(panel)
             .filterIsInstance<JButton>()
             .firstOrNull {
@@ -45,15 +54,6 @@ class ChatMessagePanelOutputFilterTest {
                 )
             }
         assertNotNull(filterButton, "Expected output filter button in key mode")
-
-        val filteredText = collectText(panel)
-        assertFalse(filteredText.contains("private val PASS_FG"))
-        assertFalse(filteredText.contains("diff --git"))
-        assertTrue(
-            filteredText.contains(
-                SpecCodingBundle.message("chat.timeline.output.filtered.more", 6)
-            )
-        )
 
         runOnEdt { filterButton!!.doClick() }
 
@@ -206,6 +206,96 @@ class ChatMessagePanelOutputFilterTest {
                 SpecCodingBundle.message("chat.timeline.output.filtered.more", 6)
             )
         )
+    }
+
+    @Test
+    fun `output key filter should hide json fragments typed assignments and timing noise`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent(
+                """
+                [Output] I kept only the user-facing summary in the output panel.
+                [Output] 11: "default_conference_values": [
+                [Output] 16: "stale_threshold_minutes": 15,
+                [Output] 17: "metrics": {
+                [Output] 29: stale_threshold_minutes: int = 15
+                [Output] 53: as_of_mode: str = "not_later_than"
+                [Output] succeeded in 978ms:
+                """.trimIndent()
+            )
+            panel.finishMessage()
+        }
+
+        val expandButton = collectDescendants(panel)
+            .filterIsInstance<JButton>()
+            .firstOrNull { it.text == SpecCodingBundle.message("chat.timeline.toggle.expand") }
+        assertNotNull(expandButton, "Expected output expand button")
+        runOnEdt { expandButton!!.doClick() }
+
+        val filteredText = collectText(panel)
+        assertTrue(filteredText.contains("I kept only the user-facing summary in the output panel."))
+        assertFalse(filteredText.contains("default_conference_values"))
+        assertFalse(filteredText.contains("stale_threshold_minutes"))
+        assertFalse(filteredText.contains("metrics"))
+        assertFalse(filteredText.contains("as_of_mode"))
+        assertFalse(filteredText.contains("succeeded in 978ms"))
+        assertTrue(
+            filteredText.contains(
+                SpecCodingBundle.message("chat.timeline.output.filtered.more", 6)
+            )
+        )
+    }
+
+    @Test
+    fun `output key filter should keep stage summary and hide tabular command output until all mode`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent(
+                """
+                [Output] 我已经把输出面板收敛成只显示阶段性总结。
+                [Output] 接下来我会恢复“全部”按钮，同时继续压缩噪音。
+                [Output] Mode   Length LastWriteTime Name
+                [Output] d-----        2026/3/2 1:39:24 .claude
+                [Output] d-----        2026/3/2 1:39:24 .codex
+                """.trimIndent()
+            )
+            panel.finishMessage()
+        }
+
+        val expandButton = collectDescendants(panel)
+            .filterIsInstance<JButton>()
+            .firstOrNull { it.text == SpecCodingBundle.message("chat.timeline.toggle.expand") }
+        assertNotNull(expandButton, "Expected output expand button")
+        runOnEdt { expandButton!!.doClick() }
+
+        val filteredText = collectText(panel)
+        assertTrue(filteredText.contains("我已经把输出面板收敛成只显示阶段性总结。"))
+        assertTrue(filteredText.contains("接下来我会恢复“全部”按钮，同时继续压缩噪音。"))
+        assertFalse(filteredText.contains("Mode   Length LastWriteTime Name"))
+        assertFalse(filteredText.contains(".claude"))
+        assertTrue(
+            filteredText.contains(
+                SpecCodingBundle.message("chat.timeline.output.filtered.more", 3)
+            )
+        )
+
+        val filterButton = collectDescendants(panel)
+            .filterIsInstance<JButton>()
+            .firstOrNull {
+                it.text == SpecCodingBundle.message(
+                    "chat.timeline.output.filter.toggle",
+                    SpecCodingBundle.message("chat.timeline.output.filter.key"),
+                )
+            }
+        assertNotNull(filterButton, "Expected output filter button in key mode")
+
+        runOnEdt { filterButton!!.doClick() }
+
+        val allText = collectText(panel)
+        assertTrue(allText.contains("Mode   Length LastWriteTime Name"))
+        assertTrue(allText.contains(".claude"))
     }
 
     private fun collectText(panel: ChatMessagePanel): String {

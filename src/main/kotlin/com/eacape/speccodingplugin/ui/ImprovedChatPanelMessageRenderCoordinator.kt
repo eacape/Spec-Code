@@ -21,6 +21,7 @@ internal data class ImprovedChatPanelRestoredMessageRenderDecision(
 )
 
 internal sealed interface ImprovedChatPanelMessageRenderPlan {
+    data object Suppressed : ImprovedChatPanelMessageRenderPlan
 
     data class UserPlain(
         val visibleContent: String,
@@ -88,13 +89,14 @@ internal object ImprovedChatPanelMessageRenderCoordinator {
                 buildSpecCardFallbackMarkdown = buildSpecCardFallbackMarkdown,
             )
 
-            ConversationRole.SYSTEM -> ImprovedChatPanelMessageRenderPlan.SystemMessage(message.content)
+            ConversationRole.SYSTEM -> resolveSystemMessagePlan(message, executionMetadata)
             ConversationRole.TOOL -> ImprovedChatPanelMessageRenderPlan.ToolMessage(
                 formatToolMessage(message.content),
             )
         }
 
         val historyMessage = when (plan) {
+            ImprovedChatPanelMessageRenderPlan.Suppressed -> null
             is ImprovedChatPanelMessageRenderPlan.UserPlain ->
                 LlmMessage(LlmRole.USER, plan.rawContent)
 
@@ -175,7 +177,23 @@ internal object ImprovedChatPanelMessageRenderCoordinator {
         }
     }
 
+    private fun resolveSystemMessagePlan(
+        message: ConversationMessage,
+        executionMetadata: TaskExecutionSessionMetadataCodec.DecodedMetadata,
+    ): ImprovedChatPanelMessageRenderPlan {
+        if (executionMetadata.isTaskExecutionMessage() && isTaskExecutionCancellationSummary(message.content)) {
+            return ImprovedChatPanelMessageRenderPlan.Suppressed
+        }
+        return ImprovedChatPanelMessageRenderPlan.SystemMessage(message.content)
+    }
+
     private fun TaskExecutionSessionMetadataCodec.DecodedMetadata.isTaskExecutionMessage(): Boolean {
         return !runId.isNullOrBlank() || !requestId.isNullOrBlank()
+    }
+
+    private fun isTaskExecutionCancellationSummary(content: String): Boolean {
+        val normalized = content.trim()
+        return normalized.equals("AI execution cancelled by user.", ignoreCase = true) ||
+            normalized.contains("cancelled by user", ignoreCase = true)
     }
 }
