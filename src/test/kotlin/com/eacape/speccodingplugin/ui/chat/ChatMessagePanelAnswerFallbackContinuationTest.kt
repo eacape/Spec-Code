@@ -42,6 +42,45 @@ class ChatMessagePanelAnswerFallbackContinuationTest {
         assertFalse(displayed.contains("backend/config/runtime.yml#L1"), displayed)
     }
 
+    @Test
+    fun `final answer should prefer clean output summary over contaminated explicit tail`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runInEdtAndWait {
+            panel.appendContent(
+                """
+                    1. 去掉根目录示例文件 script.py，避免误导部署路径。
+                    M .spec-code/changes/repo-cleanup/tasks.md
+                    [tool.pytest.ini_options]
+                    Get-Content backend\app\tasks\__init__.py
+                    from app.db.models.task import Task
+                """.trimIndent()
+            )
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = """
+                        我已经把仓库整改建议收口成三条。
+                        下一步：去掉根目录示例文件 script.py，避免误导部署路径。
+                        下一步：给部署链路补发布说明或脚本，避免交付停在 README。
+                        接下来：如果确认继续使用文档驱动开发，再把 spec 目录和实际实现同步。
+                    """.trimIndent(),
+                    status = ChatTraceStatus.DONE,
+                ),
+            )
+            panel.finishMessage()
+        }
+
+        val displayed = invokeAssistantDisplayedAnswerResolver(panel, panel.getContent())
+        assertTrue(displayed.contains("我已经把仓库整改建议收口成三条。"), displayed)
+        assertTrue(displayed.contains("下一步：给部署链路补发布说明或脚本"), displayed)
+        assertTrue(displayed.contains("接下来：如果确认继续使用文档驱动开发"), displayed)
+        assertFalse(displayed.contains("M .spec-code/changes/repo-cleanup/tasks.md"), displayed)
+        assertFalse(displayed.contains("[tool.pytest.ini_options]"), displayed)
+        assertFalse(displayed.contains("Get-Content backend\\app\\tasks\\__init__.py"), displayed)
+        assertFalse(displayed.contains("from app.db.models.task import Task"), displayed)
+    }
+
     private fun invokeAssistantDisplayedAnswerResolver(panel: ChatMessagePanel, content: String): String {
         val snapshotMethod = ChatMessagePanel::class.java.getDeclaredMethod(
             "resolveTraceSnapshot",

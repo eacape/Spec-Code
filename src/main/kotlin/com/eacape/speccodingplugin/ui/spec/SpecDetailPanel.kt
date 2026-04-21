@@ -86,6 +86,7 @@ class SpecDetailPanel(
     private val previewCardPanel = JPanel(previewCardLayout)
     private val processTimelineLabel = JBLabel(SpecCodingBundle.message("spec.detail.process.title"))
     private val clarificationQuestionsLabel = JBLabel(SpecCodingBundle.message("spec.detail.clarify.questions.title"))
+    private val clarificationChecklistProgressLabel = JBLabel()
     private val clarificationChecklistHintLabel = JBLabel(SpecCodingBundle.message("spec.detail.clarify.checklist.hint"))
     private val clarificationPreviewLabel = JBLabel(SpecCodingBundle.message("spec.detail.clarify.preview.title"))
     private val clarificationQuestionsCardLayout = CardLayout()
@@ -495,14 +496,25 @@ class SpecDetailPanel(
         clarificationQuestionsPane.isOpaque = false
         clarificationQuestionsPane.border = JBUI.Borders.empty(2, 2)
         styleClarificationSectionLabel(clarificationQuestionsLabel)
+        clarificationChecklistProgressLabel.font = JBUI.Fonts.smallFont().deriveFont(Font.BOLD)
+        clarificationChecklistProgressLabel.foreground = TREE_TEXT
+        clarificationChecklistProgressLabel.isOpaque = false
+        clarificationChecklistProgressLabel.border = JBUI.Borders.empty()
         clarificationChecklistHintLabel.font = JBUI.Fonts.smallFont()
         clarificationChecklistHintLabel.foreground = TREE_FILE_TEXT
-        clarificationChecklistHintLabel.border = JBUI.Borders.empty(0, 2, 2, 2)
+        clarificationChecklistHintLabel.border = JBUI.Borders.empty(0, 2, 0, 2)
 
         clarificationChecklistPanel.layout = BoxLayout(clarificationChecklistPanel, BoxLayout.Y_AXIS)
         clarificationChecklistPanel.isOpaque = false
-        val checklistHeaderPanel = JPanel(BorderLayout()).apply {
+        val checklistHeaderPanel = JPanel(BorderLayout(0, JBUI.scale(4))).apply {
             isOpaque = false
+            add(
+                JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+                    isOpaque = false
+                    add(clarificationChecklistProgressLabel)
+                },
+                BorderLayout.NORTH,
+            )
             add(clarificationChecklistHintLabel, BorderLayout.CENTER)
         }
 
@@ -1264,6 +1276,7 @@ class SpecDetailPanel(
             state = clarificationState,
             structuredQuestions = structuredQuestions,
             questionDecisions = questionDecisions,
+            questionDetails = questionDetails,
             activeDetailIndex = activeChecklistDetailIndex,
         )
         activeChecklistDetailIndex = renderPlan.activeDetailIndex
@@ -1276,18 +1289,17 @@ class SpecDetailPanel(
                 ),
             )
             if (rowIndex < renderPlan.rowPlans.lastIndex) {
-                clarificationChecklistPanel.add(Box.createVerticalStrut(JBUI.scale(1)))
+                clarificationChecklistPanel.add(Box.createVerticalStrut(JBUI.scale(6)))
             }
         }
         val progress = renderPlan.progress
-        val summary = SpecCodingBundle.message(
+        clarificationChecklistProgressLabel.text = SpecCodingBundle.message(
             "spec.detail.clarify.checklist.progress",
             progress.confirmedCount,
             progress.notApplicableCount,
             progress.totalCount,
         )
-        val hint = SpecCodingBundle.message("spec.detail.clarify.checklist.hint")
-        clarificationChecklistHintLabel.text = "$summary  ·  $hint"
+        clarificationChecklistHintLabel.text = SpecCodingBundle.message("spec.detail.clarify.checklist.hint")
         clarificationChecklistPanel.revalidate()
         clarificationChecklistPanel.repaint()
     }
@@ -1298,20 +1310,13 @@ class SpecDetailPanel(
     ): JPanel {
         val index = rowPlan.index
         val decision = rowPlan.decision
-        val indicator = JBLabel(rowPlan.indicatorSymbol).apply {
-            font = JBUI.Fonts.smallFont().deriveFont(Font.BOLD)
-            foreground = checklistIndicatorForeground(rowPlan.tone)
-            border = JBUI.Borders.empty(1, 2, 0, 2)
-            cursor = if (editable) {
-                Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            } else {
-                Cursor.getDefaultCursor()
-            }
-        }
+        val accentStrip = createChecklistAccentStrip(
+            tone = rowPlan.tone,
+        )
         val questionText = JTextPane().apply {
             isEditable = false
             isOpaque = false
-            border = JBUI.Borders.empty(0, 2, 0, 2)
+            border = JBUI.Borders.empty()
             cursor = if (editable) {
                 Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
             } else {
@@ -1323,19 +1328,12 @@ class SpecDetailPanel(
             segments = rowPlan.questionSegments,
             fallbackText = rowPlan.normalizedQuestion,
         )
-        val confirmButton = createChecklistChoiceButton(
-            text = SpecCodingBundle.message("spec.detail.clarify.checklist.choice.confirm"),
-            selected = rowPlan.confirmSelected,
-            selectedBackground = CHECKLIST_CONFIRM_BG,
-            selectedForeground = CHECKLIST_CONFIRM_TEXT,
-            normalBackground = CHECKLIST_CHOICE_BG,
-            normalForeground = TREE_FILE_TEXT,
-            enabled = editable,
-        ) {
-            onChecklistQuestionConfirmRequested(index)
-        }
         val notApplicableButton = createChecklistChoiceButton(
-            text = SpecCodingBundle.message("spec.detail.clarify.checklist.choice.na"),
+            text = if (rowPlan.notApplicableSelected) {
+                SpecCodingBundle.message("spec.detail.clarify.checklist.choice.restore")
+            } else {
+                SpecCodingBundle.message("spec.detail.clarify.checklist.choice.na")
+            },
             selected = rowPlan.notApplicableSelected,
             selectedBackground = CHECKLIST_NA_BG,
             selectedForeground = CHECKLIST_NA_TEXT,
@@ -1348,22 +1346,24 @@ class SpecDetailPanel(
                 decision = rowPlan.notApplicableToggleDecision,
             )
         }
+        val helperLabel = JBLabel(checklistRowHelperText(rowPlan)).apply {
+            font = JBUI.Fonts.smallFont()
+            foreground = checklistHelperForeground(rowPlan.tone, rowPlan.active)
+            isOpaque = false
+            cursor = if (editable) {
+                Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            } else {
+                Cursor.getDefaultCursor()
+            }
+        }
         val actionsPanel = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
             isOpaque = false
-            add(confirmButton)
             add(notApplicableButton)
         }
-        val questionHeader = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
+        val contentPanel = JPanel(BorderLayout(0, JBUI.scale(4))).apply {
             isOpaque = false
-            add(indicator, BorderLayout.WEST)
-            add(
-                JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
-                    isOpaque = false
-                    add(questionText, BorderLayout.CENTER)
-                    add(actionsPanel, BorderLayout.EAST)
-                },
-                BorderLayout.CENTER,
-            )
+            add(questionText, BorderLayout.NORTH)
+            add(helperLabel, BorderLayout.CENTER)
         }
         val rowColors = checklistRowColors(rowPlan.tone)
         val row = JPanel(BorderLayout(0, 0)).apply {
@@ -1371,13 +1371,21 @@ class SpecDetailPanel(
             background = rowColors.background
             border = SpecUiStyle.roundedCardBorder(
                 lineColor = rowColors.border,
-                arc = JBUI.scale(10),
-                top = 1,
-                left = 8,
-                bottom = 1,
-                right = 8,
+                arc = JBUI.scale(14),
+                top = 10,
+                left = 12,
+                bottom = 10,
+                right = 12,
             )
-            add(questionHeader, BorderLayout.CENTER)
+            add(
+                JPanel(BorderLayout(JBUI.scale(10), 0)).apply {
+                    isOpaque = false
+                    add(accentStrip, BorderLayout.WEST)
+                    add(contentPanel, BorderLayout.CENTER)
+                    add(actionsPanel, BorderLayout.EAST)
+                },
+                BorderLayout.CENTER,
+            )
         }
         val toggleListener = object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent?) {
@@ -1392,10 +1400,55 @@ class SpecDetailPanel(
         }
         if (editable) {
             row.addMouseListener(toggleListener)
-            indicator.addMouseListener(toggleListener)
+            accentStrip.addMouseListener(toggleListener)
             questionText.addMouseListener(toggleListener)
+            helperLabel.addMouseListener(toggleListener)
         }
         return row
+    }
+
+    private fun createChecklistAccentStrip(
+        tone: SpecDetailClarificationChecklistRowTone,
+    ): JPanel {
+        val accentColor = when (tone) {
+            SpecDetailClarificationChecklistRowTone.CONFIRMED -> CHECKLIST_CONFIRM_TEXT
+            SpecDetailClarificationChecklistRowTone.NOT_APPLICABLE -> CHECKLIST_NA_TEXT
+            SpecDetailClarificationChecklistRowTone.DEFAULT -> CHECKLIST_INDICATOR_BORDER
+        }
+        return JPanel().apply {
+            isOpaque = true
+            background = accentColor
+            preferredSize = JBUI.size(JBUI.scale(3), 0)
+            minimumSize = JBUI.size(JBUI.scale(3), 0)
+        }
+    }
+
+    private fun checklistRowHelperText(rowPlan: SpecDetailClarificationChecklistRowPlan): String {
+        return when (rowPlan.decision) {
+            SpecDetailClarificationQuestionDecision.CONFIRMED -> {
+                if (rowPlan.detailPresent) {
+                    SpecCodingBundle.message("spec.detail.clarify.checklist.rowHint.confirmed")
+                } else {
+                    SpecCodingBundle.message("spec.detail.clarify.checklist.rowHint.confirmedMissing")
+                }
+            }
+            SpecDetailClarificationQuestionDecision.NOT_APPLICABLE ->
+                SpecCodingBundle.message("spec.detail.clarify.checklist.rowHint.na")
+            SpecDetailClarificationQuestionDecision.UNDECIDED ->
+                SpecCodingBundle.message("spec.detail.clarify.checklist.rowHint.pending")
+        }
+    }
+
+    private fun checklistHelperForeground(
+        tone: SpecDetailClarificationChecklistRowTone,
+        active: Boolean,
+    ): Color {
+        return when {
+            tone == SpecDetailClarificationChecklistRowTone.CONFIRMED && active -> CHECKLIST_CONFIRM_TEXT
+            tone == SpecDetailClarificationChecklistRowTone.CONFIRMED -> TREE_FILE_TEXT
+            tone == SpecDetailClarificationChecklistRowTone.NOT_APPLICABLE -> CHECKLIST_NA_TEXT
+            else -> TREE_FILE_TEXT
+        }
     }
 
     private fun createChecklistChoiceButton(
@@ -1520,19 +1573,11 @@ class SpecDetailPanel(
         }
     }
 
-    private fun checklistIndicatorForeground(tone: SpecDetailClarificationChecklistRowTone): Color {
-        return when (tone) {
-            SpecDetailClarificationChecklistRowTone.CONFIRMED -> CHECKLIST_CONFIRM_TEXT
-            SpecDetailClarificationChecklistRowTone.NOT_APPLICABLE -> CHECKLIST_NA_TEXT
-            SpecDetailClarificationChecklistRowTone.DEFAULT -> TREE_FILE_TEXT
-        }
-    }
-
     private fun checklistRowColors(tone: SpecDetailClarificationChecklistRowTone): ChecklistRowColors {
         return when (tone) {
             SpecDetailClarificationChecklistRowTone.CONFIRMED -> ChecklistRowColors(
-                background = CHECKLIST_ROW_BG_SELECTED,
-                border = CHECKLIST_ROW_BORDER_SELECTED,
+                background = CHECKLIST_ROW_BG_CONFIRMED,
+                border = CHECKLIST_ROW_BORDER_CONFIRMED,
             )
             SpecDetailClarificationChecklistRowTone.NOT_APPLICABLE -> ChecklistRowColors(
                 background = CHECKLIST_ROW_BG_NA,
@@ -2760,11 +2805,17 @@ class SpecDetailPanel(
         private val CLARIFICATION_CARD_BG = JBColor(Color(244, 249, 255), Color(56, 62, 72))
         private val CLARIFICATION_QUESTIONS_BG = JBColor(Color(249, 252, 255), Color(50, 56, 65))
         private val CLARIFICATION_QUESTIONS_BORDER = JBColor(Color(203, 216, 235), Color(84, 95, 110))
+        private val CHECKLIST_SUMMARY_BG = JBColor(Color(237, 245, 255), Color(70, 82, 98))
+        private val CHECKLIST_SUMMARY_BORDER = JBColor(Color(182, 203, 232), Color(105, 125, 153))
+        private val CHECKLIST_INDICATOR_BG = JBColor(Color(243, 248, 255), Color(67, 74, 85))
+        private val CHECKLIST_INDICATOR_BORDER = JBColor(Color(199, 211, 229), Color(101, 113, 131))
+        private val CHECKLIST_STATUS_BG = JBColor(Color(245, 249, 255), Color(68, 75, 86))
+        private val CHECKLIST_STATUS_BORDER = JBColor(Color(194, 207, 228), Color(103, 114, 130))
         private val CHECKLIST_ROW_BG = JBColor(Color(247, 251, 255), Color(59, 66, 76))
-        private val CHECKLIST_ROW_BG_SELECTED = JBColor(Color(234, 244, 255), Color(73, 88, 109))
+        private val CHECKLIST_ROW_BG_CONFIRMED = JBColor(Color(235, 245, 255), Color(72, 88, 111))
         private val CHECKLIST_ROW_BG_NA = JBColor(Color(250, 248, 243), Color(77, 74, 69))
         private val CHECKLIST_ROW_BORDER = JBColor(Color(210, 221, 238), Color(96, 108, 126))
-        private val CHECKLIST_ROW_BORDER_SELECTED = JBColor(Color(159, 187, 224), Color(126, 152, 182))
+        private val CHECKLIST_ROW_BORDER_CONFIRMED = JBColor(Color(159, 187, 224), Color(126, 152, 182))
         private val CHECKLIST_ROW_BORDER_NA = JBColor(Color(223, 210, 192), Color(126, 120, 110))
         private val CHECKLIST_CONFIRM_BG = JBColor(Color(223, 238, 255), Color(74, 95, 120))
         private val CHECKLIST_CONFIRM_TEXT = JBColor(Color(47, 91, 148), Color(192, 219, 255))
@@ -2815,7 +2866,7 @@ class SpecDetailPanel(
         private val COLLAPSE_TOGGLE_TEXT_ACTIVE = JBColor(Color(86, 115, 158), Color(187, 205, 230))
         private val DETAIL_START_REVISION_ICON = IconLoader.getIcon("/icons/spec-workflow-start-revision.svg", SpecDetailPanel::class.java)
         private val DETAIL_SAVE_ICON = IconLoader.getIcon("/icons/spec-detail-save.svg", SpecDetailPanel::class.java)
-        private const val DOCUMENT_VIEWPORT_HEIGHT = 360
+        private const val DOCUMENT_VIEWPORT_HEIGHT = 440
         private const val CARD_PREVIEW = "preview"
         private const val CARD_EDIT = "edit"
         private const val CARD_CLARIFY = "clarify"

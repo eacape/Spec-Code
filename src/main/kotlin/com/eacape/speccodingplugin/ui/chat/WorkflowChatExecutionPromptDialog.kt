@@ -11,14 +11,18 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
 import java.awt.Color
+import java.awt.Dimension
 import java.awt.Font
 import java.awt.FlowLayout
+import java.awt.Rectangle
 import java.awt.event.ActionEvent
 import java.awt.datatransfer.StringSelection
 import javax.swing.Action
 import javax.swing.BoxLayout
 import javax.swing.JComponent
 import javax.swing.JPanel
+import javax.swing.Scrollable
+import javax.swing.ScrollPaneConstants
 
 internal class WorkflowChatExecutionPromptDialog(
     private val promptText: String,
@@ -106,10 +110,22 @@ internal class WorkflowChatExecutionPromptDialog(
     }
 
     private fun createOverviewPanel(): JComponent {
-        val content = JPanel().apply {
+        val content = object : JPanel(), Scrollable {
+            override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
+
+            override fun getScrollableUnitIncrement(visibleRect: Rectangle, orientation: Int, direction: Int): Int =
+                JBUI.scale(28)
+
+            override fun getScrollableBlockIncrement(visibleRect: Rectangle, orientation: Int, direction: Int): Int =
+                (visibleRect.height - JBUI.scale(28)).coerceAtLeast(JBUI.scale(28))
+
+            override fun getScrollableTracksViewportWidth(): Boolean = true
+
+            override fun getScrollableTracksViewportHeight(): Boolean = false
+        }.apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
             isOpaque = false
-            border = JBUI.Borders.empty(8, 10, 8, 10)
+            border = JBUI.Borders.empty(6, 8, 6, 8)
         }
 
         overview.leadLines.takeIf { it.isNotEmpty() }?.let { leadLines ->
@@ -145,24 +161,28 @@ internal class WorkflowChatExecutionPromptDialog(
 
         return JBScrollPane(content).apply {
             border = JBUI.Borders.customLine(BORDER_FG, 1)
+            horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
         }
     }
 
     private fun createRawPromptPanel(): JComponent {
         val promptArea = JBTextArea(promptText).apply {
             isEditable = false
-            lineWrap = false
-            wrapStyleWord = false
+            isOpaque = false
+            lineWrap = true
+            wrapStyleWord = true
             font = Font(Font.MONOSPACED, Font.PLAIN, JBUI.scale(12))
-            border = JBUI.Borders.empty(4, 4, 4, 4)
+            border = JBUI.Borders.empty(6, 8, 6, 8)
             caretPosition = 0
+            isFocusable = false
         }
 
         return JPanel(BorderLayout(0, JBUI.scale(8))).apply {
-            border = JBUI.Borders.empty(8)
+            border = JBUI.Borders.empty(6)
             add(
                 JBScrollPane(promptArea).apply {
                     border = JBUI.Borders.customLine(BORDER_FG, 1)
+                    horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
                 },
                 BorderLayout.CENTER,
             )
@@ -172,28 +192,28 @@ internal class WorkflowChatExecutionPromptDialog(
     private fun createSectionGap(): JPanel {
         return JPanel().apply {
             isOpaque = false
-            border = JBUI.Borders.emptyTop(8)
+            border = JBUI.Borders.emptyTop(6)
         }
     }
 
     private fun createSectionPreviewPanel(section: WorkflowChatExecutionPromptDebugSection): JPanel {
         val previewLines = section.previewLines()
         val hiddenLineCount = section.hiddenLineCount()
-        val panel = JPanel(BorderLayout(0, JBUI.scale(6))).apply {
+        val panel = JPanel(BorderLayout(0, JBUI.scale(4))).apply {
             isOpaque = true
             background = CARD_BG
             border = JBUI.Borders.compound(
                 JBUI.Borders.customLine(BORDER_FG, 1),
-                JBUI.Borders.empty(10, 12, 10, 12),
+                JBUI.Borders.empty(8, 10, 8, 10),
             )
         }
 
-        val header = JPanel(BorderLayout(JBUI.scale(8), 0)).apply {
+        val header = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
             isOpaque = false
             add(
                 JBLabel(section.title).apply {
                     foreground = TITLE_FG
-                    font = font.deriveFont(Font.BOLD, 12f)
+                    font = font.deriveFont(Font.BOLD, 11f)
                 },
                 BorderLayout.CENTER,
             )
@@ -234,7 +254,7 @@ internal class WorkflowChatExecutionPromptDialog(
                         hiddenLineCount,
                     ),
                 ).apply {
-                    border = JBUI.Borders.emptyTop(8)
+                    border = JBUI.Borders.emptyTop(6)
                 },
             )
         }
@@ -250,7 +270,7 @@ internal class WorkflowChatExecutionPromptDialog(
             background = BADGE_BG
             border = JBUI.Borders.compound(
                 JBUI.Borders.customLine(BADGE_BORDER, 1),
-                JBUI.Borders.empty(2, 8, 2, 8),
+                JBUI.Borders.empty(1, 6, 1, 6),
             )
             add(
                 JBLabel(text).apply {
@@ -262,12 +282,13 @@ internal class WorkflowChatExecutionPromptDialog(
     }
 
     private fun createPreviewLine(text: String): JPanel {
-        return JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
+        return JPanel(BorderLayout(JBUI.scale(4), 0)).apply {
             isOpaque = false
             add(
                 JBLabel("-").apply {
                     foreground = ACCENT_FG
-                    font = font.deriveFont(Font.BOLD, 12f)
+                    font = font.deriveFont(Font.BOLD, 11f)
+                    border = JBUI.Borders.emptyTop(1)
                 },
                 BorderLayout.WEST,
             )
@@ -281,8 +302,7 @@ internal class WorkflowChatExecutionPromptDialog(
             isOpaque = false
             lineWrap = true
             wrapStyleWord = true
-            columns = 72
-            font = JBUI.Fonts.label().deriveFont(12f)
+            font = JBUI.Fonts.label().deriveFont(11f)
             border = JBUI.Borders.empty(0)
             foreground = BODY_FG
             isFocusable = false

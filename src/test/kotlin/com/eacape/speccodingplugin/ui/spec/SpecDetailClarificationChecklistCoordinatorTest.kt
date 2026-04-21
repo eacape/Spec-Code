@@ -3,7 +3,6 @@ package com.eacape.speccodingplugin.ui.spec
 import com.eacape.speccodingplugin.spec.SpecPhase
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
-import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -31,7 +30,7 @@ class SpecDetailClarificationChecklistCoordinatorTest {
     }
 
     @Test
-    fun `planRowClick should clear confirmed question without requesting detail`() {
+    fun `planRowClick should reopen detail editor for confirmed question`() {
         val plan = SpecDetailClarificationChecklistCoordinator.planRowClick(
             state = checklistState(
                 decisions = mapOf(
@@ -47,11 +46,15 @@ class SpecDetailClarificationChecklistCoordinatorTest {
             text = clarificationText(),
         )
 
-        val apply = assertApply(plan)
-        assertTrue(apply.result.questionListChanged)
-        assertTrue(apply.result.state.questionDecisions.isEmpty())
-        assertEquals("", apply.result.confirmedContext)
-        assertEquals(null, apply.result.activeDetailIndex)
+        assertEquals(
+            SpecDetailClarificationChecklistRowClickPlan.RequestConfirmDetail(
+                SpecDetailClarificationConfirmDetailRequest(
+                    question = "Should support offline sync",
+                    initialDetail = "Keep queue",
+                ),
+            ),
+            plan,
+        )
     }
 
     @Test
@@ -120,14 +123,6 @@ class SpecDetailClarificationChecklistCoordinatorTest {
         assertFalse(resolved.questionListChanged)
         assertEquals("Retry locally", resolved.state.questionDetails[0])
         assertEquals(0, resolved.activeDetailIndex)
-    }
-
-    private fun assertApply(
-        plan: SpecDetailClarificationChecklistRowClickPlan?,
-    ): SpecDetailClarificationChecklistRowClickPlan.Apply {
-        assertNotNull(plan)
-        assertTrue(plan is SpecDetailClarificationChecklistRowClickPlan.Apply)
-        return plan as SpecDetailClarificationChecklistRowClickPlan.Apply
     }
 
     private fun checklistState(

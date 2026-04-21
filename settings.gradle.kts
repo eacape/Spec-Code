@@ -21,11 +21,23 @@ System.setProperty(
     "org.jetbrains.intellij.platform.productsReleasesAndroidStudioUrl",
     localAndroidStudioReleasesListUri,
 )
+val injectedIntellijPlatformProperties = mapOf(
+    "org.jetbrains.intellij.platform.productsReleasesAndroidStudioUrl" to localAndroidStudioReleasesListUri,
+    "org.jetbrains.intellij.platform.selfUpdateCheck" to "false",
+)
+runCatching {
+    @Suppress("UNCHECKED_CAST")
+    val projectProperties = gradle.startParameter.projectProperties as MutableMap<String, String>
+    injectedIntellijPlatformProperties.forEach { (key, value) ->
+        projectProperties.putIfAbsent(key, value)
+    }
+}
 gradle.beforeProject {
     val project = this
-    if (!project.extensions.extraProperties.has("org.jetbrains.intellij.platform.productsReleasesAndroidStudioUrl")) {
-        project.extensions.extraProperties["org.jetbrains.intellij.platform.productsReleasesAndroidStudioUrl"] =
-            localAndroidStudioReleasesListUri
+    injectedIntellijPlatformProperties.forEach { (key, value) ->
+        if (!project.extensions.extraProperties.has(key)) {
+            project.extensions.extraProperties[key] = value
+        }
     }
 }
 

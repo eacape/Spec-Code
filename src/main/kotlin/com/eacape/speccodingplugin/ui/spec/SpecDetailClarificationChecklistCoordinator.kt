@@ -35,25 +35,11 @@ internal object SpecDetailClarificationChecklistCoordinator {
             return null
         }
         val currentDecision = state.questionDecisions[index] ?: fallbackDecision
-        val nextDecision = when (currentDecision) {
-            SpecDetailClarificationQuestionDecision.UNDECIDED -> SpecDetailClarificationQuestionDecision.CONFIRMED
-            SpecDetailClarificationQuestionDecision.CONFIRMED -> SpecDetailClarificationQuestionDecision.UNDECIDED
-            SpecDetailClarificationQuestionDecision.NOT_APPLICABLE -> SpecDetailClarificationQuestionDecision.CONFIRMED
-        }
-        return when (nextDecision) {
-            SpecDetailClarificationQuestionDecision.CONFIRMED -> {
-                prepareConfirmDetail(state, index)?.let(SpecDetailClarificationChecklistRowClickPlan::RequestConfirmDetail)
-            }
-
+        return when (currentDecision) {
             SpecDetailClarificationQuestionDecision.UNDECIDED,
+            SpecDetailClarificationQuestionDecision.CONFIRMED,
             SpecDetailClarificationQuestionDecision.NOT_APPLICABLE,
-            -> applyDecision(
-                state = state,
-                activeDetailIndex = activeDetailIndex,
-                index = index,
-                decision = nextDecision,
-                text = text,
-            )?.let(SpecDetailClarificationChecklistRowClickPlan::Apply)
+            -> prepareConfirmDetail(state, index)?.let(SpecDetailClarificationChecklistRowClickPlan::RequestConfirmDetail)
         }
     }
 

@@ -1026,11 +1026,7 @@ open class ChatMessagePanel(
             .map(String::trim)
             .filter(String::isNotBlank)
         if (nonBlankLines.isEmpty()) return true
-        return nonBlankLines.all { line ->
-            looksLikeRawCodeOrPatchLine(line) ||
-                looksLikeToolDiagnosticLine(line) ||
-                looksLikePromptInventorySignalLine(line)
-        }
+        return nonBlankLines.all(::looksLikeExecutionTailContaminationLine)
     }
 
     private fun looksLikePromptInstructionEchoLine(line: String): Boolean {
@@ -1194,25 +1190,19 @@ open class ChatMessagePanel(
             kept += rawLine
         }
 
-        return emptyList()
+        return kept.dropLastWhile(String::isBlank)
     }
 
     private fun shouldSkipAssistantAnswerInterruptionLine(line: String): Boolean {
         val trimmed = line.trim()
         if (trimmed.isBlank()) return false
-        if (looksLikePromptInventorySignalLine(trimmed)) return true
-        if (looksLikeToolDiagnosticLine(trimmed)) return true
-        if (OUTPUT_METADATA_KEY_VALUE_REGEX.matches(trimmed)) return true
-        return false
+        return looksLikeExecutionTailContaminationLine(trimmed)
     }
 
     private fun isAllowedAssistantAnswerBlockLine(line: String): Boolean {
         val trimmed = line.trim()
         if (trimmed.isBlank()) return false
-        if (looksLikeRawCodeOrPatchLine(trimmed)) return false
-        if (looksLikeToolDiagnosticLine(trimmed)) return false
-        if (looksLikePromptInventorySignalLine(trimmed)) return false
-        if (OUTPUT_METADATA_KEY_VALUE_REGEX.matches(trimmed)) return false
+        if (looksLikeExecutionTailContaminationLine(trimmed)) return false
         if (trimmed.startsWith("```")) return true
         if (trimmed.startsWith("|")) return true
         if (MARKDOWN_HEADING_REGEX.matches(trimmed)) return true
@@ -1239,6 +1229,7 @@ open class ChatMessagePanel(
         if (nonBlankLines.any { matchesPromptScaffoldingSignal(normalizeOutputClassifierLine(it)) }) {
             return false
         }
+        if (nonBlankLines.count(::looksLikeExecutionTailContaminationLine) >= 2) return false
         if (looksLikeExecutionLeakTailLeadLine(nonBlankLines.first())) return false
         val suspiciousLeakCount = nonBlankLines.count(::looksLikeExecutionLeakTailLine)
         if (suspiciousLeakCount >= 2 && !looksLikeStrongAssistantResponseStart(nonBlankLines.first())) {
@@ -1268,13 +1259,9 @@ open class ChatMessagePanel(
         if (nonBlankLines.any { isAllowedAssistantAnswerBlockLine(it) && !looksLikePromptLikeQuestionLine(it) }) {
             score += 1
         }
+        score -= nonBlankLines.count(::looksLikeExecutionTailContaminationLine) * 6
         if (looksLikeExecutionLeakTailLeadLine(firstLine)) score -= 6
         score -= nonBlankLines.count(::looksLikeExecutionLeakTailLine) * 4
-        score -= nonBlankLines.count { line ->
-            looksLikeRawCodeOrPatchLine(line) ||
-                looksLikeToolDiagnosticLine(line) ||
-                looksLikePromptInventorySignalLine(line)
-        } * 3
         return score
     }
 
@@ -1288,6 +1275,7 @@ open class ChatMessagePanel(
     private fun looksLikeExecutionLeakTailLine(line: String): Boolean {
         val trimmed = line.trim()
         if (trimmed.isBlank()) return false
+        if (looksLikeExecutionTailContaminationLine(trimmed)) return true
         if (looksLikeExecutionLeakTailLeadLine(trimmed)) return true
         if (OUTPUT_ENUM_MEMBER_REFERENCE_REGEX.containsMatchIn(trimmed)) return true
         if (trimmed.contains('|') && OUTPUT_CAMEL_IDENTIFIER_REGEX.findAll(trimmed).count() >= 1) return true
@@ -3279,6 +3267,11 @@ open class ChatMessagePanel(
             return leadingAnswerBlock.take(OUTPUT_FILTER_MAX_LINES)
         }
 
+        val stageSummaries = selectKeyOutputLinesForPanel(lines)
+        if (stageSummaries.isNotEmpty()) {
+            return stageSummaries.take(OUTPUT_FILTER_MAX_LINES)
+        }
+
         val deduped = lines
             .filter(::looksLikeWhitelistedOutputLine)
             .distinct()
@@ -3314,9 +3307,7 @@ open class ChatMessagePanel(
     private fun looksLikeWhitelistedOutputLine(line: String): Boolean {
         val trimmed = line.trim()
         if (trimmed.isBlank()) return false
-        if (looksLikeRawCodeOrPatchLine(trimmed)) return false
-        if (looksLikeToolDiagnosticLine(trimmed)) return false
-        if (looksLikePromptInventorySignalLine(trimmed)) return false
+        if (looksLikeExecutionTailContaminationLine(trimmed)) return false
         return looksLikeNarrativeOutputLine(trimmed)
     }
 
@@ -3347,6 +3338,18 @@ open class ChatMessagePanel(
         if (trimmed.isBlank()) return false
         if (OUTPUT_COLUMNS_HEADER_REGEX.matches(trimmed)) return true
         return false
+    }
+
+    private fun looksLikeExecutionTailContaminationLine(line: String): Boolean {
+        val trimmed = line.trim()
+        if (trimmed.isBlank()) return false
+        if (looksLikeRawCodeOrPatchLine(trimmed)) return true
+        if (looksLikeToolDiagnosticLine(trimmed)) return true
+        if (looksLikePromptInventorySignalLine(trimmed)) return true
+        if (OUTPUT_METADATA_KEY_VALUE_REGEX.matches(trimmed)) return true
+        if (containsLooseTabularSignal(trimmed)) return true
+        return OUTPUT_GIT_STATUS_LINE_REGEX.matches(trimmed) ||
+            OUTPUT_TOML_TABLE_HEADER_REGEX.matches(trimmed)
     }
 
     private fun looksLikeNarrativeOutputLine(line: String): Boolean {
@@ -3399,6 +3402,8 @@ open class ChatMessagePanel(
         if (OUTPUT_DIFF_CONTROL_PREFIXES.any { trimmed.startsWith(it) }) return true
         if (OUTPUT_COMMAND_LINE_REGEX.matches(trimmed)) return true
         if (OUTPUT_FILE_PATH_LINE_REGEX.matches(trimmed)) return true
+        if (OUTPUT_POWERSHELL_CMDLET_LINE_REGEX.matches(trimmed)) return true
+        if (OUTPUT_PYTHON_IMPORT_LINE_REGEX.matches(normalized)) return true
         if (OUTPUT_ASSERTION_STATEMENT_REGEX.matches(normalized)) return true
         if (OUTPUT_TYPED_PROPERTY_LINE_REGEX.matches(normalized)) return true
         if (OUTPUT_INDEXED_ASSIGNMENT_LINE_REGEX.matches(normalized)) return true
@@ -4497,11 +4502,23 @@ open class ChatMessagePanel(
             """^(?:PS\s+[^>]+>\s+.+|[$#]\s+.+|(?:git|rg|ls|cat|npm|pnpm|yarn|gradle|\.\/gradlew(?:\.bat)?|powershell(?:\.exe)?|python(?:3)?|node|cargo|go|java|javac|mvn|pytest|uv|specify|openspec)\b.*)$""",
             RegexOption.IGNORE_CASE,
         )
+        private val OUTPUT_POWERSHELL_CMDLET_LINE_REGEX = Regex(
+            """^(?:Get|Set|Add|Remove|Select|Where|ForEach|Format|Out|New|Copy|Move|Start|Stop|Test|Join|Split)-[A-Za-z][A-Za-z0-9]*\b.*$""",
+            RegexOption.IGNORE_CASE,
+        )
         private val OUTPUT_FILE_PATH_LINE_REGEX = Regex(
             """^(?!https?://)(?:(?:[A-Za-z]:)?[\\/])?(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9]+)?(?::\d+(?::\d+)?)?$""",
         )
+        private val OUTPUT_GIT_STATUS_LINE_REGEX = Regex(
+            """^(?:[ MARCUD?!]{1,2})\s+(?:(?:[A-Za-z]:)?[\\/])?(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9]+)?$""",
+        )
+        private val OUTPUT_TOML_TABLE_HEADER_REGEX = Regex("""^\[[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9_.-]+)*]$""")
         private val OUTPUT_CODE_DECLARATION_REGEX = Regex(
             """^(?:[+\-])?\s*(?:@[\w.]+(?:\([^)]*\))?\s*)*(?:(?:private|public|protected|internal|override|open|abstract|sealed|data|final|const|inline|suspend|lateinit|export)\s+)*(?:class|interface|object|enum|fun|val|var|package|import|def|function|const|let|type|return|throw|catch|try|if|else|for|while|switch|case|when)\b.*$""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val OUTPUT_PYTHON_IMPORT_LINE_REGEX = Regex(
+            """^(?:from\s+[A-Za-z_][\w.]*\s+import\b.*|import\s+[A-Za-z_][\w., ]*)$""",
             RegexOption.IGNORE_CASE,
         )
         private val OUTPUT_CODE_BLOCK_ONLY_LINE_REGEX = Regex("""^[{}\[\](),;]+$""")

@@ -23,6 +23,7 @@ class SpecDetailClarificationChecklistRenderCoordinatorTest {
             state = state.copy(structuredQuestions = structuredQuestions),
             structuredQuestions = structuredQuestions,
             questionDecisions = state.questionDecisions,
+            questionDetails = emptyMap(),
             activeDetailIndex = 0,
         )
 
@@ -36,6 +37,8 @@ class SpecDetailClarificationChecklistRenderCoordinatorTest {
             plan.progress,
         )
         assertEquals("\u2713", plan.rowPlans[0].indicatorSymbol)
+        assertEquals(true, plan.rowPlans[0].active)
+        assertEquals(false, plan.rowPlans[0].detailPresent)
         assertEquals(SpecDetailClarificationChecklistRowTone.CONFIRMED, plan.rowPlans[0].tone)
         assertEquals(true, plan.rowPlans[0].confirmSelected)
         assertEquals(false, plan.rowPlans[0].notApplicableSelected)
@@ -69,6 +72,7 @@ class SpecDetailClarificationChecklistRenderCoordinatorTest {
             questionDecisions = mapOf(
                 1 to SpecDetailClarificationQuestionDecision.CONFIRMED,
             ),
+            questionDetails = emptyMap(),
             activeDetailIndex = 0,
         )
 
@@ -86,6 +90,9 @@ class SpecDetailClarificationChecklistRenderCoordinatorTest {
             questionDecisions = mapOf(
                 1 to SpecDetailClarificationQuestionDecision.CONFIRMED,
             ),
+            questionDetails = mapOf(
+                1 to "Retain offline queue",
+            ),
             activeDetailIndex = null,
         )
 
@@ -100,6 +107,7 @@ class SpecDetailClarificationChecklistRenderCoordinatorTest {
         )
         assertEquals("\u2022", plan.rowPlans[0].indicatorSymbol)
         assertEquals(SpecDetailClarificationChecklistRowTone.DEFAULT, plan.rowPlans[0].tone)
+        assertEquals(true, plan.rowPlans[1].detailPresent)
         assertEquals(SpecDetailClarificationQuestionDecision.NOT_APPLICABLE, plan.rowPlans[0].notApplicableToggleDecision)
     }
 
@@ -112,6 +120,7 @@ class SpecDetailClarificationChecklistRenderCoordinatorTest {
                 "Question B",
             ),
             questionDecisions = emptyMap(),
+            questionDetails = emptyMap(),
             activeDetailIndex = 1,
         )
 

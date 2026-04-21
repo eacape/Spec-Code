@@ -9,6 +9,8 @@ internal enum class SpecDetailClarificationChecklistRowTone {
 internal data class SpecDetailClarificationChecklistRowPlan(
     val index: Int,
     val decision: SpecDetailClarificationQuestionDecision,
+    val active: Boolean,
+    val detailPresent: Boolean,
     val indicatorSymbol: String,
     val tone: SpecDetailClarificationChecklistRowTone,
     val normalizedQuestion: String,
@@ -30,6 +32,7 @@ internal object SpecDetailClarificationChecklistRenderCoordinator {
         state: SpecDetailClarificationFormState?,
         structuredQuestions: List<String>,
         questionDecisions: Map<Int, SpecDetailClarificationQuestionDecision>,
+        questionDetails: Map<Int, String>,
         activeDetailIndex: Int?,
     ): SpecDetailClarificationChecklistRenderPlan {
         val resolvedActiveDetailIndex = state?.resolvedActiveDetailIndex(activeDetailIndex)
@@ -52,6 +55,8 @@ internal object SpecDetailClarificationChecklistRenderCoordinator {
                 SpecDetailClarificationChecklistRowPlan(
                     index = index,
                     decision = decision,
+                    active = resolvedActiveDetailIndex == index,
+                    detailPresent = questionDetails[index]?.isNotBlank() == true,
                     indicatorSymbol = decision.toIndicatorSymbol(),
                     tone = decision.toRowTone(),
                     normalizedQuestion = SpecDetailClarificationInlineMarkdownParser.normalizeWhitespace(question),

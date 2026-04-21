@@ -88,6 +88,10 @@ val compatibilityVerificationIdeTargets: List<Pair<IntelliJPlatformType, String>
     IntelliJPlatformType.IntellijIdeaCommunity to "2024.2",
     IntelliJPlatformType.IntellijIdeaUltimate to "2025.3",
 )
+val shouldConfigurePluginVerification = gradle.startParameter.taskNames.any { taskName ->
+    taskName.contains("verifyPlugin", ignoreCase = true) ||
+        taskName.contains("compatibilityVerification", ignoreCase = true)
+}
 
 data class OversizedSourceScope(
     val label: String,
@@ -240,13 +244,15 @@ intellijPlatform {
     // Windows and trips Gradle 9 immutable-workspace checks during packaging.
     buildSearchableOptions.set(false)
 
-    pluginVerification {
-        // Verify the declared support floor and current upper-edge IDE branch.
-        // IntelliJ IDEA Community artifacts are no longer published for 2025.3+.
-        // Plugin 2.2.1 still exposes the legacy IU type and uses ide(...) here.
-        ides {
-            compatibilityVerificationIdeTargets.forEach { (type, version) ->
-                ide(type, version)
+    if (shouldConfigurePluginVerification) {
+        pluginVerification {
+            // Verify the declared support floor and current upper-edge IDE branch.
+            // IntelliJ IDEA Community artifacts are no longer published for 2025.3+.
+            // Plugin 2.2.1 still exposes the legacy IU type and uses ide(...) here.
+            ides {
+                compatibilityVerificationIdeTargets.forEach { (type, version) ->
+                    ide(type, version)
+                }
             }
         }
     }
