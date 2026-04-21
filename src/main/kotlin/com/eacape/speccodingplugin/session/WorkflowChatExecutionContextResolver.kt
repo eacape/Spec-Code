@@ -29,24 +29,36 @@ class WorkflowChatExecutionContextResolver(private val project: Project) {
 
     fun resolve(binding: WorkflowChatBinding?): WorkflowChatExecutionContext? {
         val normalizedBinding = binding?.normalizedOrNull() ?: return null
-        return resolve(normalizedBinding.workflowId)
+        return resolveBinding(normalizedBinding)
     }
 
     fun resolve(workflowId: String): WorkflowChatExecutionContext? {
         val normalizedWorkflowId = workflowId.trim().ifBlank { return null }
+        return resolve(
+            WorkflowChatBinding(
+                workflowId = normalizedWorkflowId,
+                source = WorkflowChatEntrySource.SESSION_RESTORE,
+            ),
+        )
+    }
+
+    fun resolveBinding(binding: WorkflowChatBinding): WorkflowChatExecutionContext? {
+        val normalizedBinding = binding.normalizedOrNull() ?: return null
+        val normalizedWorkflowId = normalizedBinding.workflowId
         val workflow = (workflowLoaderOverride
             ?: { id -> specEngine.loadWorkflow(id).getOrNull() })(normalizedWorkflowId)
             ?: return null
-        return resolve(normalizedWorkflowId, workflow.taskExecutionRuns)
+        return resolve(normalizedBinding, workflow.taskExecutionRuns)
     }
 
     internal fun resolve(
-        workflowId: String,
+        binding: WorkflowChatBinding,
         runs: List<TaskExecutionRun>,
     ): WorkflowChatExecutionContext? {
-        val currentRun = selectContextRun(runs) ?: return null
+        val normalizedBinding = binding.normalizedOrNull() ?: return null
+        val currentRun = selectContextRun(normalizedBinding, runs) ?: return null
         return WorkflowChatExecutionContext(
-            workflowId = workflowId,
+            workflowId = normalizedBinding.workflowId,
             runId = currentRun.runId,
             taskId = currentRun.taskId,
             status = currentRun.status,
@@ -54,8 +66,12 @@ class WorkflowChatExecutionContextResolver(private val project: Project) {
         )
     }
 
-    internal fun selectContextRun(runs: List<TaskExecutionRun>): TaskExecutionRun? {
+    internal fun selectContextRun(binding: WorkflowChatBinding, runs: List<TaskExecutionRun>): TaskExecutionRun? {
+        val normalizedBinding = binding.normalizedOrNull() ?: return null
         return runs.asSequence()
+            .filter { run ->
+                normalizedBinding.taskId == null || run.taskId == normalizedBinding.taskId
+            }
             .filter(::isContextEligible)
             // Until the workflow spec defines multi-run focus policy, prefer the latest waiting/active run.
             .sortedWith(

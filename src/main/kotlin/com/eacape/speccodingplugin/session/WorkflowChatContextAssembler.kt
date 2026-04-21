@@ -104,10 +104,10 @@ class WorkflowChatContextAssembler(private val project: Project) {
                 .sortedBy(StructuredTask::id)
         }.getOrDefault(emptyList())
         val executionContext = executionContextResolver.resolve(
-            workflowId = workflow.id,
+            binding = normalizedBinding,
             runs = workflow.taskExecutionRuns,
         )
-        val currentTaskId = executionContext?.taskId
+        val currentTaskId = normalizedBinding.taskId ?: executionContext?.taskId
         val currentTask = currentTaskId?.let { taskId -> tasks.firstOrNull { task -> task.id == taskId } }
 
         return WorkflowChatPromptContext(

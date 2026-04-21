@@ -938,6 +938,104 @@ class ChatMessagePanelTraceStreamingTest {
     }
 
     @Test
+    fun `code tail explicit answer should fall back to output summary in final answer slot`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent("results[engine.id] = EngineHealthResult(")
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = """
+                        已确认: 当前版本还不是 Demo，已经是 0.0.1-beta 阶段，代码体量和测试规模都说明它是一个在持续演进的插件。
+                        它是在 JetBrains IDE 里，把 Claude/Codex 这类 AI 编码能力流程化、工程化、可审计化的插件。
+                        如果要继续深入，下一步可以从项目定位、技术栈、模块结构和当前最大风险四个方向展开。
+                        tokens used
+                        71,022
+                    """.trimIndent(),
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.finishMessage()
+        }
+
+        val displayed = invokeAssistantDisplayedAnswerResolver(panel, panel.getContent())
+        assertTrue(displayed.contains("当前版本还不是 Demo"), displayed)
+        assertTrue(displayed.contains("JetBrains IDE"), displayed)
+        assertTrue(displayed.contains("下一步可以从项目定位"), displayed)
+        assertFalse(displayed.contains("results[engine.id] = EngineHealthResult("), displayed)
+        assertFalse(displayed.contains("tokens used"), displayed)
+        assertFalse(displayed.contains("71,022"), displayed)
+
+        val renderedChildren = renderedContentChildren(panel)
+        assertTrue(renderedChildren.size >= 2, "Expected trace section plus final answer")
+
+        val finalAnswerText = collectDescendants(renderedChildren.last())
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertTrue(finalAnswerText.contains("当前版本还不是 Demo"), finalAnswerText)
+        assertTrue(finalAnswerText.contains("JetBrains IDE"), finalAnswerText)
+        assertTrue(finalAnswerText.contains("下一步可以从项目定位"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("results[engine.id] = EngineHealthResult("), finalAnswerText)
+        assertFalse(finalAnswerText.contains("tokens used"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("71,022"), finalAnswerText)
+    }
+
+    @Test
+    fun `chinese structured prompt agenda should not override output answer in final answer slot`() {
+        val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
+
+        runOnEdt {
+            panel.appendContent(
+                """
+                职责：4. 核心执行流程与调用链；5. 关键数据模型、状态流转或接口关系；6. 构建、运行、测试与发布方式。
+                优先指出真正影响交付和维护的问题；如果没看重点不足，明确缺失点以及下一步应检查什么。
+                最后给出一个简洁的行动清单，按高/中/低优先级列出可执行改进建议。
+                """.trimIndent()
+            )
+            panel.appendStreamEvent(
+                ChatStreamEvent(
+                    kind = ChatTraceKind.OUTPUT,
+                    detail = """
+                        基于现状判断：这个后端更像一个“CBA 排名平台”项目的后端一期脚手架，先把运行框架、配置加载、健康检查、任务调度、迁移体系搭起来了。
+                        真正的核心业务能力，比如排名抓取、清洗、入库、查询接口，目前还没有完整落地。
+                        如果要继续，下一步可以继续给你做多维分析完整版，把目录职责、调用链、风险点、优先改进项快速拆出来。
+                        tokens used
+                        34,511
+                    """.trimIndent(),
+                    status = ChatTraceStatus.DONE,
+                )
+            )
+            panel.finishMessage()
+        }
+
+        val displayed = invokeAssistantDisplayedAnswerResolver(panel, panel.getContent())
+        assertTrue(displayed.contains("这个后端更像一个“CBA 排名平台”项目的后端一期脚手架"), displayed)
+        assertTrue(displayed.contains("真正的核心业务能力"), displayed)
+        assertTrue(displayed.contains("下一步可以继续给你做多维分析完整版"), displayed)
+        assertFalse(displayed.contains("核心执行流程与调用链"), displayed)
+        assertFalse(displayed.contains("优先指出真正影响交付和维护的问题"), displayed)
+        assertFalse(displayed.contains("按高/中/低优先级列出可执行改进建议"), displayed)
+        assertFalse(displayed.contains("tokens used"), displayed)
+
+        val renderedChildren = renderedContentChildren(panel)
+        assertTrue(renderedChildren.size >= 2, "Expected trace section plus final answer")
+
+        val finalAnswerText = collectDescendants(renderedChildren.last())
+            .filterIsInstance<JTextPane>()
+            .joinToString("\n") { textOf(it) }
+
+        assertTrue(finalAnswerText.contains("这个后端更像一个“CBA 排名平台”项目的后端一期脚手架"), finalAnswerText)
+        assertTrue(finalAnswerText.contains("真正的核心业务能力"), finalAnswerText)
+        assertTrue(finalAnswerText.contains("下一步可以继续给你做多维分析完整版"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("核心执行流程与调用链"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("优先指出真正影响交付和维护的问题"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("按高/中/低优先级列出可执行改进建议"), finalAnswerText)
+        assertFalse(finalAnswerText.contains("tokens used"), finalAnswerText)
+    }
+
+    @Test
     fun `trace assistant message should not let partial history inventory bypass answer cleanup`() {
         val panel = ChatMessagePanel(role = ChatMessagePanel.MessageRole.ASSISTANT)
 

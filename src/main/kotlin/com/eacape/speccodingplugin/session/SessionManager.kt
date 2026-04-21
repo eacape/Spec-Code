@@ -95,7 +95,7 @@ class SessionManager internal constructor(
                     statement.setString(4, session.worktreeId)
                     statement.setString(5, session.modelProvider)
                     statement.setString(6, session.workflowChatBinding?.workflowId)
-                    statement.setNull(7, java.sql.Types.VARCHAR)
+                    statement.setString(7, session.workflowChatBinding?.taskId)
                     statement.setString(8, session.workflowChatBinding?.focusedStage?.name)
                     statement.setString(9, session.workflowChatBinding?.source?.name)
                     statement.setString(10, session.workflowChatBinding?.actionIntent?.name)
@@ -159,7 +159,7 @@ class SessionManager internal constructor(
                 ).use { statement ->
                     statement.setString(1, normalizedSpecTaskId)
                     statement.setString(2, normalizedBinding?.workflowId)
-                    statement.setNull(3, java.sql.Types.VARCHAR)
+                    statement.setString(3, normalizedBinding?.taskId)
                     statement.setString(4, normalizedBinding?.focusedStage?.name)
                     statement.setString(5, normalizedBinding?.source?.name)
                     statement.setString(6, normalizedBinding?.actionIntent?.name)
@@ -194,7 +194,7 @@ class SessionManager internal constructor(
                 ).use { statement ->
                     statement.setString(1, normalizedBinding.workflowId)
                     statement.setString(2, normalizedBinding.workflowId)
-                    statement.setNull(3, java.sql.Types.VARCHAR)
+                    statement.setString(3, normalizedBinding.taskId)
                     statement.setString(4, normalizedBinding.focusedStage?.name)
                     statement.setString(5, normalizedBinding.source.name)
                     statement.setString(6, normalizedBinding.actionIntent.name)
@@ -220,7 +220,10 @@ class SessionManager internal constructor(
                 ?: throw IllegalStateException("Workflow chat binding not found for session: $normalizedSessionId")
             updateWorkflowChatBinding(
                 normalizedSessionId,
-                existingBinding.copy(actionIntent = WorkflowChatActionIntent.DISCUSS),
+                existingBinding.copy(
+                    taskId = null,
+                    actionIntent = WorkflowChatActionIntent.DISCUSS,
+                ),
             ).getOrThrow()
         }
     }
@@ -298,9 +301,11 @@ class SessionManager internal constructor(
 
     fun findReusableWorkflowChatSession(
         workflowId: String,
+        taskId: String? = null,
         preferredSessionId: String? = null,
     ): ConversationSession? {
         val normalizedWorkflowId = workflowId.trim().ifBlank { return null }
+        val normalizedTaskId = taskId?.trim()?.ifBlank { null }
         val normalizedPreferredSessionId = preferredSessionId?.trim()?.ifBlank { null }
         return withConnection { connection ->
             connection.prepareStatement(
@@ -329,6 +334,9 @@ class SessionManager internal constructor(
         }
             .asSequence()
             .filter { session -> session.resolvedWorkflowChatBinding()?.workflowId == normalizedWorkflowId }
+            .filter { session ->
+                normalizedTaskId == null || session.resolvedWorkflowChatBinding()?.taskId == normalizedTaskId
+            }
             .sortedWith(
                 compareBy<ConversationSession> { session ->
                     if (session.id == normalizedPreferredSessionId) 0 else 1
@@ -1095,6 +1103,7 @@ class SessionManager internal constructor(
         val legacySpecTaskId = getString("spec_task_id")
         val workflowChatBinding = workflowChatBindingFromStorage(
             workflowId = getString("workflow_id"),
+            taskId = getString("task_id"),
             focusedStageName = getString("focused_stage"),
             sourceName = getString("workflow_source"),
             actionIntentName = getString("workflow_action_intent"),
@@ -1146,6 +1155,7 @@ class SessionManager internal constructor(
         val legacySpecTaskId = getString("spec_task_id")
         val workflowChatBinding = workflowChatBindingFromStorage(
             workflowId = getString("workflow_id"),
+            taskId = getString("task_id"),
             focusedStageName = getString("focused_stage"),
             sourceName = getString("workflow_source"),
             actionIntentName = getString("workflow_action_intent"),

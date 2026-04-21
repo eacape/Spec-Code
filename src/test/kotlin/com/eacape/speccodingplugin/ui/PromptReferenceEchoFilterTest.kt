@@ -273,4 +273,25 @@ class PromptReferenceEchoFilterTest {
         assertFalse(filtered.contains("During implementation replies"), filtered)
         assertTrue(filtered.contains("这是图片评审的最终结论。"), filtered)
     }
+
+    @Test
+    fun `filter should remove chinese structured prompt agenda lines`() {
+        val filter = PromptReferenceEchoFilter.fromTextBlocks(emptyList())
+
+        val filtered = filter.filter(
+            """
+            职责：4. 核心执行流程与调用链；5. 关键数据模型、状态流转或接口关系；6. 构建、运行、测试与发布方式。
+            优先指出真正影响交付和维护的问题；如果没看重点不足，明确缺失点以及下一步应检查什么。
+            最后给出一个简洁的行动清单，按高/中/低优先级列出可执行改进建议。
+            这是这个后端项目的一期骨架，主流程已经搭起来了。
+            """.trimIndent(),
+            flush = true,
+        )
+
+        assertFalse(filtered.contains("核心执行流程与调用链"), filtered)
+        assertFalse(filtered.contains("关键数据模型"), filtered)
+        assertFalse(filtered.contains("优先指出真正影响交付和维护的问题"), filtered)
+        assertFalse(filtered.contains("按高/中/低优先级列出可执行改进建议"), filtered)
+        assertTrue(filtered.contains("这是这个后端项目的一期骨架"), filtered)
+    }
 }

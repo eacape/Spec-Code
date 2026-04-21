@@ -268,7 +268,10 @@ class SpecWorkflowTasksPanelTest {
     fun `requestExecutionForTask should route pending tasks to execute and blocked tasks to retry`() {
         val executions = mutableListOf<String>()
         val panel = SpecWorkflowTasksPanel(
-            onExecuteTask = { taskId, retry -> executions += "$taskId:$retry" },
+            onExecuteTask = { taskId, retry ->
+                executions += "$taskId:$retry"
+                true
+            },
         )
 
         panel.updateTasks(
@@ -387,7 +390,10 @@ class SpecWorkflowTasksPanelTest {
         val executions = mutableListOf<String>()
         val cancellations = mutableListOf<String>()
         val panel = SpecWorkflowTasksPanel(
-            onExecuteTask = { taskId, retry -> executions += "$taskId:$retry" },
+            onExecuteTask = { taskId, retry ->
+                executions += "$taskId:$retry"
+                true
+            },
             onCancelExecution = { taskId -> cancellations += taskId },
         )
 
@@ -443,7 +449,10 @@ class SpecWorkflowTasksPanelTest {
     fun `pending task with unfinished dependencies should disable execute action`() {
         val executions = mutableListOf<String>()
         val panel = SpecWorkflowTasksPanel(
-            onExecuteTask = { taskId, retry -> executions += "$taskId:$retry" },
+            onExecuteTask = { taskId, retry ->
+                executions += "$taskId:$retry"
+                true
+            },
         )
 
         panel.updateTasks(
@@ -483,7 +492,10 @@ class SpecWorkflowTasksPanelTest {
     fun `blocked task with unfinished dependencies should disable retry action`() {
         val executions = mutableListOf<String>()
         val panel = SpecWorkflowTasksPanel(
-            onExecuteTask = { taskId, retry -> executions += "$taskId:$retry" },
+            onExecuteTask = { taskId, retry ->
+                executions += "$taskId:$retry"
+                true
+            },
         )
 
         panel.updateTasks(

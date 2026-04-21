@@ -256,6 +256,7 @@ class WorkflowChatActionRouter(private val project: Project) {
         val binding = session.resolvedWorkflowChatBinding()
             ?: throw IllegalStateException("Workflow chat binding is not available for session $normalizedSessionId")
         val taskId = explicitTaskId?.trim()?.ifBlank { null }
+            ?: binding.taskId
             ?: executionContextResolver.resolve(binding)?.taskId
             ?: throw IllegalStateException(
                 "Workflow chat session $normalizedSessionId has no active task execution context",

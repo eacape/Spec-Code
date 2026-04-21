@@ -367,6 +367,7 @@ class WorkflowChatExecutionContextLinkPlatformTest : BasePlatformTestCase() {
             specTaskId = workflow.id,
             workflowChatBinding = WorkflowChatBinding(
                 workflowId = workflow.id,
+                taskId = task.id,
                 focusedStage = StageId.IMPLEMENT,
                 source = WorkflowChatEntrySource.SESSION_RESTORE,
                 actionIntent = WorkflowChatActionIntent.EXECUTE_TASK,
@@ -457,6 +458,7 @@ class WorkflowChatExecutionContextLinkPlatformTest : BasePlatformTestCase() {
             specTaskId = workflow.id,
             workflowChatBinding = WorkflowChatBinding(
                 workflowId = workflow.id,
+                taskId = task.id,
                 focusedStage = StageId.IMPLEMENT,
                 source = WorkflowChatEntrySource.SESSION_RESTORE,
                 actionIntent = WorkflowChatActionIntent.DISCUSS,
@@ -535,6 +537,7 @@ class WorkflowChatExecutionContextLinkPlatformTest : BasePlatformTestCase() {
             specTaskId = workflow.id,
             workflowChatBinding = WorkflowChatBinding(
                 workflowId = workflow.id,
+                taskId = task.id,
                 focusedStage = StageId.IMPLEMENT,
                 source = WorkflowChatEntrySource.SESSION_RESTORE,
                 actionIntent = WorkflowChatActionIntent.EXECUTE_TASK,
@@ -694,6 +697,7 @@ class WorkflowChatExecutionContextLinkPlatformTest : BasePlatformTestCase() {
             specTaskId = workflow.id,
             workflowChatBinding = WorkflowChatBinding(
                 workflowId = workflow.id,
+                taskId = task.id,
                 focusedStage = StageId.IMPLEMENT,
                 source = WorkflowChatEntrySource.SESSION_RESTORE,
                 actionIntent = WorkflowChatActionIntent.DISCUSS,

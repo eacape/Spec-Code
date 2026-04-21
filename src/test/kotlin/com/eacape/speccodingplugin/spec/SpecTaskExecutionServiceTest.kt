@@ -901,6 +901,135 @@ class SpecTaskExecutionServiceTest {
     }
 
     @Test
+    fun `createRun should preserve runs created from stale workflow snapshots`() {
+        val workflowId = "wf-run-stale-create"
+        seedWorkflow(
+            workflowId = workflowId,
+            tasksMarkdown = """
+                # Implement Document
+
+                ## Task List
+
+                ### T-001: First task
+                ```spec-task
+                status: PENDING
+                priority: P0
+                dependsOn: []
+                relatedFiles: []
+                verificationResult: null
+                ```
+                - [ ] Run first.
+
+                ### T-002: Second task
+                ```spec-task
+                status: PENDING
+                priority: P1
+                dependsOn: []
+                relatedFiles: []
+                verificationResult: null
+                ```
+                - [ ] Run second.
+            """.trimIndent(),
+        )
+        val executionService = newExecutionService()
+        val staleWorkflowA = storage.loadWorkflow(workflowId).getOrThrow()
+        val staleWorkflowB = storage.loadWorkflow(workflowId).getOrThrow()
+
+        val firstRun = invokeCreateRun(
+            executionService = executionService,
+            workflow = staleWorkflowA,
+            taskId = "T-001",
+            status = TaskExecutionRunStatus.QUEUED,
+            trigger = ExecutionTrigger.USER_EXECUTE,
+            startedAt = "2026-03-16T09:00:00Z",
+        ).second
+        val secondRun = invokeCreateRun(
+            executionService = executionService,
+            workflow = staleWorkflowB,
+            taskId = "T-002",
+            status = TaskExecutionRunStatus.QUEUED,
+            trigger = ExecutionTrigger.USER_EXECUTE,
+            startedAt = "2026-03-16T09:01:00Z",
+        ).second
+
+        val persistedRuns = storage.loadWorkflow(workflowId).getOrThrow()
+            .taskExecutionRuns
+            .associateBy(TaskExecutionRun::runId)
+
+        assertEquals(2, persistedRuns.size)
+        assertEquals(TaskExecutionRunStatus.QUEUED, persistedRuns[firstRun.runId]?.status)
+        assertEquals(TaskExecutionRunStatus.QUEUED, persistedRuns[secondRun.runId]?.status)
+        assertEquals("T-001", persistedRuns[firstRun.runId]?.taskId)
+        assertEquals("T-002", persistedRuns[secondRun.runId]?.taskId)
+    }
+
+    @Test
+    fun `updateRunStatus should preserve other runs when invoked from a stale workflow snapshot`() {
+        val workflowId = "wf-run-stale-update"
+        seedWorkflow(
+            workflowId = workflowId,
+            tasksMarkdown = """
+                # Implement Document
+
+                ## Task List
+
+                ### T-001: First task
+                ```spec-task
+                status: PENDING
+                priority: P0
+                dependsOn: []
+                relatedFiles: []
+                verificationResult: null
+                ```
+                - [ ] Run first.
+
+                ### T-002: Second task
+                ```spec-task
+                status: PENDING
+                priority: P1
+                dependsOn: []
+                relatedFiles: []
+                verificationResult: null
+                ```
+                - [ ] Run second.
+            """.trimIndent(),
+        )
+        val executionService = newExecutionService()
+        val firstRun = executionService.createRun(
+            workflowId = workflowId,
+            taskId = "T-001",
+            status = TaskExecutionRunStatus.QUEUED,
+            trigger = ExecutionTrigger.USER_EXECUTE,
+            startedAt = "2026-03-16T10:00:00Z",
+        )
+        val staleWorkflow = storage.loadWorkflow(workflowId).getOrThrow()
+        val secondRun = executionService.createRun(
+            workflowId = workflowId,
+            taskId = "T-002",
+            status = TaskExecutionRunStatus.QUEUED,
+            trigger = ExecutionTrigger.USER_EXECUTE,
+            startedAt = "2026-03-16T10:01:00Z",
+        )
+
+        invokeUpdateRunStatus(
+            executionService = executionService,
+            workflow = staleWorkflow,
+            runId = firstRun.runId,
+            status = TaskExecutionRunStatus.RUNNING,
+        )
+
+        val persistedRuns = storage.loadWorkflow(workflowId).getOrThrow()
+            .taskExecutionRuns
+            .associateBy(TaskExecutionRun::runId)
+
+        assertEquals(2, persistedRuns.size)
+        assertEquals(TaskExecutionRunStatus.RUNNING, persistedRuns[firstRun.runId]?.status)
+        assertEquals(TaskExecutionRunStatus.QUEUED, persistedRuns[secondRun.runId]?.status)
+        assertEquals("T-001", persistedRuns[firstRun.runId]?.taskId)
+        assertEquals("T-002", persistedRuns[secondRun.runId]?.taskId)
+    }
+
+    @Test
     fun `resolveWaitingConfirmationRun should mark latest pending confirmation run as succeeded`() {
         val workflowId = "wf-run-resolve"
         seedWorkflow(workflowId)
@@ -1021,5 +1150,66 @@ class SpecTaskExecutionServiceTest {
             artifactService.writeArtifact(workflowId, StageId.DESIGN, markdown)
         }
         artifactService.writeArtifact(workflowId, StageId.TASKS, tasksMarkdown)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun invokeCreateRun(
+        executionService: SpecTaskExecutionService,
+        workflow: SpecWorkflow,
+        taskId: String,
+        status: TaskExecutionRunStatus,
+        trigger: ExecutionTrigger,
+        startedAt: String,
+        finishedAt: String? = null,
+        summary: String? = null,
+    ): Pair<SpecWorkflow, TaskExecutionRun> {
+        val method = SpecTaskExecutionService::class.java.getDeclaredMethod(
+            "createRun",
+            SpecWorkflow::class.java,
+            String::class.java,
+            TaskExecutionRunStatus::class.java,
+            ExecutionTrigger::class.java,
+            String::class.java,
+            String::class.java,
+            String::class.java,
+        )
+        method.isAccessible = true
+        return method.invoke(
+            executionService,
+            workflow,
+            taskId,
+            status,
+            trigger,
+            startedAt,
+            finishedAt,
+            summary,
+        ) as Pair<SpecWorkflow, TaskExecutionRun>
+    }
+
+    private fun invokeUpdateRunStatus(
+        executionService: SpecTaskExecutionService,
+        workflow: SpecWorkflow,
+        runId: String,
+        status: TaskExecutionRunStatus,
+        finishedAt: String? = null,
+        summary: String? = null,
+    ): TaskExecutionRun {
+        val method = SpecTaskExecutionService::class.java.getDeclaredMethod(
+            "updateRunStatus",
+            SpecWorkflow::class.java,
+            String::class.java,
+            TaskExecutionRunStatus::class.java,
+            String::class.java,
+            String::class.java,
+        )
+        method.isAccessible = true
+        return method.invoke(
+            executionService,
+            workflow,
+            runId,
+            status,
+            finishedAt,
+            summary,
+        ) as TaskExecutionRun
     }
 }

@@ -26,7 +26,13 @@ class SpecWorkflowTaskExecutionEntryCoordinatorTest {
 
         assertTrue(accepted)
         assertEquals(
-            listOf(SessionLookupCall(workflowId = "wf-1", preferredSessionId = "preferred-session")),
+            listOf(
+                SessionLookupCall(
+                    workflowId = "wf-1",
+                    taskId = "T-1",
+                    preferredSessionId = "preferred-session",
+                ),
+            ),
             recorder.sessionLookups,
         )
         assertEquals(
@@ -136,7 +142,7 @@ class SpecWorkflowTaskExecutionEntryCoordinatorTest {
 
         assertTrue(accepted)
         assertEquals(
-            listOf(SessionLookupCall(workflowId = "wf-1", preferredSessionId = null)),
+            listOf(SessionLookupCall(workflowId = "wf-1", taskId = "T-9", preferredSessionId = null)),
             recorder.sessionLookups,
         )
         assertEquals(true, recorder.executionRequest?.retry)
@@ -151,8 +157,8 @@ class SpecWorkflowTaskExecutionEntryCoordinatorTest {
             activeSessionId = {
                 recorder.preferredSessionId
             },
-            findReusableWorkflowChatSessionId = { workflowId, preferredSessionId ->
-                recorder.sessionLookups += SessionLookupCall(workflowId, preferredSessionId)
+            findReusableWorkflowChatSessionId = { workflowId, taskId, preferredSessionId ->
+                recorder.sessionLookups += SessionLookupCall(workflowId, taskId, preferredSessionId)
                 recorder.reusableSessionId
             },
             providerDisplayName = { providerId ->
@@ -210,6 +216,7 @@ class SpecWorkflowTaskExecutionEntryCoordinatorTest {
 
     private data class SessionLookupCall(
         val workflowId: String,
+        val taskId: String,
         val preferredSessionId: String?,
     )
 

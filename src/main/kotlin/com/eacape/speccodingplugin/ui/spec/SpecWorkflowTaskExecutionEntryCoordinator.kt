@@ -15,7 +15,11 @@ internal data class SpecWorkflowTaskExecutionLaunchRequest(
 
 internal class SpecWorkflowTaskExecutionEntryCoordinator(
     private val activeSessionId: () -> String?,
-    private val findReusableWorkflowChatSessionId: (workflowId: String, preferredSessionId: String?) -> String?,
+    private val findReusableWorkflowChatSessionId: (
+        workflowId: String,
+        taskId: String,
+        preferredSessionId: String?,
+    ) -> String?,
     private val providerDisplayName: (String) -> String,
     private val setStatusText: (String) -> Unit,
     private val showFailureStatus: (String, List<SpecWorkflowTroubleshootingAction>) -> Unit,
@@ -66,7 +70,7 @@ internal class SpecWorkflowTaskExecutionEntryCoordinator(
                 providerId = providerId,
                 modelId = modelId,
                 operationMode = request.operationMode,
-                sessionId = resolveReusableSessionId(workflowId),
+                sessionId = resolveReusableSessionId(workflowId, request.taskId),
                 retry = request.retry,
                 auditContext = request.auditContext,
             ),
@@ -74,9 +78,10 @@ internal class SpecWorkflowTaskExecutionEntryCoordinator(
         return true
     }
 
-    private fun resolveReusableSessionId(workflowId: String): String? {
+    private fun resolveReusableSessionId(workflowId: String, taskId: String): String? {
         return findReusableWorkflowChatSessionId(
             workflowId,
+            taskId,
             activeSessionId(),
         )?.trim()?.ifBlank { null }
     }

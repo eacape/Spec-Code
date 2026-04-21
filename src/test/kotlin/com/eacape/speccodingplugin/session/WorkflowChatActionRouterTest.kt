@@ -310,6 +310,7 @@ class WorkflowChatActionRouterTest {
             title = "Workflow Chat $taskId",
             workflowChatBinding = WorkflowChatBinding(
                 workflowId = workflowId,
+                taskId = taskId,
                 focusedStage = StageId.IMPLEMENT,
                 source = source,
                 actionIntent = WorkflowChatActionIntent.DISCUSS,

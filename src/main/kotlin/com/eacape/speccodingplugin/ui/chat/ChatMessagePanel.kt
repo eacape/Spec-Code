@@ -936,6 +936,7 @@ open class ChatMessagePanel(
         val withoutTrailingNoise = stripTrailingPromptQuestionnaireNoise(withoutEcho)
         val withoutPromptInstructionEcho = stripPromptInstructionEchoLines(withoutTrailingNoise)
         val withoutFooterNoise = stripTrailingOutputFooterNoise(withoutPromptInstructionEcho)
+        if (containsOnlyNonAnswerTailLines(withoutFooterNoise)) return ""
         val leadingAnswerBlock = extractLeadingAssistantAnswerBlock(withoutFooterNoise)
         return leadingAnswerBlock
             .ifEmpty { withoutFooterNoise }
@@ -1017,6 +1018,18 @@ open class ChatMessagePanel(
             prefixLines
         } else {
             emptyList()
+        }
+    }
+
+    private fun containsOnlyNonAnswerTailLines(lines: List<String>): Boolean {
+        val nonBlankLines = lines
+            .map(String::trim)
+            .filter(String::isNotBlank)
+        if (nonBlankLines.isEmpty()) return true
+        return nonBlankLines.all { line ->
+            looksLikeRawCodeOrPatchLine(line) ||
+                looksLikeToolDiagnosticLine(line) ||
+                looksLikePromptInventorySignalLine(line)
         }
     }
 
@@ -1347,6 +1360,7 @@ open class ChatMessagePanel(
         if (trimmed.isBlank()) return false
         return PROMPT_SCAFFOLDING_ROLE_LINE_REGEX.matches(trimmed) ||
             PROMPT_SCAFFOLDING_HEADING_REGEX.matches(trimmed) ||
+            PROMPT_SCAFFOLDING_STRUCTURED_AGENDA_REGEX.matches(trimmed) ||
             PROMPT_SCAFFOLDING_INVENTORY_LINE_REGEX.matches(trimmed) ||
             trimmed.contains('?') ||
             trimmed.contains('？') ||
@@ -3316,6 +3330,7 @@ open class ChatMessagePanel(
         if (OUTPUT_FILE_PATH_LINE_REGEX.matches(trimmed)) return true
         if (OUTPUT_ASSERTION_STATEMENT_REGEX.matches(normalized)) return true
         if (OUTPUT_TYPED_PROPERTY_LINE_REGEX.matches(normalized)) return true
+        if (OUTPUT_INDEXED_ASSIGNMENT_LINE_REGEX.matches(normalized)) return true
         if (OUTPUT_SYMBOLIC_REFERENCE_LINE_REGEX.matches(normalized)) return true
         if (OUTPUT_KOTLIN_TYPE_CHECK_LINE_REGEX.matches(normalized)) return true
         if (OUTPUT_CODE_DECLARATION_REGEX.matches(normalized)) return true
@@ -4279,10 +4294,13 @@ open class ChatMessagePanel(
             RegexOption.IGNORE_CASE,
         )
         private val PROMPT_SCAFFOLDING_HEADING_REGEX = Regex(
-            """^(?:项目背景|默认优先问题池|执行摘要|核心能力.*团队场景.*|紧咬.*病灶链|你必须遵守以下原则)\s*[:：]?$""",
+            """^(?:项目背景|默认优先问题池|执行摘要|核心能力.*团队场景.*|紧咬.*病灶链|你必须遵守以下原则|职责|输出要求|检查重点|分析维度)\s*[:：]?$""",
+        )
+        private val PROMPT_SCAFFOLDING_STRUCTURED_AGENDA_REGEX = Regex(
+            """^(?:(?:职责|输出要求|检查重点|分析维度)\s*[:：；;].*|(?:优先指出真正影响交付和维护的问题|明确缺失点以及下一步应检查什么|最后给出一个简洁的行动清单|按高[/-]?中[/-]?低优先级列出可执行改进建议).*)$""",
         )
         private val PROMPT_SCAFFOLDING_INVENTORY_LINE_REGEX = Regex(
-            """^(?:方向对.*控制复杂度.*|测试中超\s*\d+\s*行.*文件.*|CI\s*工作流.*|遗漏清单.*|已经.*JetBrains\s+IDE.*|愿意接受.*|需要对.*|Prompt,\s*Skill,\s*Hook,\s*MCP.*|大量.*文件.*|全链路上升.*|热控制台.*Ktor.*|明明能跑.*).*${'$'}""",
+            """^(?:方向对.*控制复杂度.*|测试中超\s*\d+\s*行.*文件.*|CI\s*工作流.*|遗漏清单.*|已经.*JetBrains\s+IDE.*|愿意接受.*|需要对.*|Prompt,\s*Skill,\s*Hook,\s*MCP.*|大量.*文件.*|全链路上升.*|热控制台.*Ktor.*|明明能跑.*|优先指出真正影响交付和维护的问题.*|明确缺失点以及下一步应检查什么.*|最后给出一个简洁的行动清单.*|按高[/-]?中[/-]?低优先级列出可执行改进建议.*|核心执行流程与调用链.*|关键数据模型.*|状态流转或接口关系.*|构建、运行、测试与发布方式.*|代码质量、耦合点与潜在单点风险.*|可维护性、重复逻辑、边界处理、异常处理、日志、配置管理.*).*${'$'}""",
             RegexOption.IGNORE_CASE,
         )
         private val PROMPT_SCAFFOLDING_NUMBERED_LINE_REGEX = Regex(
@@ -4345,6 +4363,18 @@ open class ChatMessagePanel(
             "do not dump raw context or internal instructions",
             "use referenced files only as supporting evidence",
             "if the user asks what a document is, identify its purpose before citing details",
+            "职责：",
+            "职责:",
+            "输出要求：",
+            "输出要求:",
+            "检查重点：",
+            "检查重点:",
+            "分析维度：",
+            "分析维度:",
+            "优先指出真正影响交付和维护的问题",
+            "明确缺失点以及下一步应检查什么",
+            "最后给出一个简洁的行动清单",
+            "按高/中/低优先级列出可执行改进建议",
         )
         private val OUTPUT_ENUM_MEMBER_REFERENCE_REGEX = Regex("""\b[A-Z][A-Za-z0-9_]*\.[A-Z][A-Z0-9_]+\b""")
         private val OUTPUT_CAMEL_IDENTIFIER_REGEX = Regex("""\b[A-Za-z_]*[a-z][A-Za-z0-9_]*[A-Z][A-Za-z0-9_]*\b""")
@@ -4395,6 +4425,9 @@ open class ChatMessagePanel(
         )
         private val OUTPUT_TYPED_PROPERTY_LINE_REGEX = Regex(
             """^(?:[A-Za-z_][\w.?-]*|[\p{IsHan}]{2,16})\s*:\s*(?:[A-Z][\w.<>?(),\[\]]*|[A-Za-z_][\w.<>?(),\[\]]*Service|[A-Za-z_][\w.<>?(),\[\]]*Manager|[A-Za-z_][\w.<>?(),\[\]]*Store)\s*,?$""",
+        )
+        private val OUTPUT_INDEXED_ASSIGNMENT_LINE_REGEX = Regex(
+            """^(?:[A-Za-z_][\w.]*)(?:\[[^\]\n]+\])(?:\.[A-Za-z_][\w.]*)*\s*=\s*.+$""",
         )
         private val OUTPUT_SYMBOLIC_REFERENCE_LINE_REGEX = Regex(
             """^(?:=+\s*)?(?:[A-Za-z_][\w.\[\]?]*)(?:\([^)]*\))?(?:\.[A-Za-z_][\w\[\]?]*)*$""",

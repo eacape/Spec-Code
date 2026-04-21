@@ -123,6 +123,7 @@ class SpecTaskExecutionService(private val project: Project) {
     }
     private val activeRequestHandles = ConcurrentHashMap<String, TaskExecutionCancellationHandle>()
     private val liveProgressByRunId = ConcurrentHashMap<String, TaskExecutionLiveProgress>()
+    private val workflowMutationLocks = ConcurrentHashMap<String, Any>()
     private val liveProgressListeners = CopyOnWriteArrayList<TaskExecutionLiveProgressListener>()
 
     internal constructor(
@@ -300,46 +301,65 @@ class SpecTaskExecutionService(private val project: Project) {
         summary: String? = null,
     ): TaskExecutionRun {
         val workflow = storage.loadWorkflow(workflowId).getOrThrow()
-        val normalizedRunId = runId.trim().takeIf(String::isNotBlank)
-            ?: throw MissingTaskExecutionRunError(runId)
-        val existingRun = workflow.taskExecutionRuns.firstOrNull { run -> run.runId == normalizedRunId }
-            ?: throw MissingTaskExecutionRunError(normalizedRunId)
-        if (!existingRun.status.canTransitionTo(status)) {
-            throw InvalidTaskExecutionRunTransitionError(existingRun.runId, existingRun.status, status)
-        }
-        val resolvedFinishedAt = when {
-            finishedAt?.isNotBlank() == true -> finishedAt.trim()
-            status.isTerminal() -> Instant.now().toString()
-            else -> null
-        }
-        val normalizedSummary = summary?.trim()?.takeIf(String::isNotBlank) ?: existingRun.summary
-        val updatedRun = existingRun.copy(
+        return updateRunStatus(
+            workflow = workflow,
+            runId = runId,
             status = status,
-            finishedAt = resolvedFinishedAt,
-            summary = normalizedSummary,
+            finishedAt = finishedAt,
+            summary = summary,
         )
-        if (updatedRun.status.isTerminal()) {
-            activeRequestHandles.remove(updatedRun.runId)
+    }
+
+    private fun updateRunStatus(
+        workflow: SpecWorkflow,
+        runId: String,
+        status: TaskExecutionRunStatus,
+        finishedAt: String? = null,
+        summary: String? = null,
+    ): TaskExecutionRun {
+        return withWorkflowMutationLock(workflow.id) {
+            val latestWorkflow = storage.loadWorkflow(workflow.id).getOrThrow()
+            val normalizedRunId = runId.trim().takeIf(String::isNotBlank)
+                ?: throw MissingTaskExecutionRunError(runId)
+            val existingRun = latestWorkflow.taskExecutionRuns.firstOrNull { run -> run.runId == normalizedRunId }
+                ?: throw MissingTaskExecutionRunError(normalizedRunId)
+            if (!existingRun.status.canTransitionTo(status)) {
+                throw InvalidTaskExecutionRunTransitionError(existingRun.runId, existingRun.status, status)
+            }
+            val resolvedFinishedAt = when {
+                finishedAt?.isNotBlank() == true -> finishedAt.trim()
+                status.isTerminal() -> Instant.now().toString()
+                else -> null
+            }
+            val normalizedSummary = summary?.trim()?.takeIf(String::isNotBlank) ?: existingRun.summary
+            val updatedRun = existingRun.copy(
+                status = status,
+                finishedAt = resolvedFinishedAt,
+                summary = normalizedSummary,
+            )
+            if (updatedRun.status.isTerminal()) {
+                activeRequestHandles.remove(updatedRun.runId)
+            }
+            val updatedWorkflow = latestWorkflow.copy(
+                taskExecutionRuns = replaceRun(latestWorkflow.taskExecutionRuns, updatedRun),
+                updatedAt = System.currentTimeMillis(),
+            )
+            storage.saveWorkflowTransition(
+                workflow = updatedWorkflow,
+                eventType = SpecAuditEventType.TASK_EXECUTION_RUN_STATUS_CHANGED,
+                details = linkedMapOf(
+                    "runId" to updatedRun.runId,
+                    "taskId" to updatedRun.taskId,
+                    "fromStatus" to existingRun.status.name,
+                    "toStatus" to updatedRun.status.name,
+                    "trigger" to updatedRun.trigger.name,
+                    "startedAt" to updatedRun.startedAt,
+                    "finishedAt" to (updatedRun.finishedAt ?: ""),
+                    "summary" to (updatedRun.summary ?: ""),
+                ),
+            ).getOrThrow()
+            updatedRun
         }
-        val updatedWorkflow = workflow.copy(
-            taskExecutionRuns = replaceRun(workflow.taskExecutionRuns, updatedRun),
-            updatedAt = System.currentTimeMillis(),
-        )
-        storage.saveWorkflowTransition(
-            workflow = updatedWorkflow,
-            eventType = SpecAuditEventType.TASK_EXECUTION_RUN_STATUS_CHANGED,
-            details = linkedMapOf(
-                "runId" to updatedRun.runId,
-                "taskId" to updatedRun.taskId,
-                "fromStatus" to existingRun.status.name,
-                "toStatus" to updatedRun.status.name,
-                "trigger" to updatedRun.trigger.name,
-                "startedAt" to updatedRun.startedAt,
-                "finishedAt" to (updatedRun.finishedAt ?: ""),
-                "summary" to (updatedRun.summary ?: ""),
-            ),
-        ).getOrThrow()
-        return updatedRun
     }
 
     fun cancelExecution(
@@ -841,50 +861,53 @@ class SpecTaskExecutionService(private val project: Project) {
         finishedAt: String? = null,
         summary: String? = null,
     ): Pair<SpecWorkflow, TaskExecutionRun> {
-        val normalizedTaskId = normalizeTaskId(taskId)
-        ensureTaskExists(workflow.id, normalizedTaskId)
-        if (workflow.taskExecutionRuns.any { run ->
-                run.taskId == normalizedTaskId && !run.status.isTerminal()
+        return withWorkflowMutationLock(workflow.id) {
+            val latestWorkflow = storage.loadWorkflow(workflow.id).getOrThrow()
+            val normalizedTaskId = normalizeTaskId(taskId)
+            ensureTaskExists(latestWorkflow.id, normalizedTaskId)
+            if (latestWorkflow.taskExecutionRuns.any { run ->
+                    run.taskId == normalizedTaskId && !run.status.isTerminal()
+                }
+            ) {
+                throw ActiveTaskExecutionRunExistsError(normalizedTaskId)
             }
-        ) {
-            throw ActiveTaskExecutionRunExistsError(normalizedTaskId)
-        }
 
-        val normalizedStartedAt = startedAt.trim().takeIf(String::isNotBlank) ?: Instant.now().toString()
-        val normalizedFinishedAt = when {
-            finishedAt?.isNotBlank() == true -> finishedAt.trim()
-            status.isTerminal() -> normalizedStartedAt
-            else -> null
+            val normalizedStartedAt = startedAt.trim().takeIf(String::isNotBlank) ?: Instant.now().toString()
+            val normalizedFinishedAt = when {
+                finishedAt?.isNotBlank() == true -> finishedAt.trim()
+                status.isTerminal() -> normalizedStartedAt
+                else -> null
+            }
+            val normalizedSummary = summary?.trim()?.takeIf(String::isNotBlank)
+            val run = TaskExecutionRun(
+                runId = buildRunId(normalizedTaskId),
+                taskId = normalizedTaskId,
+                status = status,
+                trigger = trigger,
+                startedAt = normalizedStartedAt,
+                finishedAt = normalizedFinishedAt,
+                summary = normalizedSummary,
+            )
+            val updatedWorkflow = latestWorkflow.copy(
+                taskExecutionRuns = appendRun(latestWorkflow.taskExecutionRuns, run),
+                updatedAt = System.currentTimeMillis(),
+            )
+            storage.saveWorkflowTransition(
+                workflow = updatedWorkflow,
+                eventType = SpecAuditEventType.TASK_EXECUTION_RUN_CREATED,
+                details = linkedMapOf(
+                    "runId" to run.runId,
+                    "taskId" to run.taskId,
+                    "status" to run.status.name,
+                    "trigger" to run.trigger.name,
+                    "startedAt" to run.startedAt,
+                    "finishedAt" to (run.finishedAt ?: ""),
+                    "summary" to (run.summary ?: ""),
+                    "migratedFromStatus" to if (trigger == ExecutionTrigger.SYSTEM_RECOVERY) TaskStatus.IN_PROGRESS.name else "",
+                ),
+            ).getOrThrow()
+            updatedWorkflow to run
         }
-        val normalizedSummary = summary?.trim()?.takeIf(String::isNotBlank)
-        val run = TaskExecutionRun(
-            runId = buildRunId(normalizedTaskId),
-            taskId = normalizedTaskId,
-            status = status,
-            trigger = trigger,
-            startedAt = normalizedStartedAt,
-            finishedAt = normalizedFinishedAt,
-            summary = normalizedSummary,
-        )
-        val updatedWorkflow = workflow.copy(
-            taskExecutionRuns = appendRun(workflow.taskExecutionRuns, run),
-            updatedAt = System.currentTimeMillis(),
-        )
-        storage.saveWorkflowTransition(
-            workflow = updatedWorkflow,
-            eventType = SpecAuditEventType.TASK_EXECUTION_RUN_CREATED,
-            details = linkedMapOf(
-                "runId" to run.runId,
-                "taskId" to run.taskId,
-                "status" to run.status.name,
-                "trigger" to run.trigger.name,
-                "startedAt" to run.startedAt,
-                "finishedAt" to (run.finishedAt ?: ""),
-                "summary" to (run.summary ?: ""),
-                "migratedFromStatus" to if (trigger == ExecutionTrigger.SYSTEM_RECOVERY) TaskStatus.IN_PROGRESS.name else "",
-            ),
-        ).getOrThrow()
-        return updatedWorkflow to run
     }
 
     private fun synthesizeLiveProgress(
@@ -1077,6 +1100,15 @@ class SpecTaskExecutionService(private val project: Project) {
         return "run-${taskId.lowercase()}-${UUID.randomUUID()}"
     }
 
+    private fun <T> withWorkflowMutationLock(workflowId: String, action: () -> T): T {
+        val normalizedWorkflowId = workflowId.trim()
+        require(normalizedWorkflowId.isNotBlank()) { "workflowId cannot be blank" }
+        val lock = workflowMutationLocks.computeIfAbsent(normalizedWorkflowId) { Any() }
+        return synchronized(lock) {
+            action()
+        }
+    }
+
     private fun resolveExecutionSession(
         workflow: SpecWorkflow,
         task: StructuredTask,
@@ -1092,6 +1124,7 @@ class SpecTaskExecutionService(private val project: Project) {
                 sessionId = existingSessionId,
                 binding = WorkflowChatBinding(
                     workflowId = workflow.id,
+                    taskId = task.id,
                     focusedStage = StageId.IMPLEMENT,
                     source = sessionSource,
                     actionIntent = when (trigger) {
@@ -1108,6 +1141,7 @@ class SpecTaskExecutionService(private val project: Project) {
             modelProvider = providerId,
             workflowChatBinding = WorkflowChatBinding(
                 workflowId = workflow.id,
+                taskId = task.id,
                 focusedStage = StageId.IMPLEMENT,
                 source = sessionSource,
                 actionIntent = when (trigger) {

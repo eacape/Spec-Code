@@ -36,7 +36,7 @@ internal class SpecWorkflowTaskChatCoordinator(
 
     fun openTaskWorkflowChat(workflowId: String, taskId: String) {
         taskId.trim().ifBlank { return }
-        val request = buildTaskWorkflowChatRequest(workflowId) ?: return
+        val request = buildTaskWorkflowChatRequest(workflowId, taskId) ?: return
         if (!activateChatToolWindow()) {
             return
         }
@@ -48,11 +48,13 @@ internal class SpecWorkflowTaskChatCoordinator(
         }
     }
 
-    private fun buildTaskWorkflowChatRequest(workflowId: String): WorkflowChatOpenRequest? {
+    private fun buildTaskWorkflowChatRequest(workflowId: String, taskId: String): WorkflowChatOpenRequest? {
         val normalizedWorkflowId = workflowId.trim().ifBlank { return null }
+        val normalizedTaskId = taskId.trim().ifBlank { return null }
         return WorkflowChatOpenRequest(
             binding = WorkflowChatBinding(
                 workflowId = normalizedWorkflowId,
+                taskId = normalizedTaskId,
                 focusedStage = StageId.IMPLEMENT,
                 source = WorkflowChatEntrySource.TASK_PANEL,
                 actionIntent = WorkflowChatActionIntent.DISCUSS,

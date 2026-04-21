@@ -1078,9 +1078,10 @@ class SpecWorkflowPanel(
         activeSessionId = {
             sessionIsolationService.activeSessionId()
         },
-        findReusableWorkflowChatSessionId = { workflowId, preferredSessionId ->
+        findReusableWorkflowChatSessionId = { workflowId, taskId, preferredSessionId ->
             sessionManager.findReusableWorkflowChatSession(
                 workflowId = workflowId,
+                taskId = taskId,
                 preferredSessionId = preferredSessionId,
             )?.id
         },

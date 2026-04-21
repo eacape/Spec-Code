@@ -88,6 +88,7 @@ class SpecWorkflowTaskChatCoordinatorTest {
                 WorkflowChatOpenRequest(
                     binding = WorkflowChatBinding(
                         workflowId = "wf-2",
+                        taskId = "T-2",
                         focusedStage = StageId.IMPLEMENT,
                         source = WorkflowChatEntrySource.TASK_PANEL,
                         actionIntent = WorkflowChatActionIntent.DISCUSS,

@@ -418,7 +418,7 @@ class ImprovedChatPanel(
 
     private data class WorkflowBindingUiSnapshot(
         val binding: WorkflowChatBinding,
-        val executionContext: WorkflowChatExecutionContext,
+        val executionContext: WorkflowChatExecutionContext?,
         val state: BoundTaskBindingState,
     )
 
@@ -1303,6 +1303,7 @@ class ImprovedChatPanel(
 
             !activeWorkflowId.isNullOrBlank() -> WorkflowChatBinding(
                 workflowId = activeWorkflowId,
+                taskId = explicitBinding?.takeIf { binding -> binding.workflowId == activeWorkflowId }?.taskId,
                 focusedStage = explicitBinding?.focusedStage,
                 source = explicitBinding?.source ?: WorkflowChatEntrySource.MODE_SWITCH,
                 actionIntent = explicitBinding?.actionIntent ?: WorkflowChatActionIntent.DISCUSS,
@@ -1321,6 +1322,7 @@ class ImprovedChatPanel(
         latestObservedTaskLiveProgress
             ?.takeIf { progress ->
                 progress.workflowId == normalizedBinding.workflowId &&
+                    (normalizedBinding.taskId == null || progress.taskId == normalizedBinding.taskId) &&
                     progress.phase != ExecutionLivePhase.TERMINAL
             }
             ?.let { progress ->
@@ -1422,8 +1424,9 @@ class ImprovedChatPanel(
         val executionContext = resolvedCurrentWorkflowChatExecutionContext(
             binding = binding,
             preferCachedSnapshot = false,
-        ) ?: return null
-        val state = resolveBoundTaskBindingState(binding, executionContext.taskId)
+        )
+        val taskId = binding.taskId ?: executionContext?.taskId ?: return null
+        val state = resolveBoundTaskBindingState(binding, taskId)
         return WorkflowBindingUiSnapshot(
             binding = binding,
             executionContext = executionContext,
@@ -1432,12 +1435,11 @@ class ImprovedChatPanel(
     }
 
     private fun applyWorkflowBindingSnapshot(snapshot: WorkflowBindingUiSnapshot) {
-        val executionContext = snapshot.executionContext
         val state = snapshot.state
         workflowBindingStrip.isVisible = true
         taskBindingChip.isVisible = true
-        taskBindingChip.text = buildTaskBindingChipText(executionContext.taskId, state)
-        taskBindingChip.toolTipText = buildTaskBindingTooltip(executionContext.taskId, state)
+        taskBindingChip.text = buildTaskBindingChipText(state.taskId, state)
+        taskBindingChip.toolTipText = buildTaskBindingTooltip(state.taskId, state)
         taskBindingChip.accessibleContext.accessibleName = taskBindingChip.text
         taskBindingChip.accessibleContext.accessibleDescription = taskBindingChip.toolTipText
         state.liveProgress
@@ -1497,11 +1499,12 @@ class ImprovedChatPanel(
 
     private fun resolveBoundTaskBindingState(): BoundTaskBindingState? {
         val binding = resolvedActiveWorkflowChatBinding() ?: return null
-        val taskId = resolvedCurrentWorkflowChatExecutionContext(binding, cachedOnly = true)?.taskId
+        val taskId = binding.taskId
+            ?: resolvedCurrentWorkflowChatExecutionContext(binding, cachedOnly = true)?.taskId
             ?: return null
         latestWorkflowBindingUiSnapshot
             ?.takeIf { snapshot ->
-                snapshot.binding == binding && snapshot.executionContext.taskId == taskId
+                snapshot.binding == binding && snapshot.state.taskId == taskId
             }
             ?.let { snapshot -> return snapshot.state }
         return resolveBoundTaskBindingState(binding, taskId)
@@ -2182,13 +2185,21 @@ class ImprovedChatPanel(
             specSidebarPanel.focusWorkflow(binding.workflowId)
         }
         showStatus(
-            SpecCodingBundle.message("toolwindow.workflow.binding.status.workflowBound", binding.workflowId),
+            binding.taskId?.let { taskId ->
+                SpecCodingBundle.message(
+                    "toolwindow.workflow.binding.status.taskBound",
+                    binding.workflowId,
+                    taskId,
+                )
+            } ?: SpecCodingBundle.message("toolwindow.workflow.binding.status.workflowBound", binding.workflowId),
             autoHideMillis = STATUS_SHORT_HINT_AUTO_HIDE_MILLIS,
         )
     }
 
     private fun buildWorkflowChatSessionTitle(binding: WorkflowChatBinding): String {
-        return resolveWorkflowBindingLabel(binding.workflowId)
+        val workflowLabel = resolveWorkflowBindingLabel(binding.workflowId)
+        val taskId = binding.taskId?.trim()?.ifBlank { null } ?: return workflowLabel
+        return "$workflowLabel · $taskId"
     }
 
     private fun switchActiveSpecWorkflowFromUser(workflowId: String) {
@@ -4861,8 +4872,13 @@ class ImprovedChatPanel(
         source: WorkflowChatEntrySource,
         actionIntent: WorkflowChatActionIntent = WorkflowChatActionIntent.DISCUSS,
         focusedStage: StageId? = null,
+        taskId: String? = null,
     ): WorkflowChatBinding {
         val normalizedWorkflowId = workflowId.trim()
+        val resolvedTaskId = taskId?.trim()?.ifBlank { null }
+            ?: resolvedActiveWorkflowChatBinding()
+                ?.takeIf { binding -> binding.workflowId == normalizedWorkflowId }
+                ?.taskId
         val resolvedFocusedStage = focusedStage
             ?: resolvedActiveWorkflowChatBinding()
                 ?.takeIf { binding -> binding.workflowId == normalizedWorkflowId }
@@ -4870,6 +4886,7 @@ class ImprovedChatPanel(
             ?: cachedWorkflowOption(normalizedWorkflowId)?.currentStage
         return WorkflowChatBinding(
             workflowId = normalizedWorkflowId,
+            taskId = resolvedTaskId,
             focusedStage = resolvedFocusedStage,
             source = source,
             actionIntent = actionIntent,
@@ -7310,10 +7327,12 @@ class ImprovedChatPanel(
 
     internal fun workflowBindingSnapshotForTest(): Map<String, String> {
         val sendAction = resolveComposerSendAction()
+        val boundTaskId = resolveBoundTaskBindingState()?.taskId
+            ?: resolvedCurrentWorkflowChatExecutionContext()?.taskId
         return mapOf(
             "mode" to currentInteractionMode().name,
             "workflowId" to resolvedActiveWorkflowChatBinding()?.workflowId.orEmpty(),
-            "taskId" to resolvedCurrentWorkflowChatExecutionContext()?.taskId.orEmpty(),
+            "taskId" to boundTaskId.orEmpty(),
             "workflowChipVisible" to (workflowBindingChip.parent != null && workflowBindingChip.isVisible).toString(),
             "workflowChipText" to workflowBindingChip.text.orEmpty(),
             "workflowChipTooltip" to workflowBindingChip.toolTipText.orEmpty(),

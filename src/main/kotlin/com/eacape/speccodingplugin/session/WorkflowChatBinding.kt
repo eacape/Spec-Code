@@ -4,6 +4,7 @@ import com.eacape.speccodingplugin.spec.StageId
 
 data class WorkflowChatBinding(
     val workflowId: String,
+    val taskId: String? = null,
     val focusedStage: StageId? = null,
     val source: WorkflowChatEntrySource,
     val actionIntent: WorkflowChatActionIntent = WorkflowChatActionIntent.DISCUSS,
@@ -26,11 +27,16 @@ enum class WorkflowChatActionIntent {
 
 internal fun WorkflowChatBinding.normalizedOrNull(): WorkflowChatBinding? {
     val normalizedWorkflowId = workflowId.trim().ifBlank { return null }
-    return copy(workflowId = normalizedWorkflowId)
+    val normalizedTaskId = taskId?.trim()?.ifBlank { null }
+    return copy(
+        workflowId = normalizedWorkflowId,
+        taskId = normalizedTaskId,
+    )
 }
 
 internal fun legacyWorkflowChatBinding(
     workflowId: String?,
+    taskId: String? = null,
     source: WorkflowChatEntrySource = WorkflowChatEntrySource.SESSION_RESTORE,
     actionIntent: WorkflowChatActionIntent = WorkflowChatActionIntent.DISCUSS,
     focusedStage: StageId? = null,
@@ -38,6 +44,7 @@ internal fun legacyWorkflowChatBinding(
     val normalizedWorkflowId = workflowId?.trim()?.ifBlank { null } ?: return null
     return WorkflowChatBinding(
         workflowId = normalizedWorkflowId,
+        taskId = taskId,
         focusedStage = focusedStage,
         source = source,
         actionIntent = actionIntent,
@@ -46,6 +53,7 @@ internal fun legacyWorkflowChatBinding(
 
 internal fun workflowChatBindingFromStorage(
     workflowId: String?,
+    taskId: String?,
     focusedStageName: String?,
     sourceName: String?,
     actionIntentName: String?,
@@ -77,6 +85,7 @@ internal fun workflowChatBindingFromStorage(
         ?: WorkflowChatActionIntent.DISCUSS
     return WorkflowChatBinding(
         workflowId = normalizedWorkflowId,
+        taskId = taskId,
         focusedStage = focusedStage,
         source = source,
         actionIntent = actionIntent,

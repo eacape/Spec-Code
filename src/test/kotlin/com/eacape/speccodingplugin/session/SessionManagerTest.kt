@@ -119,6 +119,32 @@ class SessionManagerTest {
     }
 
     @Test
+    fun `createSession should persist workflow chat task id when task binding is provided`() {
+        val binding = WorkflowChatBinding(
+            workflowId = "wf-task-bound",
+            taskId = "T-007",
+            focusedStage = StageId.IMPLEMENT,
+            source = WorkflowChatEntrySource.TASK_PANEL,
+            actionIntent = WorkflowChatActionIntent.DISCUSS,
+        )
+
+        val created = manager.createSession(
+            title = "Task-bound chat",
+            workflowChatBinding = binding,
+        ).getOrThrow()
+
+        val persisted = loadPersistedSessionRow(
+            databasePath = manager.databasePathForTest()!!,
+            sessionId = created.id,
+        )
+
+        assertEquals(binding, manager.getSession(created.id)?.workflowChatBinding)
+        assertNotNull(persisted)
+        assertEquals(binding.workflowId, persisted?.workflowId)
+        assertEquals(binding.taskId, persisted?.taskId)
+    }
+
+    @Test
     fun `findReusableWorkflowChatSession should prefer requested same workflow session`() {
         val primary = manager.createSession(
             title = "Workflow Main",
@@ -177,6 +203,38 @@ class SessionManagerTest {
 
         assertNotNull(reused)
         assertEquals(primary.id, reused?.id)
+    }
+
+    @Test
+    fun `findReusableWorkflowChatSession should only reuse sessions bound to the same task`() {
+        manager.createSession(
+            title = "Workflow task T-001",
+            workflowChatBinding = WorkflowChatBinding(
+                workflowId = "wf-reuse-task",
+                taskId = "T-001",
+                focusedStage = StageId.IMPLEMENT,
+                source = WorkflowChatEntrySource.TASK_PANEL,
+                actionIntent = WorkflowChatActionIntent.DISCUSS,
+            ),
+        ).getOrThrow()
+        val matching = manager.createSession(
+            title = "Workflow task T-002",
+            workflowChatBinding = WorkflowChatBinding(
+                workflowId = "wf-reuse-task",
+                taskId = "T-002",
+                focusedStage = StageId.IMPLEMENT,
+                source = WorkflowChatEntrySource.TASK_PANEL,
+                actionIntent = WorkflowChatActionIntent.DISCUSS,
+            ),
+        ).getOrThrow()
+
+        val reused = manager.findReusableWorkflowChatSession(
+            workflowId = "wf-reuse-task",
+            taskId = "T-002",
+        )
+
+        assertNotNull(reused)
+        assertEquals(matching.id, reused?.id)
     }
 
     @Test
