@@ -2,6 +2,7 @@ package com.eacape.speccodingplugin.ui.chat
 
 import com.eacape.speccodingplugin.SpecCodingBundle
 import com.eacape.speccodingplugin.spec.ExecutionTrigger
+import com.eacape.speccodingplugin.spec.StageId
 import com.eacape.speccodingplugin.spec.WorkflowChatExecutionLaunchFallbackReason
 import com.eacape.speccodingplugin.spec.WorkflowChatExecutionLegacyCompactNotice
 import com.eacape.speccodingplugin.spec.WorkflowChatExecutionLaunchPresentation
@@ -25,6 +26,7 @@ internal class WorkflowChatExecutionLaunchMessagePanel(
     private val payload: WorkflowChatExecutionLaunchRestorePayload,
     visibleContent: String,
     private val rawPromptContent: String? = null,
+    private val compact: Boolean = false,
     private val inspectRawPrompt: ((String) -> Unit)? = null,
     private val onDeleteMessage: ((ChatMessagePanel) -> Unit)? = null,
 ) : ChatMessagePanel(
@@ -117,6 +119,7 @@ internal class WorkflowChatExecutionLaunchMessagePanel(
                 "trigger" to current.launch.trigger.name,
                 "sectionKinds" to current.launch.sections.joinToString(",") { it.kind.name },
                 "rawPromptDebugAvailable" to current.launch.rawPromptDebugAvailable.toString(),
+                "compactMode" to compact.toString(),
                 "userNoteVisible" to (userNotePanel.componentCount > 0).toString(),
                 "titleHasIcon" to (titleLabel.icon != null).toString(),
                 "systemContextExpanded" to systemContextExpanded.toString(),
@@ -138,6 +141,7 @@ internal class WorkflowChatExecutionLaunchMessagePanel(
                 "sectionKinds" to current.notice.sectionKinds.joinToString(",") { it.name },
                 "fallbackReason" to current.notice.fallbackReason.name,
                 "rawPromptDebugAvailable" to current.notice.rawPromptDebugAvailable.toString(),
+                "compactMode" to compact.toString(),
                 "userNoteVisible" to (userNotePanel.componentCount > 0).toString(),
                 "titleHasIcon" to (titleLabel.icon != null).toString(),
                 "systemContextExpanded" to systemContextExpanded.toString(),
@@ -197,6 +201,11 @@ internal class WorkflowChatExecutionLaunchMessagePanel(
         systemContextDetailsPanel.removeAll()
         debugPanel.removeAll()
         notesPanel.removeAll()
+        summaryLabel.text = if (compact) {
+            SpecCodingBundle.message("chat.execution.launch.summary.history")
+        } else {
+            SpecCodingBundle.message("chat.execution.launch.summary")
+        }
 
         when (val current = payload) {
             is WorkflowChatExecutionLaunchRestorePayload.Presentation -> renderPresentation(current.launch)
@@ -208,25 +217,21 @@ internal class WorkflowChatExecutionLaunchMessagePanel(
     }
 
     private fun renderPresentation(launch: WorkflowChatExecutionLaunchPresentation) {
-        metaChipPanel.add(createMetaChip(SpecCodingBundle.message("chat.execution.launch.meta.workflow", launch.workflowId)))
-        metaChipPanel.add(
-            createMetaChip(
-                SpecCodingBundle.message(
-                    "chat.execution.launch.meta.task",
-                    launch.taskId,
-                    launch.taskTitle.ifBlank { launch.taskId },
-                ),
-            ),
+        renderPrimaryMetaChips(
+            workflowId = launch.workflowId,
+            taskId = launch.taskId,
+            taskTitle = launch.taskTitle,
+            runId = launch.runId,
+            focusedStage = launch.focusedStage,
+            trigger = launch.trigger,
         )
-        metaChipPanel.add(createMetaChip(SpecCodingBundle.message("chat.execution.launch.meta.run", launch.runId)))
-        metaChipPanel.add(createMetaChip(SpecCodingBundle.message("chat.execution.launch.meta.stage", launch.focusedStage.name)))
-        metaChipPanel.add(createMetaChip(SpecCodingBundle.message("chat.execution.launch.meta.trigger", triggerLabel(launch.trigger))))
         launch.taskStatusBeforeExecution?.let { status ->
             metaChipPanel.add(createMetaChip(SpecCodingBundle.message("chat.execution.launch.meta.status", status.name)))
         }
         launch.taskPriority?.let { priority ->
             metaChipPanel.add(createMetaChip(SpecCodingBundle.message("chat.execution.launch.meta.priority", priority.name)))
         }
+        renderCompactHistoryMeta(launch.workflowId, launch.runId)
 
         renderUserNote(launch.supplementalInstruction)
 
@@ -234,7 +239,7 @@ internal class WorkflowChatExecutionLaunchMessagePanel(
             section.itemCount > 0 || !section.emptyStateReason.isNullOrBlank()
         }
         renderSystemContext(
-            summaryLines = buildContextSummaryLines(visibleSections),
+            summaryLines = buildDisplaySummaryLines(buildContextSummaryLines(visibleSections)),
             detailPanels = visibleSections.map { section ->
                 createSectionPanel(sectionLabel(section.kind), sectionPreview(section), sectionBadgeText(section))
             },
@@ -249,33 +254,26 @@ internal class WorkflowChatExecutionLaunchMessagePanel(
     }
 
     private fun renderLegacy(notice: WorkflowChatExecutionLegacyCompactNotice) {
-        notice.workflowId?.takeIf(String::isNotBlank)?.let { workflowId ->
-            metaChipPanel.add(createMetaChip(SpecCodingBundle.message("chat.execution.launch.meta.workflow", workflowId)))
-        }
-        notice.taskId?.takeIf(String::isNotBlank)?.let { taskId ->
-            val taskTitle = notice.taskTitle?.ifBlank { taskId } ?: taskId
-            metaChipPanel.add(createMetaChip(SpecCodingBundle.message("chat.execution.launch.meta.task", taskId, taskTitle)))
-        }
-        notice.runId?.takeIf(String::isNotBlank)?.let { runId ->
-            metaChipPanel.add(createMetaChip(SpecCodingBundle.message("chat.execution.launch.meta.run", runId)))
-        }
-        notice.focusedStage?.let { stage ->
-            metaChipPanel.add(createMetaChip(SpecCodingBundle.message("chat.execution.launch.meta.stage", stage.name)))
-        }
-        notice.trigger?.let { trigger ->
-            metaChipPanel.add(createMetaChip(SpecCodingBundle.message("chat.execution.launch.meta.trigger", triggerLabel(trigger))))
-        }
+        renderPrimaryMetaChips(
+            workflowId = notice.workflowId,
+            taskId = notice.taskId,
+            taskTitle = notice.taskTitle,
+            runId = notice.runId,
+            focusedStage = notice.focusedStage,
+            trigger = notice.trigger,
+        )
+        renderCompactHistoryMeta(notice.workflowId, notice.runId)
 
         if (notice.supplementalInstructionPresent) {
             renderUserNote(SpecCodingBundle.message("chat.execution.launch.note.legacy.userNote"))
         }
 
         renderSystemContext(
-            summaryLines = if (notice.sectionKinds.isEmpty()) {
+            summaryLines = buildDisplaySummaryLines(if (notice.sectionKinds.isEmpty()) {
                 listOf(SpecCodingBundle.message("chat.execution.launch.section.empty"))
             } else {
                 notice.sectionKinds.map { kind -> sectionLabel(kind) }
-            },
+            }),
             detailPanels = emptyList(),
             badgeText = notice.sectionKinds.size.takeIf { it > 0 }?.toString(),
             allowExpand = false,
@@ -373,20 +371,22 @@ internal class WorkflowChatExecutionLaunchMessagePanel(
             return
         }
         val normalizedRawPrompt = rawPromptContent?.trim()?.takeIf(String::isNotBlank)
-        debugPanel.add(createNoteLabel(SpecCodingBundle.message("chat.execution.launch.note.rawPromptHidden")))
-        normalizedRawPrompt?.let { rawPrompt ->
-            debugPanel.add(
-                createWrappedLabel(
-                    SpecCodingBundle.message(
-                        "chat.execution.launch.note.rawPromptStats",
-                        rawPrompt.lineSequence().count(),
-                        rawPrompt.length,
-                    ),
-                ).apply {
-                    foreground = SUMMARY_FG
-                    border = JBUI.Borders.emptyTop(4)
-                },
-            )
+        if (!compact) {
+            debugPanel.add(createNoteLabel(SpecCodingBundle.message("chat.execution.launch.note.rawPromptHidden")))
+            normalizedRawPrompt?.let { rawPrompt ->
+                debugPanel.add(
+                    createWrappedLabel(
+                        SpecCodingBundle.message(
+                            "chat.execution.launch.note.rawPromptStats",
+                            rawPrompt.lineSequence().count(),
+                            rawPrompt.length,
+                        ),
+                    ).apply {
+                        foreground = SUMMARY_FG
+                        border = JBUI.Borders.emptyTop(4)
+                    },
+                )
+            }
         }
 
         rawPromptToggleButton.apply {
@@ -398,18 +398,13 @@ internal class WorkflowChatExecutionLaunchMessagePanel(
             font = JBUI.Fonts.smallFont()
             cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
             text = SpecCodingBundle.message("chat.execution.launch.action.inspectPrompt")
+            actionListeners.forEach(::removeActionListener)
             addActionListener {
                 normalizedRawPrompt?.let(::openRawPromptInspector)
             }
         }
         if (normalizedRawPrompt != null) {
-            debugPanel.add(
-                JPanel(FlowLayout(FlowLayout.LEFT, 0, JBUI.scale(4))).apply {
-                    isOpaque = false
-                    border = JBUI.Borders.emptyTop(4)
-                    add(rawPromptToggleButton)
-                },
-            )
+            debugPanel.add(createActionRow(rawPromptToggleButton))
         }
     }
 
@@ -428,6 +423,80 @@ internal class WorkflowChatExecutionLaunchMessagePanel(
             val headline = sectionSummaryHeadline(section)
             val countLabel = sectionBadgeText(section)?.let { " [$it]" }.orEmpty()
             "${sectionLabel(section.kind)}$countLabel: $headline"
+        }
+    }
+
+    private fun buildDisplaySummaryLines(lines: List<String>): List<String> {
+        if (!compact || lines.size <= COMPACT_SUMMARY_LINE_LIMIT) {
+            return lines
+        }
+        return lines.take(COMPACT_SUMMARY_LINE_LIMIT) + SpecCodingBundle.message("chat.execution.launch.note.moreItems")
+    }
+
+    private fun renderPrimaryMetaChips(
+        workflowId: String?,
+        taskId: String?,
+        taskTitle: String?,
+        runId: String?,
+        focusedStage: StageId?,
+        trigger: ExecutionTrigger?,
+    ) {
+        taskId?.takeIf(String::isNotBlank)?.let { normalizedTaskId ->
+            val resolvedTaskTitle = taskTitle?.ifBlank { normalizedTaskId } ?: normalizedTaskId
+            metaChipPanel.add(
+                createMetaChip(
+                    SpecCodingBundle.message(
+                        "chat.execution.launch.meta.task",
+                        normalizedTaskId,
+                        resolvedTaskTitle,
+                    ),
+                ),
+            )
+        }
+        focusedStage?.let { stage ->
+            metaChipPanel.add(createMetaChip(SpecCodingBundle.message("chat.execution.launch.meta.stage", stage.name)))
+        }
+        trigger?.let { executionTrigger ->
+            metaChipPanel.add(
+                createMetaChip(
+                    SpecCodingBundle.message(
+                        "chat.execution.launch.meta.trigger",
+                        triggerLabel(executionTrigger),
+                    ),
+                ),
+            )
+        }
+        if (!compact) {
+            workflowId?.takeIf(String::isNotBlank)?.let { normalizedWorkflowId ->
+                metaChipPanel.add(createMetaChip(SpecCodingBundle.message("chat.execution.launch.meta.workflow", normalizedWorkflowId)))
+            }
+            runId?.takeIf(String::isNotBlank)?.let { normalizedRunId ->
+                metaChipPanel.add(createMetaChip(SpecCodingBundle.message("chat.execution.launch.meta.run", normalizedRunId)))
+            }
+        }
+    }
+
+    private fun renderCompactHistoryMeta(workflowId: String?, runId: String?) {
+        if (!compact) {
+            return
+        }
+        val workflowLabel = workflowId?.trim()?.takeIf(String::isNotBlank)?.let {
+            SpecCodingBundle.message("chat.execution.launch.meta.workflow", it)
+        }
+        val runLabel = runId?.trim()?.takeIf(String::isNotBlank)?.let {
+            SpecCodingBundle.message("chat.execution.launch.meta.run", it)
+        }
+        val summary = listOfNotNull(workflowLabel, runLabel).joinToString(" · ")
+        if (summary.isNotBlank()) {
+            notesPanel.add(createNoteLabel(summary))
+        }
+    }
+
+    private fun createActionRow(button: JButton): JPanel {
+        return JPanel(FlowLayout(FlowLayout.LEFT, 0, JBUI.scale(4))).apply {
+            isOpaque = false
+            border = JBUI.Borders.emptyTop(4)
+            add(button)
         }
     }
 
@@ -682,6 +751,7 @@ internal class WorkflowChatExecutionLaunchMessagePanel(
         private val SUMMARY_FG = JBColor(Color(104, 118, 140), Color(159, 170, 186))
         private val BODY_FG = JBColor(Color(72, 84, 103), Color(213, 220, 231))
         private val ACTION_FG = JBColor(Color(41, 104, 174), Color(122, 181, 242))
+        private const val COMPACT_SUMMARY_LINE_LIMIT = 2
         private const val SECTION_SUMMARY_PREVIEW_MAX_LENGTH = 140
         private const val SECTION_DETAIL_PREVIEW_MAX_LENGTH = 220
         private val ORDERED_LIST_PREFIX = Regex("^\\d+[.)]\\s+")

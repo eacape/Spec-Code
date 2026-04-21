@@ -215,6 +215,79 @@ class SpecWorkflowLoadedStateCoordinatorTest {
         assertEquals(listOf(workflow.id), recorder.pendingOpenWorkflowRequests)
     }
 
+    @Test
+    fun `apply should continue with follow up actions when core ui callback fails`() {
+        val workflow = workflow("wf-core-ui-failure")
+        val sources = listOf(source("source-1"))
+        val tasks = listOf(task("T-1"))
+        val recorder = RecordingCallbacks().apply {
+            coreFailure = IllegalStateException("detail crashed")
+        }
+        val coordinator = coordinator(currentTimeMillis = { 314L })
+
+        coordinator.apply(
+            request = SpecWorkflowLoadedStateApplyRequest(
+                workflowId = workflow.id,
+                selectedWorkflowId = workflow.id,
+                loadedState = loadedState(
+                    workflow = workflow,
+                    tasksResult = Result.success(tasks),
+                    sourcesResult = Result.success(sources),
+                ),
+                previousSelectedWorkflowId = "wf-previous",
+            ),
+            callbacks = recorder,
+        )
+
+        assertSame(workflow, recorder.coreState?.workflow)
+        assertEquals(
+            listOf(SourceApplyCall(workflow, sources, preserveSelection = false)),
+            recorder.sourceCalls,
+        )
+        assertEquals(tasks, recorder.taskState?.tasks)
+        assertEquals(listOf(workflow.id), recorder.restoredClarificationWorkflowIds)
+        assertEquals(listOf(workflow.id), recorder.pendingOpenWorkflowRequests)
+        assertEquals(listOf(workflow), recorder.actionAvailabilityUpdates)
+        assertEquals(
+            listOf(SpecCodingBundle.message("spec.workflow.error", "rendered:detail crashed")),
+            recorder.statusTexts,
+        )
+    }
+
+    @Test
+    fun `apply should keep workflow follow up actions running when task ui callback fails`() {
+        val workflow = workflow("wf-task-ui-failure")
+        val tasks = listOf(task("T-1"))
+        val recorder = RecordingCallbacks().apply {
+            taskFailure = IllegalStateException("workspace crashed")
+        }
+        val coordinator = coordinator(currentTimeMillis = { 2718L })
+
+        coordinator.apply(
+            request = SpecWorkflowLoadedStateApplyRequest(
+                workflowId = workflow.id,
+                selectedWorkflowId = workflow.id,
+                loadedState = loadedState(
+                    workflow = workflow,
+                    tasksResult = Result.success(tasks),
+                    sourcesResult = Result.success(emptyList()),
+                ),
+                previousSelectedWorkflowId = "wf-previous",
+            ),
+            callbacks = recorder,
+        )
+
+        assertSame(workflow, recorder.coreState?.workflow)
+        assertEquals(tasks, recorder.taskState?.tasks)
+        assertEquals(listOf(workflow.id), recorder.restoredClarificationWorkflowIds)
+        assertEquals(listOf(workflow.id), recorder.pendingOpenWorkflowRequests)
+        assertEquals(listOf(workflow), recorder.actionAvailabilityUpdates)
+        assertEquals(
+            listOf(SpecCodingBundle.message("spec.workflow.error", "rendered:workspace crashed")),
+            recorder.statusTexts,
+        )
+    }
+
     private fun coordinator(
         buildUiSnapshot: (SpecWorkflow) -> SpecWorkflowUiSnapshot = { workflow -> workflowSnapshot(workflow.id) },
         decorateTasksWithExecutionState: (
@@ -376,6 +449,13 @@ class SpecWorkflowLoadedStateCoordinatorTest {
         val pendingOpenWorkflowRequests = mutableListOf<String>()
         val actionAvailabilityUpdates = mutableListOf<SpecWorkflow>()
         val statusTexts = mutableListOf<String>()
+        var coreFailure: Throwable? = null
+        var sourceFailure: Throwable? = null
+        var taskFailure: Throwable? = null
+        var restoreClarificationFailure: Throwable? = null
+        var pendingOpenFailure: Throwable? = null
+        var actionAvailabilityFailure: Throwable? = null
+        var statusFailure: Throwable? = null
 
         override fun clearOpenedWorkflowUi(resetHighlight: Boolean) {
             clearOpenedWorkflowUiCalls += resetHighlight
@@ -383,6 +463,7 @@ class SpecWorkflowLoadedStateCoordinatorTest {
 
         override fun applyWorkflowCore(state: SpecWorkflowLoadedCoreUiState) {
             coreState = state
+            coreFailure?.let { throw it }
         }
 
         override fun applyWorkflowSources(
@@ -391,26 +472,32 @@ class SpecWorkflowLoadedStateCoordinatorTest {
             preserveSelection: Boolean,
         ) {
             sourceCalls += SourceApplyCall(workflow, assets, preserveSelection)
+            sourceFailure?.let { throw it }
         }
 
         override fun applyWorkflowTasks(state: SpecWorkflowLoadedTaskUiState) {
             taskState = state
+            taskFailure?.let { throw it }
         }
 
         override fun restorePendingClarificationState(workflowId: String) {
             restoredClarificationWorkflowIds += workflowId
+            restoreClarificationFailure?.let { throw it }
         }
 
         override fun applyPendingOpenWorkflowRequest(workflowId: String) {
             pendingOpenWorkflowRequests += workflowId
+            pendingOpenFailure?.let { throw it }
         }
 
         override fun updateWorkflowActionAvailability(workflow: SpecWorkflow) {
             actionAvailabilityUpdates += workflow
+            actionAvailabilityFailure?.let { throw it }
         }
 
         override fun setStatusText(text: String) {
             statusTexts += text
+            statusFailure?.let { throw it }
         }
     }
 

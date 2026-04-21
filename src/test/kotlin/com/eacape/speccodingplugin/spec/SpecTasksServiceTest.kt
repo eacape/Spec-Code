@@ -621,6 +621,96 @@ class SpecTasksServiceTest {
     }
 
     @Test
+    fun `updateDependsOn should auto repair malformed tasks artifact before persisting`() {
+        val workflowId = "wf-tasks-update-depends-on-auto-repair"
+        val markdown = """
+            # Implement Document
+
+            ## Task List
+
+            ### T-001: First task
+            ```spec-task
+            status: PENDING
+            priority: P0
+            dependsOn: []
+            relatedFiles: []
+            verificationResult: null
+            ```
+
+            ### T-002: Second task
+            ```spec-task
+            status: COMPLETED
+            priority: P0
+            dependsOn: []
+            relatedFiles: []
+            verificationResult: null
+            ```
+
+            ### T-003: Broken task
+            ```spec-task
+            "status: IN_PROGRESS
+            ```
+
+            ### T-004: Target task
+            ```spec-task
+            status: PENDING
+            priority: P1
+            dependsOn: []
+            relatedFiles: []
+            verificationResult: null
+            ```
+        """.trimIndent()
+
+        artifactService.writeArtifact(workflowId, StageId.TASKS, markdown)
+
+        val updatedTask = tasksService.updateDependsOn(
+            workflowId = workflowId,
+            taskId = "T-004",
+            dependsOn = listOf("T-002", "T-001"),
+        )
+        val persisted = artifactService.readArtifact(workflowId, StageId.TASKS).orEmpty()
+        val reparsedTasks = tasksService.parse(workflowId)
+        val repairAuditEvent = storage.listAuditEvents(workflowId).getOrThrow()
+            .lastOrNull { event -> event.eventType == SpecAuditEventType.TASKS_ARTIFACT_REPAIRED }
+
+        assertEquals(listOf("T-001", "T-002"), updatedTask.dependsOn)
+        assertTrue(
+            persisted.contains(
+                """
+                ### T-003: Broken task
+                ```spec-task
+                status: PENDING
+                priority: P1
+                dependsOn: []
+                relatedFiles: []
+                verificationResult: null
+                ```
+                """.trimIndent(),
+            ),
+        )
+        assertTrue(
+            persisted.contains(
+                """
+                ### T-004: Target task
+                ```spec-task
+                status: PENDING
+                priority: P1
+                dependsOn:
+                  - T-001
+                  - T-002
+                relatedFiles: []
+                verificationResult: null
+                ```
+                """.trimIndent(),
+            ),
+        )
+        assertEquals(listOf("T-001", "T-002", "T-003", "T-004"), reparsedTasks.map { task -> task.id })
+        assertEquals(TaskStatus.PENDING, reparsedTasks.first { task -> task.id == "T-003" }.status)
+        assertEquals(TaskPriority.P1, reparsedTasks.first { task -> task.id == "T-003" }.priority)
+        assertEquals(SpecTasksQuickFixService.TRIGGER_TASK_MUTATION_AUTO_REPAIR, repairAuditEvent?.details?.get("trigger"))
+    }
+
+    @Test
     fun `updateRelatedFiles should normalize dedupe sort and append audit event`() {
         val workflowId = "wf-tasks-related-files"
         val markdown = """

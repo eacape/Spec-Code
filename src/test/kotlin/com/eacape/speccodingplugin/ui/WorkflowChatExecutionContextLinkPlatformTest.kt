@@ -503,10 +503,10 @@ class WorkflowChatExecutionContextLinkPlatformTest : BasePlatformTestCase() {
         assertEquals(2, chatPanel.messageCountForTest())
     }
 
-    fun `test history restore should keep plain bubble for terminal execution launch presentation`() {
+    fun `test history restore should keep compact execution card for terminal execution launch presentation`() {
         val workflow = SpecEngine.getInstance(project).createWorkflow(
             title = "Workflow Chat Terminal Launch Restore",
-            description = "history restore should not rebuild execution card for terminal runs",
+            description = "history restore should keep a compact execution card for terminal runs",
         ).getOrThrow()
         val task = SpecTasksService(project).addTask(
             workflowId = workflow.id,
@@ -570,7 +570,7 @@ class WorkflowChatExecutionContextLinkPlatformTest : BasePlatformTestCase() {
         sessionManager.addMessage(
             sessionId = session.id,
             role = ConversationRole.ASSISTANT,
-            content = "Execution already finished; keep this as a plain history bubble.",
+            content = "Execution already finished; keep this as a compact history card.",
         ).getOrThrow()
 
         val toolWindow = registerSpecCodeToolWindow()
@@ -585,11 +585,16 @@ class WorkflowChatExecutionContextLinkPlatformTest : BasePlatformTestCase() {
 
         waitUntil(timeoutMs = 10_000) {
             chatPanel.messageCountForTest() == 2 &&
-                chatPanel.executionLaunchSnapshotForTest().getValue("visible") == "false"
+                chatPanel.executionLaunchSnapshotForTest().getValue("visible") == "true" &&
+                chatPanel.executionLaunchSnapshotForTest().getValue("kind") == "presentation"
         }
 
         val snapshot = chatPanel.executionLaunchSnapshotForTest()
-        assertEquals("false", snapshot.getValue("visible"))
+        assertEquals("true", snapshot.getValue("visible"))
+        assertEquals("presentation", snapshot.getValue("kind"))
+        assertEquals(task.id, snapshot.getValue("taskId"))
+        assertEquals(workflow.id, snapshot.getValue("workflowId"))
+        assertEquals("true", snapshot.getValue("compactMode"))
         assertEquals(2, chatPanel.messageCountForTest())
     }
 

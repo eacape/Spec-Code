@@ -31,6 +31,7 @@ internal sealed interface ImprovedChatPanelMessageRenderPlan {
         val visibleContent: String,
         val rawContent: String,
         val payload: WorkflowChatExecutionLaunchRestorePayload,
+        val compact: Boolean,
     ) : ImprovedChatPanelMessageRenderPlan
 
     data class AssistantSpecCard(
@@ -127,16 +128,14 @@ internal object ImprovedChatPanelMessageRenderCoordinator {
     ): ImprovedChatPanelMessageRenderPlan {
         val executionLaunchPayload = executionMetadata.resolveExecutionLaunchRestorePayload(message.content)
         val rawUserContent = executionMetadata.resolveExecutionLaunchRawPrompt() ?: message.content
-        val shouldRenderExecutionLaunchCard = executionLaunchPayload != null &&
-            (
-                !fromSessionRestore ||
-                    executionMetadata.runId?.trim()?.takeIf(String::isNotBlank) in activeExecutionLaunchRunIds
-            )
-        return if (shouldRenderExecutionLaunchCard) {
+        return if (executionLaunchPayload != null) {
+            val compact = fromSessionRestore &&
+                executionMetadata.runId?.trim()?.takeIf(String::isNotBlank) !in activeExecutionLaunchRunIds
             ImprovedChatPanelMessageRenderPlan.UserExecutionLaunch(
                 visibleContent = message.content,
                 rawContent = rawUserContent,
-                payload = executionLaunchPayload!!,
+                payload = executionLaunchPayload,
+                compact = compact,
             )
         } else {
             ImprovedChatPanelMessageRenderPlan.UserPlain(

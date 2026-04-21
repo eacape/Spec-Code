@@ -12,6 +12,14 @@ import java.nio.file.Path
 class SpecTasksService(private val project: Project) {
     private val artifactService: SpecArtifactService by lazy { SpecArtifactService(project) }
     private val storage: SpecStorage by lazy { SpecStorage.getInstance(project) }
+    private val quickFixService: SpecTasksQuickFixService by lazy {
+        SpecTasksQuickFixService(
+            project = project,
+            storage = storage,
+            artifactService = artifactService,
+            tasksService = this,
+        )
+    }
 
     data class TaskSection(
         val entry: SpecTaskMarkdownParser.ParsedTaskEntry,
@@ -635,6 +643,24 @@ class SpecTasksService(private val project: Project) {
     }
 
     private fun loadEditableDocument(workflowId: String): ParsedTasksDocument {
+        return runCatching {
+            loadEditableDocumentOnce(workflowId)
+        }.recoverCatching { error ->
+            if (error !is InvalidTasksArtifactEditError) {
+                throw error
+            }
+            val repairResult = quickFixService.repairTasksArtifact(
+                workflowId = workflowId,
+                trigger = SpecTasksQuickFixService.TRIGGER_TASK_MUTATION_AUTO_REPAIR,
+            )
+            if (repairResult.issuesAfter.isNotEmpty()) {
+                throw error
+            }
+            loadEditableDocumentOnce(workflowId)
+        }.getOrThrow()
+    }
+
+    private fun loadEditableDocumentOnce(workflowId: String): ParsedTasksDocument {
         val markdown = artifactService.readArtifact(workflowId, StageId.TASKS)
             ?.takeIf { content -> content.isNotBlank() }
             ?: EMPTY_TASKS_DOCUMENT

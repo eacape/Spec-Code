@@ -69,6 +69,7 @@ class WorkflowChatExecutionLaunchMessagePanelTest {
         assertEquals("wf-149", snapshot.getValue("workflowId"))
         assertEquals("T-149", snapshot.getValue("taskId"))
         assertEquals("run-149", snapshot.getValue("runId"))
+        assertEquals("false", snapshot.getValue("compactMode"))
         assertEquals(StageId.TASKS.name, snapshot.getValue("focusedStage"))
         assertEquals("true", snapshot.getValue("userNoteVisible"))
         assertEquals("false", snapshot.getValue("titleHasIcon"))
@@ -103,6 +104,60 @@ class WorkflowChatExecutionLaunchMessagePanelTest {
             .filterIsInstance<JTextArea>()
             .joinToString("\n") { it.text.orEmpty() }
         assertFalse(expandedText.contains("Interaction mode: workflow"))
+    }
+
+    @Test
+    fun `compact presentation payload should render restored execution card without verbose debug note`() {
+        val panel = runOnEdtResult {
+            WorkflowChatExecutionLaunchMessagePanel(
+                payload = WorkflowChatExecutionLaunchRestorePayload.Presentation(
+                    WorkflowChatExecutionLaunchPresentation(
+                        workflowId = "wf-history",
+                        taskId = "T-021",
+                        taskTitle = "Restore compact launch card",
+                        runId = "run-history",
+                        focusedStage = StageId.IMPLEMENT,
+                        trigger = ExecutionTrigger.USER_RETRY,
+                        launchSurface = WorkflowChatExecutionLaunchSurface.WORKFLOW_CHAT,
+                        sections = listOf(
+                            WorkflowChatExecutionPresentationSection(
+                                kind = WorkflowChatExecutionPresentationSectionKind.ARTIFACT_SUMMARIES,
+                                itemCount = 2,
+                                previewItems = listOf(
+                                    "requirements.md: summarize the archived launch cleanly.",
+                                    "design.md: keep history cards compact.",
+                                ),
+                            ),
+                            WorkflowChatExecutionPresentationSection(
+                                kind = WorkflowChatExecutionPresentationSectionKind.CODE_CONTEXT,
+                                itemCount = 1,
+                                previewItems = listOf("src/main/kotlin/com/eacape/speccodingplugin/ui/ImprovedChatPanel.kt"),
+                            ),
+                            WorkflowChatExecutionPresentationSection(
+                                kind = WorkflowChatExecutionPresentationSectionKind.CLARIFICATION_CONCLUSIONS,
+                                itemCount = 1,
+                                previewItems = listOf("No confirmed clarifications recorded."),
+                            ),
+                        ),
+                        rawPromptDebugAvailable = true,
+                    ),
+                ),
+                visibleContent = "## Execution Request",
+                rawPromptContent = "Interaction mode: workflow\n## Execution Request\nRetry task T-021",
+                compact = true,
+            )
+        }
+
+        val snapshot = panel.snapshotForTest()
+        assertEquals("presentation", snapshot.getValue("kind"))
+        assertEquals("true", snapshot.getValue("compactMode"))
+
+        val renderedText = collectDescendants(panel)
+            .filterIsInstance<JTextArea>()
+            .joinToString("\n") { it.text.orEmpty() }
+        assertTrue(renderedText.contains(SpecCodingBundle.message("chat.execution.launch.meta.workflow", "wf-history")))
+        assertTrue(renderedText.contains(SpecCodingBundle.message("chat.execution.launch.meta.run", "run-history")))
+        assertFalse(renderedText.contains(SpecCodingBundle.message("chat.execution.launch.note.rawPromptHidden")))
     }
 
     @Test
@@ -177,6 +232,7 @@ class WorkflowChatExecutionLaunchMessagePanelTest {
         assertEquals("wf-legacy", snapshot.getValue("workflowId"))
         assertEquals("T-019", snapshot.getValue("taskId"))
         assertEquals("run-019", snapshot.getValue("runId"))
+        assertEquals("false", snapshot.getValue("compactMode"))
         assertEquals("MISSING_PRESENTATION_METADATA", snapshot.getValue("fallbackReason"))
         assertEquals("true", snapshot.getValue("userNoteVisible"))
         assertEquals("false", snapshot.getValue("titleHasIcon"))

@@ -6,6 +6,7 @@ import com.eacape.speccodingplugin.spec.SpecWorkflow
 import com.eacape.speccodingplugin.spec.StructuredTask
 import com.eacape.speccodingplugin.spec.TaskExecutionLiveProgress
 import com.eacape.speccodingplugin.spec.WorkflowSourceAsset
+import com.intellij.openapi.diagnostic.thisLogger
 
 internal data class SpecWorkflowLoadedStateApplyRequest(
     val workflowId: String,
@@ -62,6 +63,7 @@ internal class SpecWorkflowLoadedStateCoordinator(
     private val renderFailureMessage: (Throwable) -> String,
     private val currentTimeMillis: () -> Long = System::currentTimeMillis,
 ) {
+    private val logger = thisLogger()
 
     fun apply(
         request: SpecWorkflowLoadedStateApplyRequest,
@@ -79,68 +81,126 @@ internal class SpecWorkflowLoadedStateCoordinator(
         }
 
         val snapshot = request.loadedState.uiSnapshot ?: buildUiSnapshot(workflow)
-        callbacks.applyWorkflowCore(
-            SpecWorkflowLoadedCoreUiState(
-                workflow = workflow,
-                snapshot = snapshot,
-                followCurrentPhase = request.followCurrentPhase,
-                codeContextResult = request.loadedState.codeContextResult,
-            ),
-        )
+        applyUiCallback(
+            workflowId = workflow.id,
+            operation = "apply workflow core state",
+            callbacks = callbacks,
+        ) {
+            callbacks.applyWorkflowCore(
+                SpecWorkflowLoadedCoreUiState(
+                    workflow = workflow,
+                    snapshot = snapshot,
+                    followCurrentPhase = request.followCurrentPhase,
+                    codeContextResult = request.loadedState.codeContextResult,
+                ),
+            )
+        }
 
         request.loadedState.sourcesResult
             ?.onSuccess { sources ->
-                callbacks.applyWorkflowSources(
-                    workflow = workflow,
-                    assets = sources,
-                    preserveSelection = request.previousSelectedWorkflowId == workflow.id,
-                )
+                applyUiCallback(
+                    workflowId = workflow.id,
+                    operation = "apply workflow sources",
+                    callbacks = callbacks,
+                ) {
+                    callbacks.applyWorkflowSources(
+                        workflow = workflow,
+                        assets = sources,
+                        preserveSelection = request.previousSelectedWorkflowId == workflow.id,
+                    )
+                }
             }
             ?.onFailure { error ->
-                callbacks.applyWorkflowSources(
-                    workflow = workflow,
-                    assets = emptyList(),
-                    preserveSelection = false,
-                )
-                callbacks.setStatusText(buildFailureStatusText(error))
+                logger.warn("Failed to load workflow sources for workflow ${workflow.id}", error)
+                applyUiCallback(
+                    workflowId = workflow.id,
+                    operation = "clear workflow sources after load failure",
+                    callbacks = callbacks,
+                ) {
+                    callbacks.applyWorkflowSources(
+                        workflow = workflow,
+                        assets = emptyList(),
+                        preserveSelection = false,
+                    )
+                }
+                reportFailure(callbacks, error)
             }
 
         val refreshedAtMillis = currentTimeMillis()
         request.loadedState.tasksResult
             .onSuccess { tasks ->
-                callbacks.applyWorkflowTasks(
-                    SpecWorkflowLoadedTaskUiState(
-                        workflow = workflow,
-                        snapshot = snapshot,
-                        tasks = decorateTasksWithExecutionState(
-                            workflow,
-                            tasks,
-                            request.loadedState.liveProgressByTaskId,
+                applyUiCallback(
+                    workflowId = workflow.id,
+                    operation = "apply workflow tasks",
+                    callbacks = callbacks,
+                ) {
+                    callbacks.applyWorkflowTasks(
+                        SpecWorkflowLoadedTaskUiState(
+                            workflow = workflow,
+                            snapshot = snapshot,
+                            tasks = decorateTasksWithExecutionState(
+                                workflow,
+                                tasks,
+                                request.loadedState.liveProgressByTaskId,
+                            ),
+                            liveProgressByTaskId = request.loadedState.liveProgressByTaskId,
+                            refreshedAtMillis = refreshedAtMillis,
                         ),
-                        liveProgressByTaskId = request.loadedState.liveProgressByTaskId,
-                        refreshedAtMillis = refreshedAtMillis,
-                    ),
-                )
+                    )
+                }
             }
             .onFailure { error ->
-                callbacks.applyWorkflowTasks(
-                    SpecWorkflowLoadedTaskUiState(
-                        workflow = workflow,
-                        snapshot = snapshot,
-                        tasks = emptyList(),
-                        liveProgressByTaskId = emptyMap(),
-                        refreshedAtMillis = refreshedAtMillis,
-                    ),
-                )
-                callbacks.setStatusText(buildFailureStatusText(error))
+                logger.warn("Failed to load workflow tasks for workflow ${workflow.id}", error)
+                applyUiCallback(
+                    workflowId = workflow.id,
+                    operation = "clear workflow tasks after load failure",
+                    callbacks = callbacks,
+                ) {
+                    callbacks.applyWorkflowTasks(
+                        SpecWorkflowLoadedTaskUiState(
+                            workflow = workflow,
+                            snapshot = snapshot,
+                            tasks = emptyList(),
+                            liveProgressByTaskId = emptyMap(),
+                            refreshedAtMillis = refreshedAtMillis,
+                        ),
+                    )
+                }
+                reportFailure(callbacks, error)
             }
 
         if (request.previousSelectedWorkflowId != null && request.previousSelectedWorkflowId != workflow.id) {
-            callbacks.restorePendingClarificationState(workflow.id)
+            applyUiCallback(
+                workflowId = workflow.id,
+                operation = "restore pending clarification state",
+                callbacks = callbacks,
+            ) {
+                callbacks.restorePendingClarificationState(workflow.id)
+            }
         }
-        callbacks.applyPendingOpenWorkflowRequest(workflow.id)
-        callbacks.updateWorkflowActionAvailability(workflow)
-        onUpdated?.invoke(workflow)
+        applyUiCallback(
+            workflowId = workflow.id,
+            operation = "apply pending open workflow request",
+            callbacks = callbacks,
+        ) {
+            callbacks.applyPendingOpenWorkflowRequest(workflow.id)
+        }
+        applyUiCallback(
+            workflowId = workflow.id,
+            operation = "update workflow action availability",
+            callbacks = callbacks,
+        ) {
+            callbacks.updateWorkflowActionAvailability(workflow)
+        }
+        onUpdated?.let { callback ->
+            applyUiCallback(
+                workflowId = workflow.id,
+                operation = "invoke workflow updated callback",
+                callbacks = callbacks,
+            ) {
+                callback(workflow)
+            }
+        }
     }
 
     private fun buildFailureStatusText(error: Throwable): String {
@@ -148,5 +208,28 @@ internal class SpecWorkflowLoadedStateCoordinator(
             "spec.workflow.error",
             renderFailureMessage(error),
         )
+    }
+
+    private fun applyUiCallback(
+        workflowId: String,
+        operation: String,
+        callbacks: SpecWorkflowLoadedStateCallbacks,
+        action: () -> Unit,
+    ) {
+        runCatching(action).onFailure { error ->
+            logger.warn("Failed to $operation for workflow $workflowId", error)
+            reportFailure(callbacks, error)
+        }
+    }
+
+    private fun reportFailure(
+        callbacks: SpecWorkflowLoadedStateCallbacks,
+        error: Throwable,
+    ) {
+        runCatching {
+            callbacks.setStatusText(buildFailureStatusText(error))
+        }.onFailure { statusError ->
+            logger.warn("Failed to publish workflow failure status", statusError)
+        }
     }
 }

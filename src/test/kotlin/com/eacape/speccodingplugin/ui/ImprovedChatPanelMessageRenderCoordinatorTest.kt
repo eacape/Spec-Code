@@ -47,13 +47,14 @@ class ImprovedChatPanelMessageRenderCoordinatorTest {
         val plan = decision.plan as ImprovedChatPanelMessageRenderPlan.UserExecutionLaunch
         assertEquals(message.content, plan.visibleContent)
         assertEquals(rawPrompt, plan.rawContent)
+        assertFalse(plan.compact)
         assertEquals(LlmRole.USER, decision.historyMessage?.role)
         assertEquals(rawPrompt, decision.historyMessage?.content)
         assertTrue(decision.marksTaskExecutionMessageRendered)
     }
 
     @Test
-    fun `session restore should degrade inactive execution launch card into plain user message`() {
+    fun `session restore should keep inactive execution launch as compact card`() {
         val rawPrompt = "Interaction mode: workflow\n## Execution Request\nExecute task T-007"
         val message = conversationMessage(
             role = ConversationRole.USER,
@@ -68,10 +69,11 @@ class ImprovedChatPanelMessageRenderCoordinatorTest {
             buildSpecCardFallbackMarkdown = { error("Spec card fallback should not be used") },
         )
 
-        assertTrue(decision.plan is ImprovedChatPanelMessageRenderPlan.UserPlain)
-        val plan = decision.plan as ImprovedChatPanelMessageRenderPlan.UserPlain
+        assertTrue(decision.plan is ImprovedChatPanelMessageRenderPlan.UserExecutionLaunch)
+        val plan = decision.plan as ImprovedChatPanelMessageRenderPlan.UserExecutionLaunch
         assertEquals(message.content, plan.visibleContent)
         assertEquals(rawPrompt, plan.rawContent)
+        assertTrue(plan.compact)
         assertEquals(rawPrompt, decision.historyMessage?.content)
         assertTrue(decision.marksTaskExecutionMessageRendered)
     }

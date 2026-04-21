@@ -5084,6 +5084,7 @@ class ImprovedChatPanel(
                     visibleContent = plan.visibleContent,
                     payload = plan.payload,
                     rawContent = plan.rawContent,
+                    compact = plan.compact,
                 )
             }
 
@@ -5234,11 +5235,13 @@ class ImprovedChatPanel(
         visibleContent: String,
         payload: com.eacape.speccodingplugin.spec.WorkflowChatExecutionLaunchRestorePayload,
         rawContent: String?,
+        compact: Boolean = false,
     ): WorkflowChatExecutionLaunchMessagePanel {
         val panel = WorkflowChatExecutionLaunchMessagePanel(
             payload = payload,
             visibleContent = visibleContent,
             rawPromptContent = rawContent,
+            compact = compact,
             onDeleteMessage = ::handleDeleteMessage,
         )
         messagesPanel.addMessage(panel)
@@ -7436,6 +7439,7 @@ class ImprovedChatPanel(
                 "trigger" to "",
                 "sectionKinds" to "",
                 "rawPromptDebugAvailable" to "false",
+                "compactMode" to "false",
                 "userNoteVisible" to "false",
                 "systemContextExpanded" to "false",
                 "debugEntryVisible" to "false",

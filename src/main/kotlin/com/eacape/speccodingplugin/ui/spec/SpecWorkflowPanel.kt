@@ -2903,8 +2903,12 @@ class SpecWorkflowPanel(
                     ?.replace(Regex("\\s+"), " ")
                     ?.trim()
                     ?.takeIf { it.isNotBlank() }
+                    ?.takeIf(::isMeaningfulErrorMessage)
+                    ?: throwable.javaClass.simpleName
+                        ?.trim()
+                        ?.takeIf(::isMeaningfulErrorMessage)
             }
-            .firstOrNull { candidate -> isMeaningfulErrorMessage(candidate) }
+            .firstOrNull()
             ?: fallback
         if (compact.length <= maxLength) {
             return compact
